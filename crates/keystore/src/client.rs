@@ -140,25 +140,32 @@ pub const ROT_DOMAIN: &str = "OSL-ROTATE-v1";
 /// string with no trailing newline.
 /// Mirrors `USERNAME_CLAIM_DOMAIN` in keyserver-cf/src/lib/username.ts.
 pub const USERNAME_CLAIM_DOMAIN: &str = "OSL-USERNAME-CLAIM-v1";
-/// Mirrors `USERNAME_MIN` / `USERNAME_MAX` in the Worker.
-pub const USERNAME_MIN: usize = 1;
-pub const USERNAME_MAX: usize = 16;
-pub const USERNAME_RULES_MESSAGE: &str =
-    "username must use only letters, digits, and underscores and be 1 to 16 characters";
+/// Mirrors `USERNAME_RELEASE_DOMAIN` in keyserver-cf/src/lib/username.ts.
+pub const USERNAME_RELEASE_DOMAIN: &str = "OSL-USERNAME-RELEASE-v1";
+/// Mirrors `USERNAME_MIN` / `USERNAME_MAX` in the same module.
+pub const USERNAME_MIN: usize = 3;
+pub const USERNAME_MAX: usize = 30;
 
-/// True only for a username that already follows the public-name grammar.
+/// True only for an ALREADY-normalized username.
 ///
-/// This never normalizes silently: a caller that quietly lowercased or trimmed
-/// would claim a name the user did not type. Mirrors
-/// `USERNAME_RE = /^[A-Za-z0-9_]{1,16}$/` exactly.
+/// The server refuses anything else with "username must already be normalized",
+/// so this must never normalize silently: a caller that quietly lowercased or
+/// trimmed would claim a name the user did not type. Mirrors
+/// `USERNAME_RE = /^[a-z0-9](?:[a-z0-9_]{1,28}[a-z0-9])?$/` exactly: lowercase
+/// alphanumeric, underscores only in the interior, 3..=30 characters.
 pub fn is_normalized_username(value: &str) -> bool {
     let bytes = value.as_bytes();
     if bytes.len() < USERNAME_MIN || bytes.len() > USERNAME_MAX {
         return false;
     }
-    bytes
-        .iter()
-        .all(|b| b.is_ascii_alphanumeric() || *b == b'_')
+    let alnum = |b: u8| b.is_ascii_digit() || b.is_ascii_lowercase();
+    let Some((&first, rest)) = bytes.split_first() else {
+        return false;
+    };
+    let Some((&last, middle)) = rest.split_last() else {
+        return false;
+    };
+    alnum(first) && alnum(last) && middle.iter().all(|&b| alnum(b) || b == b'_')
 }
 
 /// Byte-exact claim message, mirroring `usernameClaimMessage` in
@@ -175,41 +182,49 @@ pub fn username_claim_msg(
         .into_bytes()
 }
 
+/// Byte-exact release message, mirroring `usernameReleaseMessage` in
+/// keyserver-cf/src/lib/username.ts.
+pub fn username_release_msg(
+    username: &str,
+    user_id: &str,
+    request_id: &str,
+    timestamp_ms: i64,
+) -> Vec<u8> {
+    format!("{USERNAME_RELEASE_DOMAIN}\n{username}\n{user_id}\n{request_id}\n{timestamp_ms}")
+        .into_bytes()
+}
+
 /// Response returned after an authenticated username claim.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct UsernameClaimResponse {
     pub username: String,
     pub user_id: String,
 }
 
-/// Service-issued private contact capability. Both timestamps are chosen by
-/// the keyserver and the revocation secret is returned only to the issuer.
-#[derive(Debug, Clone, Deserialize)]
-pub struct PrivateContactLinkIssueResponse {
-    pub link_value: String,
-    pub revocation_secret: String,
-    pub issued_at_unix_seconds: u64,
-    pub expires_at_unix_seconds: u64,
-    pub uses_allowed: u32,
-    pub uses_recorded: u32,
+/// Response returned after an authenticated username release.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct UsernameReleaseResponse {
+    pub username: String,
+    pub user_id: String,
+    pub released: bool,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-pub struct PrivateContactLinkRedeemResponse {
-    pub accepted: bool,
-    pub contact_bundle: String,
-    pub issued_at_unix_seconds: u64,
-    pub expires_at_unix_seconds: u64,
-    pub uses_allowed: u32,
-    pub uses_recorded: u32,
+/// Public-name discovery exposure selected by the user.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UsernameDiscoveryVisibility {
+    /// Do not publish a discovery row. If no row was previously published, this
+    /// returns locally without contacting the keyserver.
+    NeverShowMe,
+    /// Publish the name so people the user has allowed can resolve it through
+    /// the fixed-size bucket flow.
+    OnlyPeopleAllowed,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-pub struct PrivateContactLinkStatusResponse {
-    pub issued_at_unix_seconds: u64,
-    pub expires_at_unix_seconds: u64,
-    pub terminal_state: String,
-    pub terminal_at_unix_seconds: Option<u64>,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UsernameDiscoverySync {
+    SkippedNeverShowMe { username: String, user_id: String },
+    Published(UsernameClaimResponse),
+    Released(UsernameReleaseResponse),
 }
 
 #[derive(Serialize)]
@@ -223,6 +238,15 @@ struct UsernameClaimRequest<'a> {
     service: &'static str,
     service_account_id: &'a str,
     public_name_proof: PublicNameProof,
+}
+
+#[derive(Serialize)]
+struct UsernameReleaseRequest<'a> {
+    username: &'a str,
+    user_id: &'a str,
+    request_id: String,
+    signature_b64: String,
+    timestamp_ms: i64,
 }
 
 #[derive(Deserialize)]
@@ -775,27 +799,6 @@ pub struct BurnResponse {
     pub deleted_count: u32,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
-pub struct DiscoveryCardResponse {
-    pub drawer_name: String,
-    pub label: String,
-    pub sealed_note: String,
-    pub discovery_epoch: String,
-}
-
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-pub struct DiscoveryPublishResponse {
-    pub removed: u32,
-    pub wrote: u32,
-    pub card: DiscoveryCardResponse,
-}
-
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-pub struct DiscoveryReplyStateResponse {
-    pub enabled: bool,
-    pub removed: u32,
-}
-
 /// Body of `POST /v1/license/validate`.
 #[derive(Serialize)]
 struct LicenseValidateRequest<'a> {
@@ -859,12 +862,11 @@ pub struct LicenseValidateResponse {
     /// alongside the keyserver's state machine; the consuming
     /// layer (F2.2's `LicenseState`) does the mapping.
     pub status: String,
-    /// Stable person-result code. The service never supplies English prose;
-    /// the packaged Windows client resolves this through the English catalogue.
+    /// Optional human-facing refusal reason supplied by the keyserver for a
+    /// recognized but unusable code. For example, refunded prepaid codes keep
+    /// `status = "REVOKED"` while carrying a specific explanation.
     #[serde(default)]
-    pub reason_code: Option<String>,
-    #[serde(default)]
-    pub parameters: std::collections::BTreeMap<String, String>,
+    pub error: Option<String>,
     /// Unix seconds. `None` when the subscription is `PENDING` /
     /// `UNKNOWN`, or (legacy, pre-F2.0) when the keyserver hadn't
     /// stamped a period yet under the old Stripe API shape.
@@ -888,26 +890,6 @@ struct BurnRequest<'a> {
     timestamp_ms: i64,
     request_id: String,
     burn_signature_b64: String,
-}
-
-#[derive(Serialize)]
-struct DiscoveryAccountRequest<'a> {
-    account_id: &'a str,
-}
-
-#[derive(Serialize)]
-struct DiscoveryPublishRequest<'a> {
-    account_id: &'a str,
-    app_id: &'a str,
-    account_handle: &'a str,
-    setting: &'a str,
-    sealed_note: &'a str,
-}
-
-#[derive(Serialize)]
-struct DiscoveryReadRequest<'a> {
-    drawer_name: &'a str,
-    label: &'a str,
 }
 
 #[derive(Serialize)]
@@ -969,7 +951,14 @@ pub struct KeyServerClient {
     /// double-slash hazards.
     base_url: String,
     client: reqwest::blocking::Client,
+    request_timeout: Duration,
 }
+
+/// Keyserver polls are small, but a Tor circuit can spend much longer than a
+/// clearnet request establishing a route. Keep this distinct from attachment
+/// transfer budgets.
+pub const TOR_KEYSERVER_POLL_TIMEOUT: Duration = Duration::from_secs(90);
+const DIRECT_KEYSERVER_TIMEOUT: Duration = Duration::from_secs(30);
 
 impl KeyServerClient {
     /// Release builds accept only the exact production HTTPS origin. Debug and
@@ -992,6 +981,7 @@ impl KeyServerClient {
                 return Ok(KeyServerClient {
                     base_url,
                     client: *client,
+                    request_timeout: TOR_KEYSERVER_POLL_TIMEOUT,
                 });
             }
             crate::egress::DirectClientDecision::Refuse => {
@@ -1010,7 +1000,7 @@ impl KeyServerClient {
         // resulting client is identical for the existing sync callers.
         let client = std::thread::spawn(|| {
             reqwest::blocking::Client::builder()
-                .timeout(Duration::from_secs(30))
+                .timeout(DIRECT_KEYSERVER_TIMEOUT)
                 .http1_title_case_headers()
                 // Never follow an origin-changing redirect with signed protocol
                 // bodies. Production is already HTTPS and local tests do not need
@@ -1024,7 +1014,11 @@ impl KeyServerClient {
         .join()
         .map_err(|_| Error::Transport("reqwest client build panicked".to_string()))?
         .map_err(|e| Error::Transport(format!("reqwest client build: {e}")))?;
-        Ok(KeyServerClient { base_url, client })
+        Ok(KeyServerClient {
+            base_url,
+            client,
+            request_timeout: DIRECT_KEYSERVER_TIMEOUT,
+        })
     }
 
     /// Build a keyserver client with an already configured HTTP transport.
@@ -1037,7 +1031,24 @@ impl KeyServerClient {
         client: reqwest::blocking::Client,
     ) -> Result<Self> {
         let base_url = validate_keyserver_base_url(base_url.as_ref())?;
-        Ok(KeyServerClient { base_url, client })
+        Ok(KeyServerClient {
+            base_url,
+            client,
+            request_timeout: DIRECT_KEYSERVER_TIMEOUT,
+        })
+    }
+
+    /// Build from the SOCKS-only transport authorized by the Tor gate.
+    pub fn with_tor_http_client(
+        base_url: impl AsRef<str>,
+        client: reqwest::blocking::Client,
+    ) -> Result<Self> {
+        let base_url = validate_keyserver_base_url(base_url.as_ref())?;
+        Ok(KeyServerClient {
+            base_url,
+            client,
+            request_timeout: TOR_KEYSERVER_POLL_TIMEOUT,
+        })
     }
 
     /// Compatibility shim for pre-signed-mutation callers. The retired
@@ -1158,6 +1169,74 @@ impl KeyServerClient {
         serde_json::from_slice(&response.body).map_err(Into::into)
     }
 
+    /// Apply the user's discovery visibility for an OSL username.
+    ///
+    /// `NeverShowMe` with no previously-published row is a real local off: it
+    /// returns before any keyserver discovery write is attempted. When a row was
+    /// previously published, the same setting sends a signed release so the
+    /// server takes the row back.
+    pub fn sync_username_discovery_visibility(
+        &self,
+        identity: &Identity,
+        username: &str,
+        friend_code: &str,
+        visibility: UsernameDiscoveryVisibility,
+        previously_published: bool,
+    ) -> Result<UsernameDiscoverySync> {
+        match (visibility, previously_published) {
+            (UsernameDiscoveryVisibility::NeverShowMe, false) => {
+                if !is_normalized_username(username) {
+                    return Err(Error::Transport(
+                        "username must already be normalized".into(),
+                    ));
+                }
+                Ok(UsernameDiscoverySync::SkippedNeverShowMe {
+                    username: username.to_owned(),
+                    user_id: identity.user_id.clone(),
+                })
+            }
+            (UsernameDiscoveryVisibility::NeverShowMe, true) => self
+                .release_username(identity, username)
+                .map(UsernameDiscoverySync::Released),
+            (UsernameDiscoveryVisibility::OnlyPeopleAllowed, _) => self
+                .claim_username(identity, username, friend_code)
+                .map(UsernameDiscoverySync::Published),
+        }
+    }
+
+    /// Delete this identity's public username discovery row.
+    pub fn release_username(
+        &self,
+        identity: &Identity,
+        username: &str,
+    ) -> Result<UsernameReleaseResponse> {
+        if !is_normalized_username(username) {
+            return Err(Error::Transport(
+                "username must already be normalized".into(),
+            ));
+        }
+        let request_id = URL_SAFE_NO_PAD.encode(crypto::random::random_bytes(32));
+        let timestamp_ms = unix_timestamp_ms();
+        let message = username_release_msg(username, &identity.user_id, &request_id, timestamp_ms);
+        let signature_b64 =
+            STANDARD.encode(crypto::ed25519::sign(&identity.ed25519_secret, &message).as_bytes());
+        let body = UsernameReleaseRequest {
+            username,
+            user_id: &identity.user_id,
+            request_id,
+            signature_b64,
+            timestamp_ms,
+        };
+        let bytes = serde_json::to_vec(&body)?;
+        let response = self.send_request(
+            "DELETE",
+            "/v1/usernames/claim",
+            Some(("application/json", &bytes)),
+        )?;
+        check_2xx(&response)?;
+        serde_json::from_slice(&response.body).map_err(Into::into)
+    }
+
     /// Obtain the signed invite for an exact username.  The username is sent
     /// in a POST body so it is not retained in the request URI.
     pub fn lookup_username_friend_code(&self, username: &str) -> Result<Option<String>> {
@@ -1177,98 +1256,6 @@ impl KeyServerClient {
         Ok((result.username.as_deref() == Some(username))
             .then_some(result.friend_code)
             .flatten())
-    }
-
-    /// Ask the deployed keyserver to issue a finite one-use contact bearer.
-    /// No timestamp is accepted from the caller; the service response is the
-    /// only issue/expiry authority shown by the client.
-    pub fn issue_private_contact_link(
-        &self,
-        friend_code: &str,
-    ) -> Result<PrivateContactLinkIssueResponse> {
-        let contact_bundle = STANDARD.encode(friend_code.as_bytes());
-        let bytes = serde_json::to_vec(&serde_json::json!({
-            "contact_bundle": contact_bundle,
-        }))?;
-        let response = self.send_request(
-            "POST",
-            "/v1/private-contact-links/issue",
-            Some(("application/json", &bytes)),
-        )?;
-        check_2xx(&response)?;
-        let issued: PrivateContactLinkIssueResponse = serde_json::from_slice(&response.body)?;
-        if issued.uses_allowed != 1
-            || issued.uses_recorded != 0
-            || issued.expires_at_unix_seconds <= issued.issued_at_unix_seconds
-            || issued.expires_at_unix_seconds - issued.issued_at_unix_seconds > 86_400
-        {
-            return Err(Error::Transport(
-                "private contact link service returned an invalid lifetime".into(),
-            ));
-        }
-        Ok(issued)
-    }
-
-    /// Redeem at the deployed service. A terminal/expired response is an
-    /// error and therefore never crosses this API carrying contact bytes.
-    pub fn redeem_private_contact_link(
-        &self,
-        link_value: &str,
-    ) -> Result<(String, PrivateContactLinkRedeemResponse)> {
-        let bytes = serde_json::to_vec(&serde_json::json!({ "link_value": link_value }))?;
-        let response = self.send_request(
-            "POST",
-            "/v1/private-contact-links/redeem",
-            Some(("application/json", &bytes)),
-        )?;
-        check_2xx(&response)?;
-        let redeemed: PrivateContactLinkRedeemResponse = serde_json::from_slice(&response.body)?;
-        if !redeemed.accepted || redeemed.uses_allowed != 1 || redeemed.uses_recorded != 1 {
-            return Err(Error::Transport(
-                "private contact link service returned an invalid redemption".into(),
-            ));
-        }
-        let decoded = STANDARD
-            .decode(&redeemed.contact_bundle)
-            .map_err(|_| Error::Transport("private contact link bundle is invalid".into()))?;
-        let friend_code = String::from_utf8(decoded)
-            .map_err(|_| Error::Transport("private contact link bundle is invalid".into()))?;
-        Ok((friend_code, redeemed))
-    }
-
-    pub fn revoke_private_contact_link(
-        &self,
-        link_value: &str,
-        revocation_secret: &str,
-    ) -> Result<()> {
-        let bytes = serde_json::to_vec(&serde_json::json!({
-            "link_value": link_value,
-            "revocation_secret": revocation_secret,
-        }))?;
-        let response = self.send_request(
-            "POST",
-            "/v1/private-contact-links/revoke",
-            Some(("application/json", &bytes)),
-        )?;
-        check_2xx(&response)
-    }
-
-    pub fn private_contact_link_status(
-        &self,
-        link_value: &str,
-        revocation_secret: &str,
-    ) -> Result<PrivateContactLinkStatusResponse> {
-        let bytes = serde_json::to_vec(&serde_json::json!({
-            "link_value": link_value,
-            "revocation_secret": revocation_secret,
-        }))?;
-        let response = self.send_request(
-            "POST",
-            "/v1/private-contact-links/status",
-            Some(("application/json", &bytes)),
-        )?;
-        check_2xx(&response)?;
-        serde_json::from_slice(&response.body).map_err(Into::into)
     }
 
     /// Build the registration request body for `identity`, signed
@@ -2323,88 +2310,6 @@ impl KeyServerClient {
         Ok(serde_json::from_slice(&resp.body)?)
     }
 
-    /// Atomically enable discovery publishing for this identity at the
-    /// release key server. An explicit enable is required after take-back.
-    pub fn enable_discovery_replies(
-        &self,
-        identity: &Identity,
-    ) -> Result<DiscoveryReplyStateResponse> {
-        let bytes = serde_json::to_vec(&DiscoveryAccountRequest {
-            account_id: &identity.user_id,
-        })?;
-        let response = self.send_request(
-            "POST",
-            "/v1/discovery-cards/enable-replies",
-            Some(("application/json", &bytes)),
-        )?;
-        check_2xx(&response)?;
-        serde_json::from_slice(&response.body).map_err(Into::into)
-    }
-
-    /// Mark discovery disabled and delete all cards owned by this identity in
-    /// one key-server transaction. The server retains the disabled state so a
-    /// request already in flight is either ordered before this deletion or is
-    /// refused after it.
-    pub fn take_back_discovery_cards(
-        &self,
-        identity: &Identity,
-    ) -> Result<DiscoveryReplyStateResponse> {
-        let bytes = serde_json::to_vec(&DiscoveryAccountRequest {
-            account_id: &identity.user_id,
-        })?;
-        let response = self.send_request(
-            "POST",
-            "/v1/discovery-cards/take-back",
-            Some(("application/json", &bytes)),
-        )?;
-        check_2xx(&response)?;
-        serde_json::from_slice(&response.body).map_err(Into::into)
-    }
-
-    pub fn publish_discovery_card(
-        &self,
-        identity: &Identity,
-        app_id: &str,
-        account_handle: &str,
-        setting: &str,
-        sealed_note: &str,
-    ) -> Result<DiscoveryPublishResponse> {
-        let bytes = serde_json::to_vec(&DiscoveryPublishRequest {
-            account_id: &identity.user_id,
-            app_id,
-            account_handle,
-            setting,
-            sealed_note,
-        })?;
-        let response = self.send_request(
-            "POST",
-            "/v1/discovery-cards/publish",
-            Some(("application/json", &bytes)),
-        )?;
-        check_2xx(&response)?;
-        serde_json::from_slice(&response.body).map_err(Into::into)
-    }
-
-    pub fn read_discovery_card(
-        &self,
-        drawer_name: &str,
-        label: &str,
-    ) -> Result<Option<DiscoveryCardResponse>> {
-        let bytes = serde_json::to_vec(&DiscoveryReadRequest { drawer_name, label })?;
-        let response = self.send_request(
-            "POST",
-            "/v1/discovery-cards/read",
-            Some(("application/json", &bytes)),
-        )?;
-        if response.status == 404 {
-            return Ok(None);
-        }
-        check_2xx(&response)?;
-        serde_json::from_slice(&response.body)
-            .map(Some)
-            .map_err(Into::into)
-    }
-
     /// Issue an HTTP request via the underlying reqwest client.
     /// Wraps reqwest's typed errors in [`Error::Transport`] (low-level
     /// transport / TLS / serialization issues) and
@@ -2437,7 +2342,9 @@ impl KeyServerClient {
                 )));
             }
         };
-        req = req.header("Accept", "application/json");
+        req = req
+            .header("Accept", "application/json")
+            .timeout(self.request_timeout);
         if let Some((ctype, payload)) = body {
             req = req.header("Content-Type", ctype).body(payload.to_vec());
         }
@@ -2582,9 +2489,6 @@ struct ControlInboxPostBody<'a> {
 pub struct ControlInboxPostResponse {
     pub id: String,
     pub expires_at: i64,
-    pub reason_code: String,
-    #[serde(default)]
-    pub parameters: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -2784,6 +2688,58 @@ mod tests {
             }
         });
         (port, rx)
+    }
+
+    #[test]
+    fn task_4911_tor_keyserver_polls_answer_twenty_ten_second_fixture_requests() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let body =
+                r#"{"revision":"tor-fixture","build_time":"fixture","configuration_name":"tor"}"#;
+            for _ in 0..20 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let _request = read_http_request(&mut stream);
+                thread::sleep(Duration::from_secs(10));
+                stream
+                    .write_all(format!(
+                        "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+                        body.len()
+                    ).as_bytes())
+                    .unwrap();
+            }
+        });
+        let http = reqwest::blocking::Client::builder()
+            .timeout(TOR_KEYSERVER_POLL_TIMEOUT)
+            .build()
+            .unwrap();
+        let client =
+            KeyServerClient::with_tor_http_client(format!("http://127.0.0.1:{port}"), http)
+                .unwrap();
+        let mut answers = 0;
+        let mut timeout_errors = 0;
+        for _ in 0..20 {
+            match client.live_server_revision_report() {
+                Ok(report) => {
+                    assert_eq!(report.revision, "tor-fixture");
+                    answers += 1;
+                }
+                Err(error) => {
+                    if error.to_string().contains("timed out") {
+                        timeout_errors += 1;
+                    } else {
+                        panic!("unexpected Tor keyserver poll error: {error}");
+                    }
+                }
+            }
+        }
+        server.join().unwrap();
+        assert_eq!(answers, 20);
+        assert_eq!(timeout_errors, 0);
+        println!(
+            "TASK4911 tor_keyserver_polls=20 fixture_delay_seconds=10 answers={answers} timeout_errors={timeout_errors} poll_timeout_seconds={}",
+            TOR_KEYSERVER_POLL_TIMEOUT.as_secs()
+        );
     }
 
     fn request_target(request: &[u8]) -> String {

@@ -1,0 +1,41 @@
+.appearance-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 300px;
+  align-items: start;
+  gap: 58px;
+}
+
+.appearance-controls { min-width: 0; }
+.appearance-controls > h2 { margin-top: 0; }
+.appearance-controls > .theme-grid { margin-bottom: 34px; }
+
+.appearance-preview { min-width: 0; }
+.appearance-preview-kicker { margin: 0 0 13px; color: #67747c; font-size: 11px; font-weight: 700; letter-spacing: .14em; }
+.appearance-preview-card {
+  min-height: 232px;
+  box-sizing: border-box;
+  padding: 23px;
+  border: 1px solid color-mix(in srgb, var(--appearance-preview-accent) 44%, #334148);
+  background: var(--appearance-preview-card), var(--appearance-preview-background);
+  box-shadow: inset 3px 0 0 var(--appearance-preview-accent);
+  display: grid;
+  grid-template-columns: 58px minmax(0, 1fr);
+  grid-template-rows: auto 1fr auto;
+  column-gap: 14px;
+}
+.appearance-preview-avatar { width: 58px; height: 58px; overflow: hidden; border-radius: 50%; display: grid; place-items: center; grid-row: 1 / span 2; background: var(--appearance-preview-avatar); color: #071013; font-size: 23px; font-weight: 700; }
+.appearance-preview-avatar img { width: 100%; height: 100%; object-fit: cover; }
+.appearance-preview-copy { min-width: 0; padding-top: 3px; }
+.appearance-preview-copy strong { display: block; overflow: hidden; color: #f2f6f7; font-size: 17px; line-height: 1.2; text-overflow: ellipsis; white-space: nowrap; }
+.appearance-preview-copy p { margin: 6px 0 0; overflow: hidden; color: #a5b0b5; font-size: 13px; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
+.appearance-preview-footer { grid-column: 1 / -1; align-self: end; padding-top: 17px; border-top: 1px solid rgb(255 255 255 / 12%); display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+.appearance-preview-verified { color: #54d980; font-size: 13px; font-weight: 650; display: inline-flex; align-items: center; gap: 7px; }
+.appearance-preview-verified > span { width: 16px; height: 16px; border-radius: 50%; display: grid; place-items: center; background: #35c46a; color: #06130a; font-size: 11px; font-weight: 800; }
+.appearance-preview-services { display: flex; align-items: center; justify-content: flex-end; gap: 10px; color: #b9c3c7; }
+.appearance-preview-service { width: 18px; height: 18px; display: grid; place-items: center; }
+.appearance-preview-service .company-logo { width: 18px; height: 18px; }
+
+@media (max-width: 840px) {
+  .appearance-layout { grid-template-columns: 1fr; gap: 32px; }
+  .appearance-preview { max-width: 360px; }
+}

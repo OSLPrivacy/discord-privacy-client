@@ -1,0 +1,38 @@
+:root {
+  color: #edf3f6;
+  background: #10171c;
+  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; min-width: 100vw; min-height: 100vh; background: #10171c; }
+button, input { font: inherit; }
+
+.timer-chat { display: grid; grid-template-columns: 240px minmax(0, 1fr); width: 100vw; height: 100vh; }
+.timer-chat-sidebar { padding: 28px 18px; background: #172127; border-right: 1px solid #2b3940; }
+.timer-chat-brand { margin: 0 0 34px; color: #b9edf7; font-size: 15px; letter-spacing: .08em; text-transform: uppercase; }
+.timer-chat-contact { display: flex; gap: 10px; align-items: center; padding: 12px; border-radius: 10px; background: #24323a; color: #fff; }
+.timer-chat-avatar { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 50%; background: #36a7bc; color: #082126; font-weight: 800; }
+.timer-chat-main { display: grid; grid-template-rows: auto 1fr auto; min-width: 0; background: #111a20; }
+.timer-chat-header { display: flex; align-items: center; justify-content: space-between; padding: 22px 30px; border-bottom: 1px solid #293840; }
+.timer-chat-header h1 { margin: 0; font-size: 18px; }
+.timer-chat-status { color: #65c890; font-size: 13px; }
+.timer-chat-messages { display: grid; align-content: end; gap: 16px; padding: 34px 13%; }
+.timer-message { width: fit-content; max-width: 72%; padding: 12px 15px; border-radius: 13px; line-height: 1.35; }
+.timer-message time { display: block; margin-top: 6px; color: #a8bec6; font-size: 11px; }
+.timer-message.incoming { background: #263740; }
+.timer-message.outgoing { justify-self: end; background: #0c7186; color: #f4feff; }
+.timer-chat-composer { display: flex; gap: 12px; padding: 18px 30px 26px; border-top: 1px solid #293840; }
+.timer-chat-composer input { flex: 1; padding: 12px 14px; border: 1px solid #40535c; border-radius: 8px; background: #1c292f; color: #edf3f6; }
+.timer-chat-composer button, .timer-overlay-save { padding: 10px 15px; border: 0; border-radius: 8px; background: #3db5ca; color: #061b20; font-weight: 750; cursor: pointer; }
+
+.timer-overlay { position: fixed; inset: 0; z-index: 5; display: grid; place-items: center; }
+.timer-overlay-scrim { position: absolute; inset: 0; background: rgba(10, 10, 10, .72); backdrop-filter: grayscale(1) blur(1px); }
+.timer-overlay-panel { position: relative; width: min(440px, calc(100% - 32px)); padding: 26px; border: 1px solid #45545c; border-radius: 14px; background: #182329; box-shadow: 0 20px 55px rgba(0, 0, 0, .55); }
+.timer-overlay-heading { margin: 0 0 22px; font-size: 21px; }
+.timer-overlay-fields { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+.timer-overlay-field { display: grid; gap: 7px; justify-items: center; }
+.timer-overlay-field-label { color: #a9c2ca; font-size: 11px; font-weight: 750; letter-spacing: .07em; text-transform: uppercase; }
+.timer-overlay-field-input { width: 100%; min-height: 52px; border: 1px solid #53666e; border-radius: 8px; background: #0f181d; color: #f3fbfd; text-align: center; font-family: ui-monospace, monospace; font-size: 21px; font-weight: 700; }
+.timer-overlay-error { display: block; min-height: 1.25em; margin-top: 12px; color: #ff8a8a; }
+.timer-overlay-save { width: 100%; margin-top: 10px; }

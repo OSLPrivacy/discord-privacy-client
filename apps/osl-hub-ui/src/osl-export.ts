@@ -17,6 +17,9 @@ function drawingSvg(note: OslNote): string | null {
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="OSL drawing"><defs>${gradients}</defs>${artboards}${items}</svg>\n`;
 }
 
+// The slide-theme colours below (cyan/midnight/paper/sunset) are part of the
+// USER-DOCUMENT format exported into standalone HTML, not OSL UI chrome.
+// DELIBERATELY not osl-tokens.ts values.
 function presentationHtml(note: OslNote): string | null {
   const deck = parsePresentation(note.body); if (!deck) return null;
   const slides = deck.slides.map((slide) => `<section class="${slide.theme}"><h1>${html(slide.title)}</h1><p>${html(slide.body).replace(/\n/gu, "<br>")}</p></section>`).join("\n");

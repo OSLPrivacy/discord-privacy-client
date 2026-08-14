@@ -1,11 +1,13 @@
-//! Signal's read-only open-screen Scrub message reader.
+//! Signal's fill-in for the shared Scrub message reader.
+//!
+//! The source boundary deliberately exposes one operation: observe the already
+//! open Signal screen. It exposes no focus, typing, key, click, open-place, or
+//! scroll operation. The returned action log is checked as part of the result,
+//! so a source that reports input activity is refused rather than trusted.
 
 use std::collections::BTreeSet;
 
-use crate::app_own_names::{AppOwnNameState, NamePublishedRow, RowWhoWroteIt};
-use crate::models::ServiceKind;
 use crate::privacy_scan::{did_signed_in_account_send_message, MessageOwnerCheckInput};
-use crate::row_who_wrote_it::SharedRowWhoWroteIt;
 use crate::services::{
     read_messaging_risk_agreement, ConversationPlaceKind, SharedConversationPlace,
 };
@@ -13,20 +15,13 @@ use crate::services::{
 pub const SIGNAL_SERVICE_ID: &str = "signal";
 pub const SIGNAL_OPEN_SCREEN_MAX_MESSAGES: usize = 1_024;
 
+/// One provider row observed on the already-open Signal conversation screen.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SignalOpenScreenMessage {
     pub message_id: String,
     pub text: String,
     pub time: i64,
     pub sender_id: String,
-    /// The name Signal publishes on this particular visible row, if it has
-    /// one.  It is deliberately separate from `sender_id`: Signal does not
-    /// expose a stable sender id through this read-only surface.
-    pub published_name: Option<String>,
-    /// The row's current position in the open transcript.  Ownership marks
-    /// are bound to this observed position, never matched back by message
-    /// words (which may legitimately repeat).
-    pub screen_position: usize,
 }
 
 impl SignalOpenScreenMessage {
@@ -41,22 +36,11 @@ impl SignalOpenScreenMessage {
             text: text.into(),
             time,
             sender_id: sender_id.into(),
-            published_name: None,
-            screen_position: 0,
         }
-    }
-
-    pub fn with_published_name_and_position(
-        mut self,
-        published_name: Option<String>,
-        screen_position: usize,
-    ) -> Self {
-        self.published_name = published_name;
-        self.screen_position = screen_position;
-        self
     }
 }
 
+/// A single immutable observation of the conversation that is already open.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SignalOpenScreenSnapshot {
     pub place_id: String,
@@ -75,6 +59,10 @@ impl SignalOpenScreenSnapshot {
     }
 }
 
+/// Every operation the native observation source reports during this read.
+///
+/// `KeyPress` exists so the boundary can reject and count a broken source. The
+/// reader trait itself has no method capable of requesting one.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SignalScreenReadAction {
     ReadOpenScreen,
@@ -82,6 +70,7 @@ pub enum SignalScreenReadAction {
     KeyPress { key: String },
 }
 
+/// Narrow native source used by Scrub. There is intentionally no input method.
 pub trait SignalOpenScreenSource {
     fn read_open_screen(&mut self) -> Result<SignalOpenScreenSnapshot, String>;
     fn action_log(&self) -> &[SignalScreenReadAction];
@@ -97,8 +86,6 @@ pub struct SharedSignalMessage {
     pub time: i64,
     pub sender_id: String,
     pub yours: bool,
-    pub published_name: Option<String>,
-    pub screen_position: usize,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -106,33 +93,6 @@ pub struct SignalMessageRead {
     pub messages: Vec<SharedSignalMessage>,
     pub action_log: Vec<SignalScreenReadAction>,
 }
-
-/// The shipping answer for Signal's three-state who-wrote-it question.
-///
-/// Signal Desktop publishes a person name on group rows, but deliberately
-/// does not publish one on one-to-one rows.  A missing name is therefore an
-/// explicit `NotPublishedByApp` answer, not an inference from bubble side or
-/// message text.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct SignalPublishedNameRead {
-    pub messages: Vec<SharedSignalMessage>,
-    pub marks: Vec<SignalPublishedNameMark>,
-    pub refused: usize,
-    pub refusal: Option<String>,
-    pub action_log: Vec<SignalScreenReadAction>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct SignalPublishedNameMark {
-    pub screen_position: usize,
-    pub message_id: String,
-    pub who_wrote_it: SharedRowWhoWroteIt,
-}
-
-/// The reason intentionally names the unavailable provider field.  This is
-/// what a fresh Signal one-to-one must return for every row.
-pub const SIGNAL_UNAVAILABLE_AUTHOR_REASON: &str =
-    "Signal does not publish a per-row author in one-to-one conversations";
 
 impl SignalMessageRead {
     pub fn key_press_count(&self) -> usize {
@@ -143,6 +103,12 @@ impl SignalMessageRead {
     }
 }
 
+/// Read messages visible on one already-selected Signal screen for Scrub.
+///
+/// The account agreement is rechecked before the source is touched. The source
+/// must report exactly one read and no other operation during the call. Rows
+/// are normalized through the shared sender-ownership check and ordered by
+/// provider time, with message id as the deterministic tie breaker.
 pub fn read_signal_messages_for_scrub(
     owner_osl_user_id: &str,
     account_id: &str,
@@ -217,8 +183,6 @@ pub fn read_signal_messages_for_scrub(
                 time: row.time,
                 sender_id: row.sender_id,
                 yours,
-                published_name: row.published_name,
-                screen_position: row.screen_position,
             })
         })
         .collect::<Result<Vec<_>, String>>()?;
@@ -227,77 +191,10 @@ pub fn read_signal_messages_for_scrub(
             .cmp(&right.time)
             .then_with(|| left.message_id.cmp(&right.message_id))
     });
+
     Ok(SignalMessageRead {
         messages,
         action_log,
-    })
-}
-
-/// Read the already-open Signal screen and answer who wrote each row using
-/// only the row's published group name and the person's confirmed own-name
-/// list (TASK 4072).  The marks are position-bound; identical message words
-/// cannot move an ownership answer to a different current row.
-pub fn read_signal_messages_with_published_names_for_scrub(
-    owner_osl_user_id: &str,
-    account_id: &str,
-    selected_place: &SharedConversationPlace,
-    signed_in_sender_id: &str,
-    own_names: &AppOwnNameState,
-    source: &mut dyn SignalOpenScreenSource,
-) -> Result<SignalPublishedNameRead, String> {
-    let read = read_signal_messages_for_scrub(
-        owner_osl_user_id,
-        account_id,
-        selected_place,
-        signed_in_sender_id,
-        source,
-    )?;
-    let name_rows = read
-        .messages
-        .iter()
-        .map(|message| NamePublishedRow {
-            row_id: message.message_id.clone(),
-            published_name: message.published_name.clone(),
-        })
-        .collect::<Vec<_>>();
-    let answer = own_names.read_name_published_rows(
-        owner_osl_user_id,
-        ServiceKind::Signal,
-        account_id,
-        &name_rows,
-    )?;
-    let is_direct = matches!(
-        selected_place.place_kind,
-        ConversationPlaceKind::DirectMessage
-    );
-    let refused = answer.refused;
-    let refusal = if is_direct && refused > 0 {
-        Some(format!(
-            "OSL: refused {refused} rows because {SIGNAL_UNAVAILABLE_AUTHOR_REASON}"
-        ))
-    } else {
-        answer.refusal
-    };
-    let marks = answer
-        .marks
-        .into_iter()
-        .zip(read.messages.iter())
-        .map(|(mark, message)| SignalPublishedNameMark {
-            screen_position: message.screen_position,
-            message_id: mark.row_id,
-            who_wrote_it: match mark.answer {
-                RowWhoWroteIt::Yours => SharedRowWhoWroteIt::Yours,
-                RowWhoWroteIt::Theirs => SharedRowWhoWroteIt::Theirs,
-                RowWhoWroteIt::NotPublishedByApp => SharedRowWhoWroteIt::NotPublishedByApp,
-            },
-        })
-        .collect();
-    Ok(SignalPublishedNameRead {
-        messages: read.messages,
-        marks,
-        refused,
-        refusal,
-        action_log: read.action_log,
     })
 }
 

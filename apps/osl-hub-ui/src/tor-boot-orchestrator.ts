@@ -14,17 +14,18 @@
 
 /** One parsed line of the sidecar's newline-delimited JSON status stream. */
 export type TorSidecarEvent =
-  | { readonly event: "bootstrap"; readonly percent: number; readonly bridgeInUse?: boolean }
-  | { readonly event: "ready"; readonly bridgeInUse?: boolean }
+  | { readonly event: "bootstrap"; readonly percent: number }
+  | { readonly event: "ready" }
   | { readonly event: "error"; readonly message: string };
 
 export interface TorBootStatus {
   readonly ready: boolean;
   readonly failed: boolean;
   readonly slow: boolean;
+  /** A failed sidecar is recoverable without restarting the hub. */
+  readonly retryAvailable: boolean;
   readonly percent: number;
   readonly errorMessage: string | null;
-  readonly bridgeInUse?: boolean;
 }
 
 /** A long bootstrap is still a live bootstrap. It changes the explanation on
@@ -32,7 +33,7 @@ export interface TorBootStatus {
 export const TOR_SLOW_AFTER_MS = 45_000;
 
 export function initialTorBootStatus(): TorBootStatus {
-  return { ready: false, failed: false, slow: false, percent: 0, errorMessage: null, bridgeInUse: false };
+  return { ready: false, failed: false, slow: false, retryAvailable: false, percent: 0, errorMessage: null };
 }
 
 /**
@@ -43,7 +44,7 @@ export function initialTorBootStatus(): TorBootStatus {
  */
 export function torRouteStatusLabel(status: TorBootStatus): string {
   if (status.failed) return "Failed -- Tor could not connect";
-  if (status.ready) return "Connected";
+  if (status.ready) return "Connected — Tor covers OSL's own traffic, not Discord or your browser.";
   if (status.slow) return "Slow -- still trying";
   return `Connecting -- ${status.percent}%`;
 }
@@ -53,14 +54,25 @@ export function torRouteStatusLabel(status: TorBootStatus): string {
  * live attempt, including a cold start that needs 75 seconds. */
 export function firstRunTorScreenMarkup(status: TorBootStatus): string {
   const label = torRouteStatusLabel(status);
+  const successCopy = status.ready
+    ? `<p class="tor-first-run-scope">Use Tor covers OSL's own traffic and nothing else. Discord, Telegram and the browser are separate processes with their own sockets.</p>`
+    : "";
   const actions = status.failed
     ? `<div class="tor-first-run-actions"><button type="button" data-tor-retry>Retry</button><button type="button" data-tor-direct>Direct</button></div>`
-    : "";
+    : status.ready
+      ? `<div class="tor-first-run-actions"><button type="button" data-tor-connected-continue>Continue</button></div>`
+      : "";
   return `<section class="tor-first-run" aria-labelledby="tor-first-run-heading">
     <h1 id="tor-first-run-heading">Connecting with Tor</h1>
     <p class="tor-first-run-status" role="status" aria-live="polite">${label}</p>
+    ${successCopy}
     ${actions}
   </section>`;
+}
+
+/** The renderer uses this to expose the recovery action only after a failure. */
+export function torRouteRetryLabel(status: TorBootStatus): string | null {
+  return status.retryAvailable ? "Retry" : null;
 }
 
 /** Malformed or unrecognised lines are dropped rather than thrown, so one bad
@@ -77,14 +89,15 @@ export function parseTorSidecarLine(line: string): TorSidecarEvent | null {
   if (typeof parsed !== "object" || parsed === null) return null;
   const record = parsed as Record<string, unknown>;
   if (record.event === "bootstrap" && typeof record.percent === "number" && Number.isFinite(record.percent)) {
-    return record.bridge_in_use === true
-      ? { event: "bootstrap", percent: record.percent, bridgeInUse: true }
-      : { event: "bootstrap", percent: record.percent };
+    return { event: "bootstrap", percent: record.percent };
   }
-  if (record.event === "ready") return record.bridge_in_use === true ? { event: "ready", bridgeInUse: true } : { event: "ready" };
+  if (record.event === "ready") return { event: "ready" };
   if (record.event === "error") {
-    const message = typeof record.message === "string" ? record.message : record.detail;
-    if (typeof message === "string") return { event: "error", message };
+    if (typeof record.message === "string") return { event: "error", message: record.message };
+    // The packaged Rust sidecar names failures with scope + detail. Accepting
+    // that real wire shape prevents an actual bootstrap failure becoming a
+    // forever-connecting screen.
+    if (typeof record.detail === "string") return { event: "error", message: record.detail };
   }
   return null;
 }
@@ -95,10 +108,10 @@ export function applyTorSidecarEvent(status: TorBootStatus, event: TorSidecarEve
   if (status.ready || status.failed) return status;
   if (event.event === "bootstrap") {
     const clamped = Math.min(100, Math.max(0, Math.trunc(event.percent)));
-    return { ...status, percent: clamped, bridgeInUse: event.bridgeInUse ?? status.bridgeInUse };
+    return { ...status, percent: Math.max(status.percent, clamped) };
   }
-  if (event.event === "ready") return { ready: true, failed: false, slow: false, percent: 100, errorMessage: null, bridgeInUse: event.bridgeInUse ?? status.bridgeInUse };
-  return { ...status, failed: true, errorMessage: event.message };
+  if (event.event === "ready") return { ready: true, failed: false, slow: false, retryAvailable: false, percent: 100, errorMessage: null };
+  return { ...status, failed: true, retryAvailable: true, errorMessage: event.message };
 }
 
 /** Mark a still-running attempt as slow without fabricating either progress or
@@ -128,6 +141,10 @@ export function attemptNetworkSend(status: TorBootStatus, performSend: () => voi
 
 export interface TorSidecarProcess {
   onLine(handler: (line: string) => void): void;
+  /** Called when the child exits without the hub asking it to stop. */
+  onExit?(handler: () => void): void;
+  /** Sidecar-owned SOCKS port; retry must obtain a fresh one. */
+  readonly port?: number;
   kill(): void;
 }
 
@@ -138,10 +155,19 @@ export interface TorBootOrchestratorHost {
   /** Not called until after `paint()` returns. */
   spawnSidecar(): TorSidecarProcess;
   onStatus(status: TorBootStatus): void;
+  /**
+   * The compose surface supplies these two hooks. Capturing happens at the
+   * failure boundary and restoring happens before retry, so a route redraw
+   * cannot turn a Tor failure into lost draft text.
+   */
+  captureDraft?(): string;
+  restoreDraft?(draft: string): void;
 }
 
 export interface TorBootOrchestratorHandle {
   status(): TorBootStatus;
+  /** Start a new contained sidecar after a Tor-only failure. */
+  retry(): void;
   stop(): void;
 }
 
@@ -153,34 +179,76 @@ export interface TorBootOrchestratorHandle {
  */
 export function startTorBootOrchestrator(host: TorBootOrchestratorHost): TorBootOrchestratorHandle {
   let status = initialTorBootStatus();
+  let sidecar: TorSidecarProcess | null = null;
+  let stopped = false;
+  let draftAtFailure: string | null = null;
+  let slowTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const publish = (next: TorBootStatus): void => {
+    if (next === status) return;
+    status = next;
+    if ((status.ready || status.failed) && slowTimer !== null) clearTimeout(slowTimer);
+    host.onStatus(status);
+  };
+
+  const armSlowTimer = (): void => {
+    if (slowTimer !== null) clearTimeout(slowTimer);
+    slowTimer = setTimeout(() => publish(markTorBootSlow(status)), TOR_SLOW_AFTER_MS);
+    // A status timer must not keep a Node fixture/test process alive after its
+    // sidecar is gone. Browser timers are numeric and simply skip this branch.
+    if (typeof slowTimer === "object" && "unref" in slowTimer) slowTimer.unref();
+  };
+
+  const preserveDraft = (): void => {
+    if (host.captureDraft === undefined) return;
+    draftAtFailure = host.captureDraft();
+    host.restoreDraft?.(draftAtFailure);
+  };
+
+  const failSidecar = (process: TorSidecarProcess, message: string): void => {
+    // An exit from a previous sidecar after Retry is stale information. It
+    // cannot be allowed to fail the new route.
+    if (stopped || sidecar !== process || status.failed) return;
+    preserveDraft();
+    publish({ ready: false, failed: true, slow: status.slow, retryAvailable: true, percent: status.percent, errorMessage: message });
+  };
+
+  const spawn = (): void => {
+    const process = host.spawnSidecar();
+    sidecar = process;
+    process.onLine((line) => {
+      const event = parseTorSidecarLine(line);
+      if (event === null || stopped || sidecar !== process) return;
+      if (event.event === "error") {
+        failSidecar(process, event.message);
+        return;
+      }
+      publish(applyTorSidecarEvent(status, event));
+    });
+    process.onExit?.(() => failSidecar(process, "Tor sidecar exited"));
+    armSlowTimer();
+  };
+
   host.paint();
   host.onStatus(status);
-
-  const sidecar = host.spawnSidecar();
-  const slowTimer = setTimeout(() => {
-    const next = markTorBootSlow(status);
-    if (next === status) return;
-    status = next;
-    host.onStatus(status);
-  }, TOR_SLOW_AFTER_MS);
-  // A status timer must not keep a Node fixture/test process alive after its
-  // sidecar is gone. Browser timers are numeric and simply skip this branch.
-  if (typeof slowTimer === "object" && "unref" in slowTimer) slowTimer.unref();
-  sidecar.onLine((line) => {
-    const event = parseTorSidecarLine(line);
-    if (event === null) return;
-    const next = applyTorSidecarEvent(status, event);
-    if (next === status) return;
-    status = next;
-    if (status.ready || status.failed) clearTimeout(slowTimer);
-    host.onStatus(status);
-  });
+  spawn();
 
   return {
     status: () => status,
+    retry: () => {
+      if (!status.retryAvailable || stopped) return;
+      // This is deliberately before spawn: the new sidecar cannot cause a
+      // compose redraw to observe an empty editor, even for synchronous hosts.
+      if (draftAtFailure !== null) host.restoreDraft?.(draftAtFailure);
+      sidecar?.kill();
+      status = initialTorBootStatus();
+      host.onStatus(status);
+      spawn();
+    },
     stop: () => {
-      clearTimeout(slowTimer);
-      sidecar.kill();
+      stopped = true;
+      if (slowTimer !== null) clearTimeout(slowTimer);
+      sidecar?.kill();
     },
   };
 }

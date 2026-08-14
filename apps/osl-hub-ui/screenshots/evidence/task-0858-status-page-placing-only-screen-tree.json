@@ -1,0 +1,641 @@
+{
+  "task": "0858",
+  "screen": "placing-only",
+  "tile": "telegram",
+  "window": {
+    "width": 1280,
+    "height": 900
+  },
+  "documentTitle": "Service status",
+  "namedControls": [
+    {
+      "name": "title",
+      "selector": "#tile-status-title",
+      "rect": {
+        "x": 359,
+        "y": 69,
+        "width": 234,
+        "height": 31.046875
+      },
+      "drawn": {
+        "width": 234,
+        "height": 32,
+        "distinctColors": 398,
+        "nonBackground": 7488,
+        "brightPixels": 1844
+      }
+    },
+    {
+      "name": "capability",
+      "selector": "[data-tile-status-capability]",
+      "rect": {
+        "x": 359,
+        "y": 142.84375,
+        "width": 115.5625,
+        "height": 25.046875
+      },
+      "drawn": {
+        "width": 116,
+        "height": 26,
+        "distinctColors": 194,
+        "nonBackground": 3016,
+        "brightPixels": 308
+      }
+    },
+    {
+      "name": "limits",
+      "selector": "[data-tile-status-limit-count]",
+      "rect": {
+        "x": 359,
+        "y": 511.734375,
+        "width": 562,
+        "height": 86
+      },
+      "drawn": {
+        "width": 562,
+        "height": 87,
+        "distinctColors": 969,
+        "nonBackground": 48894,
+        "brightPixels": 3284
+      }
+    },
+    {
+      "name": "action",
+      "selector": ".tile-status-next",
+      "rect": {
+        "x": 359,
+        "y": 638.734375,
+        "width": 374.046875,
+        "height": 36
+      },
+      "drawn": {
+        "width": 375,
+        "height": 37,
+        "distinctColors": 358,
+        "nonBackground": 12833,
+        "brightPixels": 11202
+      }
+    },
+    {
+      "name": "back",
+      "selector": "#native-app-back",
+      "rect": {
+        "x": 773.984375,
+        "y": 690.734375,
+        "width": 147.015625,
+        "height": 44
+      },
+      "drawn": {
+        "width": 148,
+        "height": 45,
+        "distinctColors": 269,
+        "nonBackground": 6660,
+        "brightPixels": 493
+      }
+    }
+  ],
+  "capabilityLabel": "Placing only",
+  "claimLabel": "Not claimed",
+  "capabilitySentence": "live carry capability is proven; delivery is not live-proven",
+  "explanation": "OSL has carried cover text through Telegram's composer and earned a live carry receipt for it -- the only surface that has. But OSL's own support matrix still records Telegram as externally blocked, which is a claim about Telegram rather than about us. Those disagree, so OSL makes no claim about it.",
+  "can": [
+    "OSL can place a message into Telegram's own composer. A live carry receipt records the cover text landing byte-exact.",
+    "OSL can open Telegram in a separate OSL profile, so your normal Telegram session stays untouched."
+  ],
+  "limits": [
+    "OSL cannot read a protected message back out of Telegram. Delivery through Telegram has never been proven against the live client.",
+    "OSL has never carried a protected message between two people through Telegram. Nothing you send through Telegram is protected by OSL."
+  ],
+  "action": {
+    "label": "Open Telegram in a separate OSL profile",
+    "id": "embedded-service-setup",
+    "target": "service",
+    "handler": "data-home-app"
+  },
+  "back": {
+    "label": "Back to Home",
+    "target": "home"
+  },
+  "accessibleNames": [
+    "Service status",
+    "What OSL can do here",
+    "What OSL cannot do here",
+    "Open Telegram in a separate OSL profile",
+    "See what OSL has proven so far",
+    "Burn…",
+    "Back to Home",
+    "Service status",
+    "PLACING ONLY",
+    "NOT CLAIMED",
+    "live carry capability is proven; delivery is not live-proven",
+    "OSL has carried cover text through Telegram's composer and earned a live carry receipt for it -- the only surface that has. But OSL's own support matrix still records Telegram as externally blocked, which is a claim about Telegram rather than about us. Those disagree, so OSL makes no claim about it.",
+    "WHAT OSL CAN DO HERE",
+    "WHAT OSL CANNOT DO HERE",
+    "Open Telegram in a separate OSL profile",
+    "See what OSL has proven so far",
+    "Burn…",
+    "Back to Home",
+    "Service status",
+    "Telegram",
+    "PLACING ONLY",
+    "NOT CLAIMED",
+    "live carry capability is proven; delivery is not live-proven",
+    "OSL has carried cover text through Telegram's composer and earned a live carry",
+    "receipt for it -- the only surface that has. But OSL's own support matrix still records",
+    "Telegram as externally blocked, which is a claim about Telegram rather than about us.",
+    "Those disagree, so OSL makes no claim about it.",
+    "WHAT OSL CAN DO HERE",
+    "WHAT OSL CANNOT DO HERE",
+    "Open Telegram in a separate OSL profile",
+    "See what OSL has proven so far",
+    "Burn…",
+    "Back to Home",
+    "Service status",
+    "Telegram",
+    "WHAT OSL CAN DO HERE",
+    "OSL can place a message into Telegram's own composer. A live carry receipt records the cover text landing byte-exact.",
+    "OSL can open Telegram in a separate OSL profile, so your normal Telegram session stays untouched.",
+    "WHAT OSL CANNOT DO HERE",
+    "OSL cannot read a protected message back out of Telegram. Delivery through Telegram has never been proven against the live client.",
+    "OSL has never carried a protected message between two people through Telegram. Nothing you send through Telegram is protected by OSL.",
+    "OSL can place a message into Telegram's own composer. A live carry receipt",
+    "records the cover text landing byte-exact.",
+    "OSL can open Telegram in a separate OSL profile, so your normal Telegram",
+    "session stays untouched.",
+    "OSL cannot read a protected message back out of Telegram. Delivery through",
+    "Telegram has never been proven against the live client.",
+    "OSL has never carried a protected message between two people through",
+    "Telegram. Nothing you send through Telegram is protected by OSL."
+  ],
+  "domTree": {
+    "tag": "main",
+    "id": "route-heading",
+    "class": "content-viewport native-app-page tile-status-page",
+    "data": {
+      "tileStatusPage": "telegram",
+      "tileStatusRoute": "service:telegram",
+      "tileStatusCapabilityLabel": "Placing only"
+    },
+    "rect": {
+      "x": 0,
+      "y": 0,
+      "width": 1280,
+      "height": 817.734375
+    },
+    "children": [
+      {
+        "tag": "section",
+        "class": "native-app-card tile-status-card",
+        "data": {},
+        "rect": {
+          "x": 330,
+          "y": 40,
+          "width": 620,
+          "height": 737.734375
+        },
+        "children": [
+          {
+            "tag": "header",
+            "class": "tile-status-header",
+            "data": {},
+            "rect": {
+              "x": 359,
+              "y": 69,
+              "width": 234,
+              "height": 98.890625
+            },
+            "children": [
+              {
+                "tag": "h1",
+                "id": "tile-status-title",
+                "data": {},
+                "text": "Service status",
+                "rect": {
+                  "x": 359,
+                  "y": 69,
+                  "width": 234,
+                  "height": 31.046875
+                },
+                "children": []
+              },
+              {
+                "tag": "p",
+                "class": "tile-status-service",
+                "data": {
+                  "tileStatusService": "telegram"
+                },
+                "text": "Telegram",
+                "rect": {
+                  "x": 359,
+                  "y": 110.046875,
+                  "width": 234,
+                  "height": 22.796875
+                },
+                "children": []
+              },
+              {
+                "tag": "p",
+                "class": "tile-status-labels",
+                "data": {},
+                "rect": {
+                  "x": 359,
+                  "y": 142.84375,
+                  "width": 234,
+                  "height": 25.046875
+                },
+                "children": [
+                  {
+                    "tag": "span",
+                    "class": "status-tag tile-status-capability-tag",
+                    "data": {
+                      "tileStatusCapability": "Placing only"
+                    },
+                    "text": "Placing only",
+                    "rect": {
+                      "x": 359,
+                      "y": 142.84375,
+                      "width": 115.5625,
+                      "height": 25.046875
+                    },
+                    "children": []
+                  },
+                  {
+                    "tag": "span",
+                    "class": "status-tag tile-status-claim-tag",
+                    "data": {
+                      "tileStatusClaim": "Not claimed"
+                    },
+                    "text": "Not claimed",
+                    "rect": {
+                      "x": 482.5625,
+                      "y": 142.84375,
+                      "width": 110.4375,
+                      "height": 25.046875
+                    },
+                    "children": []
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "tag": "p",
+            "class": "tile-status-capability-sentence",
+            "data": {
+              "tileStatusCapabilitySentence": "telegram"
+            },
+            "text": "live carry capability is proven; delivery is not live-proven",
+            "rect": {
+              "x": 359,
+              "y": 185.890625,
+              "width": 425.875,
+              "height": 22.5
+            },
+            "children": []
+          },
+          {
+            "tag": "p",
+            "class": "tile-status-explanation",
+            "data": {
+              "tileStatusExplanation": "telegram"
+            },
+            "text": "OSL has carried cover text through Telegram's composer and earned a live carry receipt for it -- the only surface that has. But OSL's own support matrix still records Telegram as externally blocked, which is a claim about Telegram rather than about us. Those disagree, so OSL makes no claim about it.",
+            "rect": {
+              "x": 359,
+              "y": 226.390625,
+              "width": 562,
+              "height": 80.5625
+            },
+            "children": []
+          },
+          {
+            "tag": "section",
+            "class": "tile-status-group tile-status-group-can",
+            "ariaLabel": "What OSL can do here",
+            "data": {},
+            "rect": {
+              "x": 359,
+              "y": 324.953125,
+              "width": 562,
+              "height": 127.390625
+            },
+            "children": [
+              {
+                "tag": "h2",
+                "data": {},
+                "text": "What OSL can do here",
+                "rect": {
+                  "x": 359,
+                  "y": 341.953125,
+                  "width": 562,
+                  "height": 14.390625
+                },
+                "children": []
+              },
+              {
+                "tag": "ul",
+                "class": "tile-status-facts",
+                "data": {
+                  "tileStatusCanCount": "2"
+                },
+                "rect": {
+                  "x": 359,
+                  "y": 366.34375,
+                  "width": 562,
+                  "height": 86
+                },
+                "children": [
+                  {
+                    "tag": "li",
+                    "class": "tile-status-fact tile-status-fact-can",
+                    "data": {
+                      "tileStatusCan": "placing"
+                    },
+                    "rect": {
+                      "x": 359,
+                      "y": 366.34375,
+                      "width": 562,
+                      "height": 39
+                    },
+                    "children": [
+                      {
+                        "tag": "span",
+                        "class": "tile-status-fact-mark",
+                        "data": {},
+                        "text": "✓",
+                        "rect": {
+                          "x": 359,
+                          "y": 366.34375,
+                          "width": 16,
+                          "height": 19.5
+                        },
+                        "children": []
+                      },
+                      {
+                        "tag": "span",
+                        "class": "tile-status-fact-text",
+                        "data": {},
+                        "text": "OSL can place a message into Telegram's own composer. A live carry receipt records the cover text landing byte-exact.",
+                        "rect": {
+                          "x": 385,
+                          "y": 366.34375,
+                          "width": 536,
+                          "height": 39
+                        },
+                        "children": []
+                      }
+                    ]
+                  },
+                  {
+                    "tag": "li",
+                    "class": "tile-status-fact tile-status-fact-can",
+                    "data": {
+                      "tileStatusCan": "opening"
+                    },
+                    "rect": {
+                      "x": 359,
+                      "y": 413.34375,
+                      "width": 562,
+                      "height": 39
+                    },
+                    "children": [
+                      {
+                        "tag": "span",
+                        "class": "tile-status-fact-mark",
+                        "data": {},
+                        "text": "✓",
+                        "rect": {
+                          "x": 359,
+                          "y": 413.34375,
+                          "width": 16,
+                          "height": 19.5
+                        },
+                        "children": []
+                      },
+                      {
+                        "tag": "span",
+                        "class": "tile-status-fact-text",
+                        "data": {},
+                        "text": "OSL can open Telegram in a separate OSL profile, so your normal Telegram session stays untouched.",
+                        "rect": {
+                          "x": 385,
+                          "y": 413.34375,
+                          "width": 536,
+                          "height": 39
+                        },
+                        "children": []
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "tag": "section",
+            "class": "tile-status-group tile-status-group-limits",
+            "ariaLabel": "What OSL cannot do here",
+            "data": {},
+            "rect": {
+              "x": 359,
+              "y": 470.34375,
+              "width": 562,
+              "height": 127.390625
+            },
+            "children": [
+              {
+                "tag": "h2",
+                "data": {},
+                "text": "What OSL cannot do here",
+                "rect": {
+                  "x": 359,
+                  "y": 487.34375,
+                  "width": 562,
+                  "height": 14.390625
+                },
+                "children": []
+              },
+              {
+                "tag": "ul",
+                "class": "tile-status-facts",
+                "data": {
+                  "tileStatusLimitCount": "2"
+                },
+                "rect": {
+                  "x": 359,
+                  "y": 511.734375,
+                  "width": 562,
+                  "height": 86
+                },
+                "children": [
+                  {
+                    "tag": "li",
+                    "class": "tile-status-fact tile-status-fact-limit",
+                    "data": {
+                      "tileStatusLimit": "reading"
+                    },
+                    "rect": {
+                      "x": 359,
+                      "y": 511.734375,
+                      "width": 562,
+                      "height": 39
+                    },
+                    "children": [
+                      {
+                        "tag": "span",
+                        "class": "tile-status-fact-mark",
+                        "data": {},
+                        "text": "✕",
+                        "rect": {
+                          "x": 359,
+                          "y": 511.734375,
+                          "width": 16,
+                          "height": 19.5
+                        },
+                        "children": []
+                      },
+                      {
+                        "tag": "span",
+                        "class": "tile-status-fact-text",
+                        "data": {},
+                        "text": "OSL cannot read a protected message back out of Telegram. Delivery through Telegram has never been proven against the live client.",
+                        "rect": {
+                          "x": 385,
+                          "y": 511.734375,
+                          "width": 536,
+                          "height": 39
+                        },
+                        "children": []
+                      }
+                    ]
+                  },
+                  {
+                    "tag": "li",
+                    "class": "tile-status-fact tile-status-fact-limit",
+                    "data": {
+                      "tileStatusLimit": "protectedMessaging"
+                    },
+                    "rect": {
+                      "x": 359,
+                      "y": 558.734375,
+                      "width": 562,
+                      "height": 39
+                    },
+                    "children": [
+                      {
+                        "tag": "span",
+                        "class": "tile-status-fact-mark",
+                        "data": {},
+                        "text": "✕",
+                        "rect": {
+                          "x": 359,
+                          "y": 558.734375,
+                          "width": 16,
+                          "height": 19.5
+                        },
+                        "children": []
+                      },
+                      {
+                        "tag": "span",
+                        "class": "tile-status-fact-text",
+                        "data": {},
+                        "text": "OSL has never carried a protected message between two people through Telegram. Nothing you send through Telegram is protected by OSL.",
+                        "rect": {
+                          "x": 385,
+                          "y": 558.734375,
+                          "width": 536,
+                          "height": 39
+                        },
+                        "children": []
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "tag": "div",
+            "class": "tile-status-actions",
+            "data": {},
+            "rect": {
+              "x": 359,
+              "y": 619.734375,
+              "width": 562,
+              "height": 129
+            },
+            "children": [
+              {
+                "tag": "button",
+                "id": "embedded-service-setup",
+                "class": "button primary native-app-action tile-status-next",
+                "data": {
+                  "tileStatusAction": "service",
+                  "tileStatusHandler": "data-home-app"
+                },
+                "text": "Open Telegram in a separate OSL profile",
+                "rect": {
+                  "x": 359,
+                  "y": 638.734375,
+                  "width": 374.046875,
+                  "height": 36
+                },
+                "children": []
+              },
+              {
+                "tag": "button",
+                "class": "text-button tile-status-evidence",
+                "data": {
+                  "tileStatusAction": "connections",
+                  "tileStatusHandler": "data-route",
+                  "route": "connections"
+                },
+                "text": "See what OSL has proven so far",
+                "rect": {
+                  "x": 359,
+                  "y": 703.734375,
+                  "width": 233.578125,
+                  "height": 32
+                },
+                "children": []
+              },
+              {
+                "tag": "button",
+                "id": "burn-button",
+                "class": "text-button tile-status-burn",
+                "data": {
+                  "openBurn": "app"
+                },
+                "text": "Burn…",
+                "rect": {
+                  "x": 608.578125,
+                  "y": 703.734375,
+                  "width": 47.84375,
+                  "height": 32
+                },
+                "children": []
+              },
+              {
+                "tag": "button",
+                "id": "native-app-back",
+                "class": "text-back tile-status-back",
+                "data": {
+                  "tileStatusAction": "home",
+                  "tileStatusHandler": "data-route"
+                },
+                "text": "Back to Home",
+                "rect": {
+                  "x": 773.984375,
+                  "y": 690.734375,
+                  "width": 147.015625,
+                  "height": 44
+                },
+                "children": []
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

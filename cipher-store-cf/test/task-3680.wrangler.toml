@@ -1,0 +1,20 @@
+name = "osl-cipher-store-task-3680"
+main = "task-3680-worker.ts"
+compatibility_date = "2026-07-15"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "task-3680"
+database_id = "task-3680"
+
+[[r2_buckets]]
+binding = "ATTACHMENTS"
+bucket_name = "task-3680-attachments"
+
+[[r2_buckets]]
+binding = "PAYLOADS"
+bucket_name = "task-3680-payloads"
+
+[[kv_namespaces]]
+binding = "RATE_LIMIT"
+id = "task-3680-rate-limit"

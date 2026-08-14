@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="stylesheet" href="/src/styles.css" />
+    <title>OSL Privacy - TASK 0379</title>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module">
+      const { whitelistSetupMarkup, initialWhitelistSetupDraft } = await import("/src/whitelist-setup.ts");
+      const conversations = [
+        { id: "alpha", account: "Discord · Personal", name: "Alpha room", kind: "Channel" },
+        { id: "bravo", account: "Signal · Personal", name: "Bravo chat", kind: "Direct messages" },
+      ];
+      document.querySelector("#app").innerHTML = whitelistSetupMarkup(initialWhitelistSetupDraft(conversations));
+      document.documentElement.dataset.task0379 = "ready";
+    </script>
+  </body>
+</html>

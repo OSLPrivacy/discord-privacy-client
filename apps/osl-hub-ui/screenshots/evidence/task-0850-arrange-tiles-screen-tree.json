@@ -1,0 +1,13 @@
+{
+  "required": {
+    "Home": 5,
+    "Arrange tiles": 2,
+    "Move Scrub earlier": 1,
+    "Move Scrub later": 1,
+    "Drag to reorder": 1,
+    "Hide": 4,
+    "Show Outlook on Home": 1,
+    "Done": 1
+  },
+  "source": "Chrome --force-renderer-accessibility --dump-dom"
+}

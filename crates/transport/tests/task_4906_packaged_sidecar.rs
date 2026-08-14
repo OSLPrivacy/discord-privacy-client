@@ -8,7 +8,7 @@
 use std::net::{SocketAddr, TcpListener};
 use std::path::PathBuf;
 
-use transport::tor::{ArtiProxyConfig, TorError, TorTransport};
+use transport::tor::{TorError, TorSidecarConfig, TorTransport};
 
 fn package_dir() -> PathBuf {
     let directory = std::env::temp_dir().join(format!("osl-task-4906-{}", std::process::id()));
@@ -44,8 +44,7 @@ fn packaged_sidecar_starts_when_the_environment_override_is_unset() {
             .expect("make packaged sidecar executable");
     }
     let address = unused_loopback_address();
-    let mut config = ArtiProxyConfig::new(&sidecar);
-    config.socks_addr = address;
+    let mut config = TorSidecarConfig::new(&sidecar);
     config.args = vec![
         "--dial-mode".to_owned(),
         "direct".to_owned(),
@@ -62,7 +61,7 @@ fn packaged_sidecar_starts_when_the_environment_override_is_unset() {
 fn removed_packaged_sidecar_refuses_by_its_absolute_name() {
     let directory = package_dir();
     let sidecar = directory.join("osl-tor-sidecar");
-    let error = match TorTransport::start(ArtiProxyConfig::new(&sidecar)) {
+    let error = match TorTransport::start(TorSidecarConfig::new(&sidecar)) {
         Ok(_) => panic!("a removed package sidecar must not use PATH"),
         Err(error) => error,
     };

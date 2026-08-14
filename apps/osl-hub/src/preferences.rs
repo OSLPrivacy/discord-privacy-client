@@ -314,11 +314,13 @@ mod tests {
         let state = PreviewState::load(path.clone());
         let expected = OnboardingPreferences {
             onboarding_complete: true,
-            send_mode: SendMode::SingleEnter,
+            send_mode: SendMode::Enter,
             placement_mode: PlacementMode::Compatibility,
+            cover_insertion: Some(crate::models::CoverInsertion::InsertOnSend),
             show_plaintext_preview: false,
             window_capture_enabled: true,
-            acknowledge_experimental_send_risk: true,
+            rn_wire_policy_requested: false,
+            acknowledge_experimental_send_risk: false,
             forward_secrecy_mode: ForwardSecrecyMode::default(),
         };
 
@@ -358,23 +360,26 @@ mod tests {
     }
 
     #[test]
-    fn persisted_experimental_mode_without_acknowledgement_reopens_setup() {
+    fn persisted_send_trigger_discards_retired_risk_acknowledgement() {
         let path = temporary_file();
         let state = PreviewState::load(path.clone());
-        let unsafe_preferences = OnboardingPreferences {
+        let preferences = OnboardingPreferences {
             onboarding_complete: true,
-            send_mode: SendMode::DoubleEnter,
+            send_mode: SendMode::EnterX2,
             placement_mode: PlacementMode::Compatibility,
+            cover_insertion: Some(crate::models::CoverInsertion::TypeNaturally),
             show_plaintext_preview: true,
             window_capture_enabled: true,
-            acknowledge_experimental_send_risk: false,
+            rn_wire_policy_requested: false,
+            acknowledge_experimental_send_risk: true,
             forward_secrecy_mode: ForwardSecrecyMode::default(),
         };
 
-        let saved = state.save(unsafe_preferences).expect("save preferences");
-        assert!(!saved.onboarding_complete);
+        let saved = state.save(preferences).expect("save preferences");
+        assert!(saved.onboarding_complete);
+        assert!(!saved.acknowledge_experimental_send_risk);
         assert!(
-            !PreviewState::load(path.clone())
+            PreviewState::load(path.clone())
                 .get()
                 .unwrap()
                 .onboarding_complete
@@ -389,10 +394,12 @@ mod tests {
         let state = PreviewState::load(path.clone());
         let expected = OnboardingPreferences {
             onboarding_complete: true,
-            send_mode: SendMode::Manual,
+            send_mode: SendMode::Enter,
             placement_mode: PlacementMode::Atomic,
+            cover_insertion: None,
             show_plaintext_preview: false,
             window_capture_enabled: true,
+            rn_wire_policy_requested: false,
             acknowledge_experimental_send_risk: false,
             forward_secrecy_mode: ForwardSecrecyMode::default(),
         };

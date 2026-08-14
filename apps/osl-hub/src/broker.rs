@@ -133,9 +133,17 @@ pub(crate) fn prose_send_key(core: &HubCoreState) -> Result<[u8; 32], String> {
 }
 const MAX_PARTICIPANTS: usize = 512;
 const MAX_TEXT_BYTES: usize = 1_000;
-const MAX_NATIVE_OVERLAY_CHUNK_BYTES: usize = 40 * 1024;
-const MAX_NATIVE_OVERLAY_LOGICAL_TEXT_BYTES: usize = 1024 * 1024;
-const MAX_NATIVE_OVERLAY_TEXT_CHUNKS: usize = 32;
+pub const PRIVATE_MESSAGE_BYTES_PER_COVER: usize = 40 * 1024;
+const MAX_NATIVE_OVERLAY_CHUNK_BYTES: usize = PRIVATE_MESSAGE_BYTES_PER_COVER;
+/// Most public cover messages one private message is allowed to produce.
+///
+/// Each private chunk gets its own cipher-store pointer and cover. Keeping the
+/// cap here makes the fan-out an explicit send policy instead of letting one
+/// composer action silently create an arbitrarily long run of public covers.
+pub const MAX_COVER_MESSAGES_PER_PRIVATE_MESSAGE: usize = 10;
+const MAX_NATIVE_OVERLAY_TEXT_CHUNKS: usize = MAX_COVER_MESSAGES_PER_PRIVATE_MESSAGE;
+const MAX_NATIVE_OVERLAY_LOGICAL_TEXT_BYTES: usize =
+    PRIVATE_MESSAGE_BYTES_PER_COVER * MAX_COVER_MESSAGES_PER_PRIVATE_MESSAGE;
 const MAX_NATIVE_OVERLAY_REASSEMBLY_GROUPS: usize = 8;
 const MAX_NATIVE_OVERLAY_REASSEMBLY_BYTES: usize = 8 * 1024 * 1024;
 /// How many contested chunk rows one reassembly group will keep as alternates.
@@ -190,11 +198,6 @@ const VIEW_ONCE_UNAVAILABLE: &str = "This view-once message is unavailable or ex
 const LOCAL_PROTECTED_MESSAGE_TYPE: u8 = 0x80;
 const LOCAL_PROTECTED_FILE: &str = "hub_local_protected.json";
 const NATIVE_OVERLAY_RECEIPTS_FILE: &str = "hub_native_overlay_receipts.json";
-/// The eye's durable, provider-bound view of a protected row.  This is kept
-/// separately from delivery receipts: a receipt says that OSL transported a
-/// message, while this ledger says which live application row was actually
-/// authenticated and opened for display.
-const PROTECTED_ROW_RECORDS_FILE: &str = "hub_protected_row_records.json";
 const OSL_CHAT_REACTIONS_FILE: &str = "hub_osl_chat_reactions.json";
 const LOCAL_PROTECTED_LABEL: &str = "local_protected_loopback";
 /// Must change only with the broker relay call sites themselves. The current
@@ -334,7 +337,6 @@ pub struct HubBrokerState {
     inner: Mutex<BrokerInner>,
     local_protected_transition: Mutex<()>,
     native_overlay_receipt_transition: Mutex<()>,
-    protected_row_record_transition: Mutex<()>,
     osl_chat_reaction_transition: Mutex<()>,
     inbound_privacy_receipts: Mutex<BTreeMap<([u8; 32], [u8; 32]), ReceiptState>>,
     native_overlay_received_view_once: Mutex<BTreeMap<String, i64>>,
@@ -347,7 +349,6 @@ impl core::fmt::Debug for HubBrokerState {
             .field("inner", &"<redacted>")
             .field("local_protected_transition", &"<mutex>")
             .field("native_overlay_receipt_transition", &"<mutex>")
-            .field("protected_row_record_transition", &"<mutex>")
             .field("osl_chat_reaction_transition", &"<mutex>")
             .field("inbound_privacy_receipts", &"<mutex>")
             .field(
@@ -1234,6 +1235,17 @@ pub struct OpenedNativeOverlayTextBatch {
     /// build.  As with every receive-side tally, it carries no row identifier
     /// or content-derived data across the Tauri boundary.
     pub unrecognized_wire_rows: u32,
+    /// Rows whose public cover was recognized after their protected store
+    /// content had already disappeared. This remains count-only across IPC.
+    pub content_gone_rows: u32,
+    /// Authenticated relay rows naming a message this scope has already
+    /// durably consumed.
+    ///
+    /// The row is retired again, but no plaintext is returned. This count is
+    /// the receive-side proof that an exact replay reached the opener and was
+    /// classified as already opened rather than silently disappearing into an
+    /// empty batch.
+    pub already_opened: u32,
 }
 
 /// Counts of acknowledgement states in one broker batch.
@@ -1808,7 +1820,18 @@ pub struct NativeOverlayAttachmentOpenPlan {
     pub attachment_key: [u8; 32],
     pub view_once: bool,
     pub display_duration_seconds: Option<u64>,
+    pub recipient_osl_user_id: String,
+    pub owner_osl_user_id: String,
     expires_at: i64,
+}
+
+impl NativeOverlayAttachmentOpenPlan {
+    /// Absolute attachment deadline used by local artifact cleanup. It is not
+    /// serialized to the renderer; only the Rust-owned open path may bind a
+    /// filesystem artifact to it.
+    pub fn expires_at(&self) -> i64 {
+        self.expires_at
+    }
 }
 
 impl Drop for NativeOverlayAttachmentOpenPlan {
@@ -1868,27 +1891,6 @@ struct NativeOverlayReceiptLedger {
     version: u32,
     #[serde(default)]
     records: BTreeMap<String, NativeOverlayReceiptRecord>,
-}
-
-/// One protected message as the trusted eye control displays it.  This is a
-/// common record shape for every carrier: app-owned row identity, the exact
-/// public cover, private words, and whether opening has happened.  It is not
-/// `Debug` because two fields are message content.
-#[derive(Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ProtectedRowRecord {
-    pub app_id: String,
-    pub app_row_id: String,
-    pub cover_text: String,
-    pub private_words: String,
-    pub opened: bool,
-}
-
-#[derive(Default, Deserialize, Serialize)]
-struct ProtectedRowRecordLedger {
-    version: u32,
-    #[serde(default)]
-    records: BTreeMap<String, ProtectedRowRecord>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -1995,6 +1997,8 @@ pub fn prepare_peer_prose_text_with_capture_and_store_client(
         require_capture_protection,
         None,
         Some(store_client),
+        None,
+        ipc::prose_token::ProseTokenCoverWriter::Baseline,
         None,
     )
     .map(|envelope| envelope.prepared)
@@ -2121,6 +2125,8 @@ fn prepare_peer_prose_text_inner(
         None,
         None,
         None,
+        ipc::prose_token::ProseTokenCoverWriter::Baseline,
+        None,
     )
 }
 
@@ -2170,6 +2176,8 @@ fn prepare_peer_prose_text_inner_with_chunk(
     chunk: Option<NativeTextChunkMeta>,
     store_client: Option<&ipc::cipher_store_client::CipherStoreClient>,
     send_order: Option<AuthenticatedSenderOrder>,
+    cover_writer: ipc::prose_token::ProseTokenCoverWriter,
+    cover_seed: Option<ipc::prose_token::ProseTokenCoverSeed>,
 ) -> Result<PreparedPeerProseEnvelope, String> {
     let manual = broker.manual_peer_for(context_token)?;
     let verified = security::require_manual_peer_scope_approved(
@@ -2235,24 +2243,45 @@ fn prepare_peer_prose_text_inner_with_chunk(
     // route. All the route decides is which HTTP client carries the upload:
     // `store_client` is Some only once the Tor gate has authorized a route, and
     // a selected-but-unhealthy Tor never reaches here at all.
-    let uploaded = if let Some(store_client) = store_client {
-        ipc::prose_token::prose_token_send_with_client(
+    let uploaded = match (store_client, cover_seed) {
+        (Some(store_client), Some(cover_seed)) => {
+            ipc::prose_token::prose_token_send_with_client_and_cover_seed(
+                store_client,
+                &manual.scope,
+                &detection_key,
+                send_keys,
+                &encrypted,
+                ttl_seconds,
+                cover_seed,
+            )
+        }
+        (Some(store_client), None) => ipc::prose_token::prose_token_send_with_client_and_writer(
             store_client,
             &manual.scope,
             &detection_key,
             send_keys,
             &encrypted,
             ttl_seconds,
-        )
-    } else {
-        ipc::prose_token::prose_token_send(
+            cover_writer,
+        ),
+        (None, Some(cover_seed)) => ipc::prose_token::prose_token_send_with_cover_seed(
             &dir,
             &manual.scope,
             &detection_key,
             send_keys,
             &encrypted,
             ttl_seconds,
-        )
+            cover_seed,
+        ),
+        (None, None) => ipc::prose_token::prose_token_send_with_writer(
+            &dir,
+            &manual.scope,
+            &detection_key,
+            send_keys,
+            &encrypted,
+            ttl_seconds,
+            cover_writer,
+        ),
     }
     // D-144: the user-facing sentence stays byte-identical, but the cause is no
     // longer thrown away. `map_err(|_| ...)` here cost D-127 a bisect: the word
@@ -2889,10 +2918,6 @@ pub struct RehydrateDecodeCounts {
     pub store_unreachable: usize,
     /// The token resolved and a proof refused it, or a local precondition did.
     pub refused: usize,
-    /// Rows whose authenticated wire did not agree with the provider-owned row.
-    pub authentication_refused: usize,
-    /// Rows whose authenticated payload identity already appeared on this screen.
-    pub replay_refused: usize,
     /// Opened, and then withheld because re-showing it would spend it.
     pub view_once_skipped: usize,
     /// Rows this account really did open. The only tally the eye can paint from.
@@ -2969,11 +2994,10 @@ fn bounded_attribution_id(value: &str) -> bool {
 
 /// Validate the native half of the row proof before any pointer is opened.
 ///
-/// This is deliberately all-or-nothing for provider-owned row identity and
-/// order. Public carrier text is not unique: another row can copy it byte for
-/// byte. Treating that copy as a batch failure lets anyone erase every protected
-/// row on screen. Carrier replays are therefore decided per row only after the
-/// protected payload's own identity has authenticated.
+/// This is deliberately all-or-nothing. Row order and uniqueness describe a
+/// snapshot, not independent suggestions: accepting the remaining rows after a
+/// duplicate or reordered proof would let an ambiguous producer result choose
+/// which ciphertext is painted over which visible row.
 fn native_row_evidence_batch_is_valid(
     rows: &[crate::native_discord_adapter::VisibleMessageRow],
     scope_binding: &str,
@@ -2988,6 +3012,7 @@ fn native_row_evidence_batch_is_valid(
     let mut peer_poster_identity = None::<String>;
     let mut message_ids = HashSet::with_capacity(rows.len());
     let mut locators = HashSet::with_capacity(rows.len());
+    let mut carriers = HashSet::with_capacity(rows.len());
 
     rows.iter().enumerate().all(|(row_index, row)| {
         let Some(evidence) = row.attribution.as_ref() else {
@@ -3039,6 +3064,7 @@ fn native_row_evidence_batch_is_valid(
             && matching_carriers == 1
             && message_ids.insert(evidence.discord_message_id.clone())
             && locators.insert(evidence.native_locator_sha256.clone())
+            && carriers.insert(evidence.carrier_sha256.clone())
     })
 }
 
@@ -3102,7 +3128,6 @@ pub fn rehydrate_native_discord_overlay_history(
 ) -> Result<RehydratedNativeDiscordTranscript, String> {
     let context_token = broker.active_native_manual_context_token()?;
     let manual = broker.manual_peer_for(&context_token)?;
-    let context = broker.context_for(&context_token)?;
     let mut counts = RehydrateDecodeCounts {
         rows: rows.len(),
         ..RehydrateDecodeCounts::default()
@@ -3118,9 +3143,6 @@ pub fn rehydrate_native_discord_overlay_history(
     // covers still come back, so the conversation is visible; nothing is opened.
     let decrypt_display_enabled =
         security::scope_security(manual.scope.clone())?.decrypt_display_enabled;
-    // Do not write while decoding: a duplicate/ambiguous snapshot is rejected
-    // as a whole below, and must leave zero durable records behind.
-    let mut pending_row_records = Vec::new();
     // ONE bounded slice for the whole decode leg.
     //
     // A row whose cover really is a pointer costs a cipher-store fetch to open,
@@ -3136,7 +3158,6 @@ pub fn rehydrate_native_discord_overlay_history(
     // Discord's own row shows through. Nothing is invented, nothing is dropped,
     // and no row is consumed -- the next edge reads again from scratch.
     let decode_deadline = Instant::now() + Duration::from_millis(REHYDRATE_DECODE_BUDGET_MS);
-    let mut payload_identities = PayloadIdentityStore::default();
     let rows = rehydrated_rows(
         rows.into_iter()
             .map(|row| (row.line, row.decode_candidates, row.bounds, row.attribution)),
@@ -3194,34 +3215,12 @@ pub fn rehydrate_native_discord_overlay_history(
                 counts.view_once_skipped += 1;
                 return None;
             }
-            match bind_authenticated_native_row_once(
-                &mut payload_identities,
-                evidence,
-                authenticated,
-            ) {
-                NativeRowBindOutcome::Rendered(bound) => {
-                    // Persist only after the carrier fetch, crypto proof, and
-                    // native app-row proof all agreed.  In particular, do not
-                    // accept a watched accessibility row or a fabricated
-                    // pointer: neither reaches this branch with an exact
-                    // peer-owned Discord message identity.
-                    if bound.1 == RehydratedRowOrientation::Incoming {
-                        pending_row_records.push((
-                            evidence.clone(),
-                            candidate.clone(),
-                            bound.0.clone(),
-                        ));
-                    }
+            match bind_authenticated_native_row(evidence, authenticated) {
+                Some(bound) => {
                     counts.plaintext += 1;
                     Some(bound)
                 }
-                NativeRowBindOutcome::AuthenticationRefused => {
-                    counts.authentication_refused += 1;
-                    counts.refused += 1;
-                    None
-                }
-                NativeRowBindOutcome::ReplayRefused => {
-                    counts.replay_refused += 1;
+                None => {
                     counts.refused += 1;
                     None
                 }
@@ -3230,21 +3229,6 @@ pub fn rehydrate_native_discord_overlay_history(
     );
     let mut rows = rows;
     if !rehydrated_attribution_ids_are_unique(&rows) {
-        let opened = counts.plaintext;
-        for row in &mut rows {
-            row.plaintext = None;
-            row.orientation = None;
-            row.attribution = None;
-        }
-        counts.plaintext = 0;
-        counts.refused += opened;
-    } else if pending_row_records
-        .iter()
-        .any(|(evidence, cover, private)| {
-            record_opened_native_discord_row(core, broker, &context, evidence, cover, private)
-                .is_err()
-        })
-    {
         let opened = counts.plaintext;
         for row in &mut rows {
             row.plaintext = None;
@@ -3811,63 +3795,11 @@ fn authenticate_native_overlay_wrapped_payload(
 /// only then decrypt and validate the payload's own bindings. Nothing is
 /// decrypted before an orientation has been proven, so widening `accepted` adds
 /// a second complete proof rather than removing part of the first.
-///
-/// Authenticated identity of one protected payload, independent of the public
-/// cover that happened to point at it. The message id comes from the decrypted
-/// payload; the sender key and nonce come from that same authenticated v3 wire.
-#[derive(Clone, Eq, Hash, PartialEq)]
-struct ProtectedPayloadIdentity {
-    message_id: String,
-    sender_key: [u8; 32],
-    nonce: [u8; crypto::aes_gcm::NONCE_SIZE],
-}
-
-/// Per-screen replay store. A new rehydration starts fresh so repainting a
-/// genuine history row does not turn it into a replay. Within one screenful,
-/// only an exact authenticated `(message id, sender key, nonce)` repeats.
-#[derive(Default)]
-struct PayloadIdentityStore {
-    seen: HashSet<ProtectedPayloadIdentity>,
-}
-
-impl PayloadIdentityStore {
-    fn remember_if_new(&mut self, identity: ProtectedPayloadIdentity) -> bool {
-        self.seen.insert(identity)
-    }
-}
-
-#[derive(Clone)]
 struct AuthenticatedProsePointer {
     payload: PeerProtectedPayload,
     orientation: PeerWireOrientation,
     blob_id: String,
     ciphertext_sha256: String,
-    identity: ProtectedPayloadIdentity,
-}
-
-enum NativeRowBindOutcome {
-    Rendered((String, RehydratedRowOrientation, RehydratedRowAttribution)),
-    AuthenticationRefused,
-    ReplayRefused,
-}
-
-/// Bind the authenticated payload to its provider-owned row before consulting
-/// the replay store. A copied cover posted by the wrong account therefore
-/// authentication-refuses without either becoming, or poisoning, a replay.
-fn bind_authenticated_native_row_once(
-    identities: &mut PayloadIdentityStore,
-    evidence: &crate::native_discord_adapter::NativeDiscordRowAttributionEvidence,
-    authenticated: AuthenticatedProsePointer,
-) -> NativeRowBindOutcome {
-    let identity = authenticated.identity.clone();
-    let Some(bound) = bind_authenticated_native_row(evidence, authenticated) else {
-        return NativeRowBindOutcome::AuthenticationRefused;
-    };
-    if identities.remember_if_new(identity) {
-        NativeRowBindOutcome::Rendered(bound)
-    } else {
-        NativeRowBindOutcome::ReplayRefused
-    }
 }
 
 /// Join one native visible-row proof to one already authenticated protected
@@ -3974,8 +3906,6 @@ fn authenticate_oriented_prose_pointer(
             verify_manual_v3(core, &verified, &recovered.wire, orientation.wire_sender()).is_ok()
         })
         .ok_or(PeerProsePointerFailure::Rejected)?;
-    let inspected = inspect_v3_wire(&recovered.wire, ipc::wire_v2::MSG_TYPE_CONTENT)
-        .map_err(|_| PeerProsePointerFailure::Rejected)?;
     let context = broker.context_for(context_token)?;
     let payload =
         decrypt_direct_manual_v3(core, &verified, orientation.wire_sender(), &recovered.wire)
@@ -4000,17 +3930,11 @@ fn authenticate_oriented_prose_pointer(
     validate_authenticated_sender_order_scope(core, &verified, &context, &payload)
         .map_err(|_| PeerProsePointerError::Pointer(PeerProsePointerFailure::Rejected))?;
     let ciphertext_sha256 = sha256_hex(recovered.wire.as_bytes());
-    let identity = ProtectedPayloadIdentity {
-        message_id: payload.message_id.clone(),
-        sender_key: inspected.sender_ik,
-        nonce: inspected.body_nonce,
-    };
     Ok(AuthenticatedProsePointer {
         payload,
         orientation,
         blob_id: recovered.blob_id,
         ciphertext_sha256,
-        identity,
     })
 }
 
@@ -4386,14 +4310,18 @@ fn prepare_peer_inbox_text_with_route_clients(
     let is_fixed_discord_qa_probe = plaintext == "OSL Discord QA probe" && !view_once;
     #[cfg(feature = "discord-qa-shell")]
     record_fixed_discord_qa_broker_stage(is_fixed_discord_qa_probe, "scope", "entered", None)?;
-    if plaintext.is_empty() || plaintext.len() > MAX_NATIVE_OVERLAY_LOGICAL_TEXT_BYTES {
-        return Err(format!(
-            "Private message must be between 1 and {MAX_NATIVE_OVERLAY_LOGICAL_TEXT_BYTES} UTF-8 bytes"
-        ));
-    }
+    // Work out and enforce the complete cover fan-out before selecting a
+    // carrier, resolving a route, uploading a blob, or posting a relay row.
+    // A refusal therefore cannot leave a partial string of cover messages.
+    let chunks = plan_private_message_cover_chunks(&plaintext)?;
     // Resolve the optional carrier before any pointer is encoded. Cloud is not
     // an option in this path, so it cannot be reached around consent.
     let _carrier_decision = ai_carrier.select_for_shipping_send();
+    let cover_writer = if ai_carrier.wordbank_writer_selected() {
+        ipc::prose_token::ProseTokenCoverWriter::Covertext
+    } else {
+        ipc::prose_token::ProseTokenCoverWriter::Baseline
+    };
     let manual = broker.manual_peer_for(context_token)?;
     let context = broker.context_for(context_token)?;
     require_messaging_risk_agreed(
@@ -4409,7 +4337,6 @@ fn prepare_peer_inbox_text_with_route_clients(
     })?;
     let history_plaintext =
         (context.service_id == "osl-chat" && !view_once).then(|| plaintext.clone());
-    let chunks = split_native_overlay_text(&plaintext)?;
     let chunk_count = u16::try_from(chunks.len()).map_err(|_| {
         qa_encrypt_refusal_site("chunk_count_overflow");
         "OSL could not deliver the protected message".to_owned()
@@ -4546,6 +4473,25 @@ fn prepare_peer_inbox_text_with_route_clients(
             created_at: now,
             expires_at,
         };
+        // The model boundary receives counts only. Derive them here while the
+        // private chunk is already inside the trusted encryption path, then
+        // discard the text-facing view before asking the local writer.
+        let character_count = chunk_plaintext.chars().count();
+        let hard_line_character_counts = chunk_plaintext
+            .split('\n')
+            .map(|line| u32::try_from(line.chars().count()))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| "The private message shape is too large".to_owned())?;
+        let cover_shape = crate::bundled_model_pack::CoverShapeConstraints::new(
+            character_count,
+            hard_line_character_counts,
+        )
+        .map_err(|_| "The private message shape is too large".to_owned())?;
+        let cover_seed = ai_carrier
+            .next_cover_entropy(&cover_shape)?
+            .map(|entropy| ipc::prose_token::ProseTokenCoverSeed::from_entropy(&entropy))
+            .transpose()
+            .map_err(|_| "The local AI cover writer could not produce a cover".to_owned())?;
         #[cfg(feature = "discord-qa-shell")]
         record_fixed_discord_qa_broker_stage(
             is_fixed_discord_qa_probe,
@@ -4564,6 +4510,8 @@ fn prepare_peer_inbox_text_with_route_clients(
             Some(meta),
             store_client,
             Some(send_order.clone()),
+            cover_writer,
+            cover_seed,
         );
         #[cfg(feature = "discord-qa-shell")]
         if let Err(error) = &encrypted_result {
@@ -4771,15 +4719,32 @@ fn prepare_peer_inbox_text_with_route_clients(
     })
 }
 
-fn split_native_overlay_text(plaintext: &str) -> Result<Vec<String>, String> {
-    if plaintext.is_empty() || plaintext.len() > MAX_NATIVE_OVERLAY_LOGICAL_TEXT_BYTES {
-        return Err("The private message is too large".to_owned());
+/// Split one accepted private message into the chunks that each receive one
+/// cipher-store pointer and one public cover in the shipping send loop.
+pub fn plan_private_message_cover_chunks(plaintext: &str) -> Result<Vec<String>, String> {
+    if plaintext.is_empty() {
+        return Err("This private message is empty.".to_owned());
+    }
+    if plaintext.len() > MAX_NATIVE_OVERLAY_LOGICAL_TEXT_BYTES {
+        let mut retained_bytes = MAX_NATIVE_OVERLAY_LOGICAL_TEXT_BYTES;
+        while retained_bytes > 0 && !plaintext.is_char_boundary(retained_bytes) {
+            retained_bytes -= 1;
+        }
+        let characters_to_remove = plaintext[retained_bytes..].chars().count();
+        let character_word = if characters_to_remove == 1 {
+            "character"
+        } else {
+            "characters"
+        };
+        return Err(format!(
+            "This private message is too long. Remove {characters_to_remove} {character_word}."
+        ));
     }
     let mut chunks = Vec::new();
     let mut start = 0usize;
     while start < plaintext.len() {
         let mut end = start
-            .saturating_add(MAX_NATIVE_OVERLAY_CHUNK_BYTES)
+            .saturating_add(PRIVATE_MESSAGE_BYTES_PER_COVER)
             .min(plaintext.len());
         while end > start && !plaintext.is_char_boundary(end) {
             end -= 1;
@@ -4790,9 +4755,8 @@ fn split_native_overlay_text(plaintext: &str) -> Result<Vec<String>, String> {
         chunks.push(plaintext[start..end].to_owned());
         start = end;
     }
-    if chunks.is_empty() || chunks.len() > MAX_NATIVE_OVERLAY_TEXT_CHUNKS {
-        return Err("The private message is too large".to_owned());
-    }
+    debug_assert!(!chunks.is_empty());
+    debug_assert!(chunks.len() <= MAX_COVER_MESSAGES_PER_PRIVATE_MESSAGE);
     Ok(chunks)
 }
 
@@ -5022,6 +4986,7 @@ fn drain_peer_inbox_text(
     // empty inbox.  The row is retained: this build cannot authenticate and
     // consume it, but a compatible build may be able to after an update.
     let mut unrecognized_wire_rows = 0u32;
+    let mut already_opened = 0u32;
     for item in items {
         // Unrelated inbox traffic must never consume this bounded display
         // budget. Stop only after 64 messages for this exact friend/scope were
@@ -5503,6 +5468,7 @@ fn drain_peer_inbox_text(
             // Durable replay consumption, not a read receipt, authorizes
             // retiring this relay row. Opened acknowledgments stay suppressed
             // until a durable mutual-consent grant exists.
+            already_opened = already_opened.saturating_add(1);
             let _ = client.delete_control_inbox(&identity, &item.id);
             continue;
         }
@@ -5715,6 +5681,8 @@ fn drain_peer_inbox_text(
                 created_at: logical.created_at,
                 expires_at: logical.expires_at,
             });
+        } else {
+            already_opened = already_opened.saturating_add(1);
         }
     }
     // Outbound half of the bilateral burn, posted on the same authenticated
@@ -5749,6 +5717,8 @@ fn drain_peer_inbox_text(
         decrypt_display_enabled: allow_messages,
         deferred_rows,
         unrecognized_wire_rows,
+        content_gone_rows: 0,
+        already_opened,
     })
 }
 
@@ -6279,6 +6249,8 @@ fn native_overlay_attachment_plans(
             attachment_key: notice.attachment_key,
             view_once: notice.view_once,
             display_duration_seconds: native_overlay_attachment_display_duration(&notice).ok()?,
+            recipient_osl_user_id: std::mem::take(&mut notice.recipient_osl_user_id),
+            owner_osl_user_id: manual.peer_osl_user_id.clone(),
             expires_at: notice.expires_at,
         })
     });
@@ -6700,139 +6672,6 @@ fn native_overlay_receipt_path() -> Result<std::path::PathBuf, String> {
     keystore::osl_config_dir()
         .map(|dir| dir.join(NATIVE_OVERLAY_RECEIPTS_FILE))
         .map_err(|_| "OSL receipt storage is unavailable".to_owned())
-}
-
-fn protected_row_records_path() -> Result<std::path::PathBuf, String> {
-    keystore::osl_config_dir()
-        .map(|dir| dir.join(PROTECTED_ROW_RECORDS_FILE))
-        .map_err(|_| "OSL protected-row storage is unavailable".to_owned())
-}
-
-fn load_protected_row_records(
-    path: &Path,
-    file_key: &[u8; 32],
-) -> Result<ProtectedRowRecordLedger, String> {
-    let Some(bytes) = crate::atomic_file::read_recoverable_bounded(
-        path,
-        MAX_LOCAL_LEDGER_BYTES as u64,
-        "OSL protected-row ledger",
-    )?
-    else {
-        return Ok(ProtectedRowRecordLedger::default());
-    };
-    if bytes.len() > MAX_LOCAL_LEDGER_BYTES || !ipc::main_password::has_enc_magic(&bytes) {
-        return Err("OSL protected-row ledger is invalid or not encrypted".to_owned());
-    }
-    let plaintext = ipc::main_password::decrypt_at_rest(&bytes, file_key)
-        .map_err(|_| "OSL protected-row ledger could not be decrypted".to_owned())?;
-    let ledger: ProtectedRowRecordLedger = serde_json::from_slice(&plaintext)
-        .map_err(|_| "OSL protected-row ledger is malformed".to_owned())?;
-    if ledger.version != NATIVE_OVERLAY_ACK_VERSION
-        || ledger.records.len() > MAX_LOCAL_LEDGER_ENTRIES
-    {
-        return Err("OSL protected-row ledger version or size is invalid".to_owned());
-    }
-    Ok(ledger)
-}
-
-fn write_protected_row_records(
-    path: &Path,
-    ledger: &ProtectedRowRecordLedger,
-    file_key: &[u8; 32],
-) -> Result<(), String> {
-    let plaintext = serde_json::to_vec(ledger)
-        .map_err(|_| "OSL protected-row ledger could not be encoded".to_owned())?;
-    if plaintext.len() > MAX_LOCAL_LEDGER_BYTES {
-        return Err("OSL protected-row ledger exceeds its storage limit".to_owned());
-    }
-    let encrypted = ipc::main_password::encrypt_at_rest(&plaintext, file_key)
-        .map_err(|_| "OSL protected-row ledger encryption failed".to_owned())?;
-    crate::atomic_file::write_recoverable(path, &encrypted, "OSL protected-row ledger")
-}
-
-fn record_opened_native_discord_row(
-    core: &HubCoreState,
-    broker: &HubBrokerState,
-    context: &HubConversationContext,
-    evidence: &crate::native_discord_adapter::NativeDiscordRowAttributionEvidence,
-    cover_text: &str,
-    private_words: &str,
-) -> Result<(), String> {
-    // This is intentionally stricter than a pointer decode.  A development
-    // fixture can fabricate a pointer, but it cannot create a shipping record
-    // without the native producer's peer-owned Discord row identity and the
-    // carrier commitment that was read from that same row.
-    if !protected_row_record_is_admissible(context, evidence, cover_text, private_words) {
-        return Err("OSL protected row does not have a trusted Discord binding".to_owned());
-    }
-    let (_, file_key) = local_protected_identity_for_receipt(core, context, false)?;
-    let _transition = broker
-        .protected_row_record_transition
-        .lock()
-        .map_err(|_| "OSL protected-row state is unavailable".to_owned())?;
-    let path = protected_row_records_path()?;
-    let mut ledger = load_protected_row_records(&path, &file_key)?;
-    let key = format!("discord:{}", evidence.discord_message_id);
-    let record = ProtectedRowRecord {
-        app_id: "discord".to_owned(),
-        app_row_id: evidence.discord_message_id.clone(),
-        cover_text: cover_text.to_owned(),
-        private_words: private_words.to_owned(),
-        opened: true,
-    };
-    match ledger.records.get(&key) {
-        Some(existing)
-            if existing.app_id == record.app_id
-                && existing.app_row_id == record.app_row_id
-                && existing.cover_text == record.cover_text
-                && existing.private_words == record.private_words
-                && existing.opened =>
-        {
-            return Ok(())
-        }
-        Some(_) => {
-            return Err("OSL protected row identity was reused with different content".to_owned())
-        }
-        None => {}
-    }
-    if ledger.records.len() >= MAX_LOCAL_LEDGER_ENTRIES {
-        return Err("OSL protected-row ledger is full".to_owned());
-    }
-    ledger.version = NATIVE_OVERLAY_ACK_VERSION;
-    ledger.records.insert(key, record);
-    write_protected_row_records(&path, &ledger, &file_key)
-}
-
-fn protected_row_record_is_admissible(
-    context: &HubConversationContext,
-    evidence: &crate::native_discord_adapter::NativeDiscordRowAttributionEvidence,
-    cover_text: &str,
-    private_words: &str,
-) -> bool {
-    context.service_id == "discord"
-        && evidence.poster == crate::native_discord_adapter::NativeDiscordRowPoster::PeerAccount
-        && bounded_attribution_id(&evidence.discord_message_id)
-        && !cover_text.is_empty()
-        && !private_words.is_empty()
-        && crate::native_discord_adapter::native_row_attribution_carrier_sha256(cover_text)
-            == evidence.carrier_sha256
-}
-
-/// The sole reader for the eye control. It is scoped to the active native
-/// Discord context and returns only records whose provider binding was already
-/// accepted on the shipping receive path.
-pub fn opened_native_discord_protected_rows(
-    core: &HubCoreState,
-    broker: &HubBrokerState,
-) -> Result<Vec<ProtectedRowRecord>, String> {
-    let token = broker.active_native_manual_context_token()?;
-    let context = broker.context_for(&token)?;
-    if context.service_id != "discord" {
-        return Err("OSL native Discord protection is not active".to_owned());
-    }
-    let (_, file_key) = local_protected_identity_for_receipt(core, &context, false)?;
-    let ledger = load_protected_row_records(&protected_row_records_path()?, &file_key)?;
-    Ok(ledger.records.into_values().collect())
 }
 
 fn load_native_overlay_receipts(
@@ -7648,9 +7487,9 @@ fn peer_prose_token_outcome(
 struct InspectedV3Content {
     sender_ik: [u8; 32],
     recipient_hashes: Vec<[u8; 8]>,
-    body_nonce: [u8; crypto::aes_gcm::NONCE_SIZE],
 }
 
+#[cfg(test)]
 fn inspect_v3_content_wire(wire: &str) -> Result<InspectedV3Content, ()> {
     inspect_v3_wire(wire, ipc::wire_v2::MSG_TYPE_CONTENT)
 }
@@ -7669,10 +7508,7 @@ fn inspect_v3_wire(wire: &str, expected_message_type: u8) -> Result<InspectedV3C
         .checked_mul(ipc::wire_v2::SLOT_V3_BYTES)
         .ok_or(())?;
     let slots_end = 35usize.checked_add(slots_bytes).ok_or(())?;
-    let body_nonce_end = slots_end
-        .checked_add(crypto::aes_gcm::NONCE_SIZE)
-        .ok_or(())?;
-    if raw.len() < body_nonce_end + crypto::aes_gcm::TAG_SIZE {
+    if raw.len() < slots_end + 12 + 16 {
         return Err(());
     }
     let mut sender_ik = [0u8; 32];
@@ -7684,12 +7520,9 @@ fn inspect_v3_wire(wire: &str, expected_message_type: u8) -> Result<InspectedV3C
         hash.copy_from_slice(&raw[start..start + 8]);
         recipient_hashes.push(hash);
     }
-    let mut body_nonce = [0u8; crypto::aes_gcm::NONCE_SIZE];
-    body_nonce.copy_from_slice(&raw[slots_end..body_nonce_end]);
     Ok(InspectedV3Content {
         sender_ik,
         recipient_hashes,
-        body_nonce,
     })
 }
 
@@ -8744,6 +8577,20 @@ pub fn burn_indexed_local_protected_binding(
         &file_key,
         context_binding_sha256,
     )
+}
+
+#[cfg(any(test, feature = "task-3712-test"))]
+pub fn test_local_protected_binding_count(context_binding_sha256: &str) -> Result<usize, String> {
+    let dir = keystore::osl_config_dir()
+        .map_err(|_| "OSL Privacy account storage is unavailable".to_owned())?;
+    let file_key = ipc::main_password::get_file_storage_key()
+        .ok_or_else(|| "Unlock OSL before reading indexed protected state".to_owned())?;
+    let ledger = load_local_ledger(&dir.join(LOCAL_PROTECTED_FILE), &file_key)?;
+    Ok(ledger
+        .records
+        .values()
+        .filter(|record| record.context_binding == context_binding_sha256)
+        .count())
 }
 
 fn decrypt_local_protected_capsule_in_dir(
@@ -10021,118 +9868,6 @@ mod tests {
             keystore::set_active_account_dir(None);
             keystore::set_base_dir_override(None);
         }
-    }
-
-    #[test]
-    fn task_3504_shipping_row_record_requires_live_carrier_and_app_row_binding() {
-        let temp = tempfile::tempdir().expect("protected-row temp directory");
-        let path = temp.path().join("protected-row-ledger");
-        let file_key = [41u8; 32];
-        let cover = "task3504 live Discord cover text";
-        let private_words = "task3504 exact private words";
-        let context = HubConversationContext {
-            service_id: "discord".to_owned(),
-            account_id: "native-discord-task3504".to_owned(),
-            conversation_kind: HubConversationKind::Dm,
-            conversation_id: "task3504-conversation".to_owned(),
-            space_id: None,
-            participant_osl_ids: vec!["alice".to_owned(), "bob".to_owned()],
-            self_osl_id: "bob".to_owned(),
-        };
-        let evidence = crate::native_discord_adapter::NativeDiscordRowAttributionEvidence {
-            discord_message_id: "123456789012345678".to_owned(),
-            poster_identity_sha256: "a".repeat(64),
-            who_wrote_it: crate::row_who_wrote_it::SharedRowWhoWroteIt::Theirs,
-            native_locator_sha256: "b".repeat(64),
-            carrier_sha256: crate::native_discord_adapter::native_row_attribution_carrier_sha256(
-                cover,
-            ),
-            scope_binding_sha256: "c".repeat(64),
-            window_generation: 1,
-            row_index: 0,
-            poster: crate::native_discord_adapter::NativeDiscordRowPoster::PeerAccount,
-        };
-        let save =
-            |path: &Path,
-             evidence: &crate::native_discord_adapter::NativeDiscordRowAttributionEvidence,
-             carrier: &str| {
-                let mut ledger = ProtectedRowRecordLedger {
-                    version: NATIVE_OVERLAY_ACK_VERSION,
-                    ..ProtectedRowRecordLedger::default()
-                };
-                if protected_row_record_is_admissible(&context, evidence, carrier, private_words) {
-                    ledger.records.insert(
-                        format!("discord:{}", evidence.discord_message_id),
-                        ProtectedRowRecord {
-                            app_id: "discord".to_owned(),
-                            app_row_id: evidence.discord_message_id.clone(),
-                            cover_text: carrier.to_owned(),
-                            private_words: private_words.to_owned(),
-                            opened: true,
-                        },
-                    );
-                }
-                write_protected_row_records(path, &ledger, &file_key).expect("save protected rows");
-                load_protected_row_records(path, &file_key).expect("read protected rows")
-            };
-        let saved = save(&path, &evidence, cover);
-        assert_eq!(saved.records.len(), 1);
-        let record = saved.records.values().next().expect("one row record");
-        assert_eq!(record.app_row_id, "123456789012345678");
-        assert_eq!(record.cover_text, cover);
-        assert_eq!(record.private_words, private_words);
-        assert!(record.opened);
-
-        let no_fetch = save(
-            &temp.path().join("no-fetch"),
-            &evidence,
-            "fabricated pointer",
-        );
-        assert_eq!(
-            no_fetch.records.len(),
-            0,
-            "removing carrier fetch saves zero records"
-        );
-        let mut unbound = evidence.clone();
-        unbound.poster = crate::native_discord_adapter::NativeDiscordRowPoster::SelfAccount;
-        let no_binding = save(&temp.path().join("no-binding"), &unbound, cover);
-        assert_eq!(
-            no_binding.records.len(),
-            0,
-            "removing app-row binding saves zero records"
-        );
-        println!("TASK_3504 records=1 app_row_id={} cover_text=\"{}\" private_words=\"{}\" opened=true no_fetch_records=0 no_binding_records=0", record.app_row_id, record.cover_text, record.private_words);
-    }
-
-    #[test]
-    fn whatsapp_capture_only_draft_uses_utf8_ceiling_and_refuses_without_truncation() {
-        let ceiling = WHATSAPP_CAPTURE_ONLY_DRAFT_BYTE_CEILING;
-        let under = "a".repeat(ceiling - 1);
-        let exact = "a".repeat(ceiling);
-        let over = "a".repeat(ceiling + 1);
-        let multibyte_exact = "é".repeat(ceiling / 2);
-
-        assert_eq!(under.len(), ceiling - 1);
-        assert_eq!(exact.len(), ceiling);
-        assert_eq!(multibyte_exact.len(), ceiling);
-        assert!(validate_whatsapp_capture_only_draft(&under).is_ok());
-        assert!(validate_whatsapp_capture_only_draft(&exact).is_ok());
-        assert!(validate_whatsapp_capture_only_draft(&multibyte_exact).is_ok());
-
-        let refusal = validate_whatsapp_capture_only_draft(&over).unwrap_err();
-        assert_eq!(over.len(), ceiling + 1);
-        assert_eq!(
-            refusal,
-            format!(
-                "WhatsApp capture-only draft is {} UTF-8 bytes and exceeds the {ceiling}-byte ceiling",
-                ceiling + 1
-            )
-        );
-        assert_eq!(
-            over.len(),
-            ceiling + 1,
-            "the refused draft was not truncated"
-        );
     }
 
     #[test]
@@ -12185,7 +11920,7 @@ mod tests {
             .map_or(source, |(production, _)| production);
         let producer = production
             .split_once("fn prepare_peer_inbox_text(")
-            .and_then(|(_, tail)| tail.split_once("fn split_native_overlay_text("))
+            .and_then(|(_, tail)| tail.split_once("fn plan_private_message_cover_chunks("))
             .map(|(body, _)| body)
             .expect("native overlay producer source is present");
         let helper = production
@@ -13185,6 +12920,8 @@ mod tests {
             decrypt_display_enabled: true,
             deferred_rows: 0,
             unrecognized_wire_rows: 0,
+            content_gone_rows: 0,
+            already_opened: 0,
         })
         .unwrap();
         assert_eq!(value["fetched"], 2);
@@ -13213,6 +12950,7 @@ mod tests {
         assert_eq!(value["decryptDisplayEnabled"], true);
         assert_eq!(value["deferredRows"], 0);
         assert_eq!(value["unrecognizedWireRows"], 0);
+        assert_eq!(value["alreadyOpened"], 0);
 
         // A multi-row message has no single cover, and the absent key is what the
         // renderer's exact-key parser expects rather than an explicit null.
@@ -13441,6 +13179,8 @@ mod tests {
             decrypt_display_enabled: true,
             deferred_rows: 0,
             unrecognized_wire_rows: 0,
+            content_gone_rows: 0,
+            already_opened: 0,
         };
         let counters = batch.acknowledgment_counters();
         assert_eq!(counters.received, 1);
@@ -13476,6 +13216,8 @@ mod tests {
             decrypt_display_enabled: true,
             deferred_rows: 0,
             unrecognized_wire_rows: 0,
+            content_gone_rows: 0,
+            already_opened: 0,
         };
 
         assert_eq!(
@@ -13552,6 +13294,8 @@ mod tests {
             decrypt_display_enabled: true,
             deferred_rows: 0,
             unrecognized_wire_rows: 0,
+            content_gone_rows: 0,
+            already_opened: 0,
         };
 
         let statuses = batch
@@ -13600,6 +13344,8 @@ mod tests {
                 decrypt_display_enabled: true,
                 deferred_rows: 0,
                 unrecognized_wire_rows: 0,
+                content_gone_rows: 0,
+                already_opened: 0,
             };
         let labels = |batch: &OpenedNativeOverlayTextBatch| {
             batch
@@ -13744,6 +13490,8 @@ mod tests {
             decrypt_display_enabled: true,
             deferred_rows: 0,
             unrecognized_wire_rows: 0,
+            content_gone_rows: 0,
+            already_opened: 0,
         };
 
         let value = serde_json::to_value(batch).expect("B-side batch serializes");
@@ -15755,7 +15503,6 @@ mod tests {
         let valid_receive = InspectedV3Content {
             sender_ik: selected_friend,
             recipient_hashes: vec![friend_hash, self_hash],
-            body_nonce: [0x51; crypto::aes_gcm::NONCE_SIZE],
         };
         assert!(verify_inspected_manual_v3(
             &valid_receive,
@@ -15767,7 +15514,6 @@ mod tests {
         let wrong_recipient = InspectedV3Content {
             sender_ik: selected_friend,
             recipient_hashes: vec![self_hash, [0x99; 8]],
-            body_nonce: [0x52; crypto::aes_gcm::NONCE_SIZE],
         };
         assert!(verify_inspected_manual_v3(
             &wrong_recipient,
@@ -16088,18 +15834,18 @@ mod tests {
 
     #[test]
     fn native_text_chunks_preserve_boundaries_and_reassemble_only_complete_consistent_groups() {
-        let logical = format!("first\n\n{}🙂\nlast", "\\\n".repeat(520_000));
+        let logical = format!("first\n\n{}🙂\nlast", "\\\n".repeat(180_000));
         assert!(logical.len() <= MAX_NATIVE_OVERLAY_LOGICAL_TEXT_BYTES);
-        let chunks = split_native_overlay_text(&logical).unwrap();
+        let chunks = plan_private_message_cover_chunks(&logical).unwrap();
         assert!(chunks.len() <= MAX_NATIVE_OVERLAY_TEXT_CHUNKS);
         assert!(chunks
             .iter()
-            .all(|chunk| chunk.len() <= MAX_NATIVE_OVERLAY_CHUNK_BYTES));
+            .all(|chunk| chunk.len() <= PRIVATE_MESSAGE_BYTES_PER_COVER));
         assert_eq!(chunks.concat(), logical);
-        assert!(
-            split_native_overlay_text(&"x".repeat(MAX_NATIVE_OVERLAY_LOGICAL_TEXT_BYTES + 1))
-                .is_err()
-        );
+        assert!(plan_private_message_cover_chunks(
+            &"x".repeat(MAX_NATIVE_OVERLAY_LOGICAL_TEXT_BYTES + 1)
+        )
+        .is_err());
 
         let alice = keystore::generate_identity("osl-native-chunk-alice".to_owned());
         let bob = keystore::generate_identity("osl-native-chunk-bob".to_owned());
@@ -16134,9 +15880,9 @@ mod tests {
         };
         let chunk_plaintext = format!(
             "{}🙂",
-            "\n\\".repeat((MAX_NATIVE_OVERLAY_CHUNK_BYTES - 4) / 2)
+            "\n\\".repeat((PRIVATE_MESSAGE_BYTES_PER_COVER - 4) / 2)
         );
-        assert_eq!(chunk_plaintext.len(), MAX_NATIVE_OVERLAY_CHUNK_BYTES);
+        assert_eq!(chunk_plaintext.len(), PRIVATE_MESSAGE_BYTES_PER_COVER);
         let meta = NativeTextChunkMeta {
             logical_message_id: "peer-11112222333344445555666677778888".to_owned(),
             chunk_index: 0,
@@ -17004,18 +16750,9 @@ ok i will weekend again with you",
     fn bridge_era_evidence(
         poster: crate::native_discord_adapter::NativeDiscordRowPoster,
     ) -> crate::native_discord_adapter::NativeDiscordRowAttributionEvidence {
-        let who_wrote_it = match poster {
-            crate::native_discord_adapter::NativeDiscordRowPoster::SelfAccount => {
-                crate::native_discord_adapter::SharedRowWhoWroteIt::Yours
-            }
-            crate::native_discord_adapter::NativeDiscordRowPoster::PeerAccount => {
-                crate::native_discord_adapter::SharedRowWhoWroteIt::Theirs
-            }
-        };
         crate::native_discord_adapter::NativeDiscordRowAttributionEvidence {
             discord_message_id: "111111111111111111".to_owned(),
             poster_identity_sha256: "a".repeat(64),
-            who_wrote_it,
             poster,
             native_locator_sha256: "b".repeat(64),
             carrier_sha256: "c".repeat(64),
@@ -17031,7 +16768,6 @@ ok i will weekend again with you",
         plaintext: &str,
         fill: char,
     ) -> AuthenticatedProsePointer {
-        let identity_byte = u8::try_from(u32::from(fill)).expect("matrix fill is ASCII");
         AuthenticatedProsePointer {
             payload: PeerProtectedPayload {
                 version: PEER_PROTECTED_VERSION,
@@ -17055,11 +16791,6 @@ ok i will weekend again with you",
             orientation,
             blob_id: fill.to_string().repeat(32),
             ciphertext_sha256: fill.to_string().repeat(64),
-            identity: ProtectedPayloadIdentity {
-                message_id: payload_id.to_owned(),
-                sender_key: [identity_byte; 32],
-                nonce: [identity_byte; crypto::aes_gcm::NONCE_SIZE],
-            },
         }
     }
 
@@ -17075,192 +16806,6 @@ ok i will weekend again with you",
             bounds: Some([10, top, 500, top + 24]),
             attribution: Some(evidence),
         }
-    }
-
-    fn task_5093_evidence(
-        message_id: &str,
-        poster_identity: &str,
-        carrier: &str,
-        seed: i32,
-        row_index: usize,
-    ) -> crate::native_discord_adapter::NativeDiscordRowAttributionEvidence {
-        crate::native_discord_adapter::native_row_attribution_from_provider(
-            matrix_native_observation(message_id, poster_identity, carrier, seed),
-            &[carrier.to_owned()],
-            "trusted-scope",
-            7,
-            row_index,
-        )
-        .expect("native row evidence is complete")
-    }
-
-    fn task_5093_real_authenticated_payload() -> AuthenticatedProsePointer {
-        let pair = native_manual_pair("task-5093-payload-identity");
-        let wire = prepare_direct_manual_v3(
-            &pair.core,
-            &pair.alice_binding,
-            &pair.alice_manual,
-            &pair.alice_context,
-            "task 5093 private words: juniper ember copper".to_owned(),
-            PeerProtectionPolicy {
-                view_once: false,
-                require_capture_protection: true,
-                created_at: 1_700_000_000,
-                expires_at: 1_700_003_600,
-                send_order: None,
-            },
-            "peer-50930000000000000000000000000000".to_owned(),
-            None,
-        )
-        .expect("shipping v3 path encrypts the genuine payload");
-        let inspected = inspect_v3_content_wire(&wire).expect("shipping v3 wire is inspectable");
-        assert_eq!(inspected.sender_ik, *pair.alice.x25519_public.as_bytes());
-        let payload = decrypt_direct_manual_v3(
-            &pair.core,
-            &pair.alice_binding,
-            ManualWireSender::SelfIdentity,
-            &wire,
-        )
-        .expect("shipping v3 path decrypts the genuine payload");
-        AuthenticatedProsePointer {
-            identity: ProtectedPayloadIdentity {
-                message_id: payload.message_id.clone(),
-                sender_key: inspected.sender_ik,
-                nonce: inspected.body_nonce,
-            },
-            payload,
-            orientation: PeerWireOrientation::SelfToPeer,
-            blob_id: "8".repeat(32),
-            ciphertext_sha256: sha256_hex(wire.as_bytes()),
-        }
-    }
-
-    #[test]
-    fn task_5093_visible_cover_copy_is_not_a_replay_refusal() {
-        use crate::native_discord_adapter::native_row_producer_batch_is_valid;
-
-        const COVER: &str = "the quiet harbour keeps every lantern burning tonight";
-        let genuine = task_5093_evidence("444444444444444441", "111111111111111111", COVER, 41, 0);
-        let attacker = task_5093_evidence("444444444444444442", "222222222222222222", COVER, 51, 1);
-        let rows = vec![
-            matrix_visible_row(genuine.clone(), COVER, 10),
-            matrix_visible_row(attacker.clone(), COVER, 40),
-        ];
-        assert_eq!(rows[0].line.as_bytes(), rows[1].line.as_bytes());
-        assert!(native_row_producer_batch_is_valid(
-            &rows,
-            "trusted-scope",
-            7
-        ));
-        assert!(native_row_evidence_batch_is_valid(
-            &rows,
-            "trusted-scope",
-            7
-        ));
-
-        let authenticated = task_5093_real_authenticated_payload();
-        let mut identities = PayloadIdentityStore::default();
-        let genuine_outcome =
-            bind_authenticated_native_row_once(&mut identities, &genuine, authenticated.clone());
-        let attacker_outcome =
-            bind_authenticated_native_row_once(&mut identities, &attacker, authenticated);
-
-        let genuine_rendered = matches!(&genuine_outcome, NativeRowBindOutcome::Rendered(_));
-        let attacker_private_words_opened = usize::from(matches!(
-            &attacker_outcome,
-            NativeRowBindOutcome::Rendered(_)
-        ));
-        let authentication_refusals = usize::from(matches!(
-            &attacker_outcome,
-            NativeRowBindOutcome::AuthenticationRefused
-        ));
-        let replay_refusals = usize::from(matches!(
-            &genuine_outcome,
-            NativeRowBindOutcome::ReplayRefused
-        )) + usize::from(matches!(
-            &attacker_outcome,
-            NativeRowBindOutcome::ReplayRefused
-        ));
-        assert!(genuine_rendered);
-        assert_eq!(attacker_private_words_opened, 0);
-        assert_eq!(authentication_refusals, 1);
-        assert_eq!(replay_refusals, 0);
-        println!(
-            "TASK5093 copied_visible_text rows=2 attacker_private_words_opened={attacker_private_words_opened} replay_refusals={replay_refusals} authentication_refusals={authentication_refusals} genuine_rendered={genuine_rendered}"
-        );
-    }
-
-    #[test]
-    fn task_5093_real_payload_identity_replay_refuses_only_replayed_row() {
-        const FIRST_COVER: &str = "the winter garden waits beside the silver morning";
-        const REPLAY_COVER: &str = "a different public cover cannot hide a payload replay";
-        let first = task_5093_evidence(
-            "444444444444444451",
-            "111111111111111111",
-            FIRST_COVER,
-            61,
-            0,
-        );
-        let replay = task_5093_evidence(
-            "444444444444444452",
-            "111111111111111111",
-            REPLAY_COVER,
-            71,
-            1,
-        );
-        let rows = vec![
-            matrix_visible_row(first.clone(), FIRST_COVER, 10),
-            matrix_visible_row(replay.clone(), REPLAY_COVER, 40),
-        ];
-        assert_ne!(rows[0].line, rows[1].line);
-        assert!(native_row_evidence_batch_is_valid(
-            &rows,
-            "trusted-scope",
-            7
-        ));
-
-        let authenticated = task_5093_real_authenticated_payload();
-        let replay_identity = authenticated.identity.clone();
-        let mut identities = PayloadIdentityStore::default();
-        let original =
-            bind_authenticated_native_row_once(&mut identities, &first, authenticated.clone());
-        let repeated = bind_authenticated_native_row_once(&mut identities, &replay, authenticated);
-        let original_rendered = matches!(&original, NativeRowBindOutcome::Rendered(_));
-        let replayed_row_refused = matches!(&repeated, NativeRowBindOutcome::ReplayRefused);
-        let replay_refusals = usize::from(matches!(&original, NativeRowBindOutcome::ReplayRefused))
-            + usize::from(replayed_row_refused);
-        let authentication_refusals = usize::from(matches!(
-            &repeated,
-            NativeRowBindOutcome::AuthenticationRefused
-        ));
-        assert!(original_rendered);
-        assert!(replayed_row_refused);
-        assert_eq!(replay_refusals, 1);
-        assert_eq!(authentication_refusals, 0);
-
-        // All three authenticated fields are load-bearing: changing any one
-        // makes a distinct payload identity rather than a replay.
-        for distinct in [
-            ProtectedPayloadIdentity {
-                message_id: "payload-task-5093-other-id".to_owned(),
-                ..replay_identity.clone()
-            },
-            ProtectedPayloadIdentity {
-                sender_key: [0x77; 32],
-                ..replay_identity.clone()
-            },
-            ProtectedPayloadIdentity {
-                nonce: [0x66; crypto::aes_gcm::NONCE_SIZE],
-                ..replay_identity.clone()
-            },
-        ] {
-            let mut control = PayloadIdentityStore::default();
-            assert!(control.remember_if_new(replay_identity.clone()));
-            assert!(control.remember_if_new(distinct));
-        }
-        println!(
-            "TASK5093 payload_replay rows=2 real_v3_payload=true identity=message_id+sender_key+nonce replay_refusals={replay_refusals} authentication_refusals={authentication_refusals} original_rendered={original_rendered} replayed_row_refused={replayed_row_refused}"
-        );
     }
 
     #[test]
@@ -17333,10 +16878,7 @@ ok i will weekend again with you",
                 bind_authenticated_native_row(evidence, authenticated)
             },
         );
-        assert_eq!(
-            opened.iter().filter(|row| row.plaintext.is_some()).count(),
-            2
-        );
+        assert!(rehydrated_attribution_ids_are_unique(&opened));
         assert_eq!(
             opened[0].orientation,
             Some(RehydratedRowOrientation::Outgoing)
@@ -17446,6 +16988,47 @@ ok i will weekend again with you",
             0,
         )
         .is_none());
+
+        let replayed_crypto_attribution = bind_authenticated_native_row(
+            &peer,
+            matrix_authenticated(
+                PeerWireOrientation::PeerToSelf,
+                "payload-own",
+                "replayed plaintext",
+                'a',
+            ),
+        )
+        .expect("individual proof is structurally valid")
+        .2;
+        let crypto_replay = vec![
+            RehydratedNativeDiscordRow {
+                flagtext: OWN_CARRIER.to_owned(),
+                plaintext: Some("own plaintext".to_owned()),
+                orientation: Some(RehydratedRowOrientation::Outgoing),
+                attribution: Some(
+                    bind_authenticated_native_row(
+                        &own,
+                        matrix_authenticated(
+                            PeerWireOrientation::SelfToPeer,
+                            "payload-own",
+                            "own plaintext",
+                            'a',
+                        ),
+                    )
+                    .unwrap()
+                    .2,
+                ),
+                bounds: Some([10, 10, 500, 34]),
+            },
+            RehydratedNativeDiscordRow {
+                flagtext: PEER_CARRIER.to_owned(),
+                plaintext: Some("replayed plaintext".to_owned()),
+                orientation: Some(RehydratedRowOrientation::Incoming),
+                attribution: Some(replayed_crypto_attribution),
+                bounds: Some([10, 40, 500, 64]),
+            },
+        ];
+        assert!(!rehydrated_attribution_ids_are_unique(&crypto_replay));
 
         let inconsistent_dto = rehydrated_native_discord_row_dto(
             RehydratedNativeDiscordRow {

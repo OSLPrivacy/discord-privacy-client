@@ -21,7 +21,28 @@ pub struct OutlookWebControlDriver {
     pub targets: &'static [OutlookWebTarget],
 }
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct OutlookWebMappedControl {
+    pub name: &'static str,
+    pub action: &'static str,
+}
+
 pub const OUTLOOK_WEB_ORIGIN: &str = "https://outlook.live.com";
+
+pub const OUTLOOK_WEB_MAPPED_CONTROLS: &[OutlookWebMappedControl] = &[
+    OutlookWebMappedControl {
+        name: "Place",
+        action: "place-cover-message",
+    },
+    OutlookWebMappedControl {
+        name: "Read",
+        action: "read-open-cover-message",
+    },
+    OutlookWebMappedControl {
+        name: "Send",
+        action: "send-placed-cover-message",
+    },
+];
 
 pub const OUTLOOK_WEB_TARGETS: &[OutlookWebTarget] = &[
     OutlookWebTarget {
@@ -93,6 +114,10 @@ pub fn outlook_web_control_driver() -> OutlookWebControlDriver {
     }
 }
 
+pub fn outlook_web_mapped_controls() -> &'static [OutlookWebMappedControl] {
+    OUTLOOK_WEB_MAPPED_CONTROLS
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -132,5 +157,15 @@ mod tests {
 
         println!("outlook web target count={}", names.len());
         println!("outlook web targets={}", names.join(","));
+    }
+
+    #[test]
+    fn outlook_web_mapped_controls_name_place_read_and_send() {
+        let names = outlook_web_mapped_controls()
+            .iter()
+            .map(|control| control.name)
+            .collect::<Vec<_>>();
+
+        assert_eq!(names, vec!["Place", "Read", "Send"]);
     }
 }

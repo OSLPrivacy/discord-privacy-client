@@ -1,5 +1,10 @@
 //! Yahoo Mail fill-in for the shared mailbox reader.
+//!
+//! The deleting half is [`crate::scrub_hosted::yahoo_mail_delete`] (TASK 3061);
+//! [`yahoo_trash_surface_from_mailbox`] below is the bridge, so one seeded Yahoo
+//! mailbox feeds the reader and the deleter alike.
 
+use crate::scrub_hosted::yahoo_mail_delete::{YahooMailRow, YahooMailTrashSurface};
 use crate::services::{
     mail_message_is_owned_by_signed_in_address, open_shared_mailbox_message,
     read_shared_mailbox_folders, read_shared_mailbox_messages, MailboxReaderSnapshot,
@@ -79,6 +84,43 @@ pub fn read_yahoo_mailbox_folder_for_scrub(
         Ok(YahooMailboxMessage { summary, yours })
     })
     .collect()
+}
+
+/// Hand the mailbox a Scrub review read (TASK 3059) to the shared mail deleter
+/// (TASK 3045) as Yahoo's trash surface, so a run deletes out of the same rows
+/// the review looked at rather than a second, quieter copy of them.
+///
+/// Every folder in the snapshot is carried across, Trash included: the deleter
+/// re-reads Trash before and after the run, and it can only do that if the rows
+/// that were already sitting there came with it.
+pub fn yahoo_trash_surface_from_mailbox(
+    owner_osl_user_id: &str,
+    account_id: &str,
+    yahoo_filled_mailbox: &MailboxReaderSnapshot,
+) -> Result<YahooMailTrashSurface, String> {
+    let mut rows = Vec::new();
+    for folder in read_shared_mailbox_folders(
+        owner_osl_user_id,
+        YAHOO_MAIL_SERVICE_ID,
+        account_id,
+        yahoo_filled_mailbox,
+    )? {
+        for summary in read_shared_mailbox_messages(
+            owner_osl_user_id,
+            YAHOO_MAIL_SERVICE_ID,
+            account_id,
+            &folder.folder_id,
+            yahoo_filled_mailbox,
+        )? {
+            rows.push(YahooMailRow::new(
+                summary.folder_id,
+                summary.message_id,
+                summary.subject,
+                summary.sender,
+            ));
+        }
+    }
+    Ok(YahooMailTrashSurface::new(rows))
 }
 
 pub fn open_yahoo_mailbox_message_for_scrub(

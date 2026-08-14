@@ -1,0 +1,84 @@
+{
+  "markers": {
+    "conversation_names": "REAL-3233-CONVERSATION-NORTHSTAR",
+    "friend_names": "REAL-3233-FRIEND-MIRA-VALE",
+    "keys": "REAL-3233-KEY-7C91-4E2B-A6D0",
+    "files": "REAL-3233-FILE-PROJECT-EMBER.OSL"
+  },
+  "real": {
+    "files": [
+      {
+        "path": "vault/REAL-3233-FILE-PROJECT-EMBER.OSL",
+        "contents": "Conversation: REAL-3233-CONVERSATION-NORTHSTAR\nFriend: REAL-3233-FRIEND-MIRA-VALE\nKey: REAL-3233-KEY-7C91-4E2B-A6D0\n"
+      }
+    ],
+    "logs": [
+      {
+        "path": "osl-hub.log",
+        "contents": "opened REAL-3233-CONVERSATION-NORTHSTAR for REAL-3233-FRIEND-MIRA-VALE with REAL-3233-KEY-7C91-4E2B-A6D0 from REAL-3233-FILE-PROJECT-EMBER.OSL\n"
+      }
+    ],
+    "deep_links": [
+      {
+        "path": "registered-links.jsonl",
+        "contents": "{\"uri\":\"osl://conversation/REAL-3233-CONVERSATION-NORTHSTAR?friend=REAL-3233-FRIEND-MIRA-VALE&key=REAL-3233-KEY-7C91-4E2B-A6D0&file=REAL-3233-FILE-PROJECT-EMBER.OSL\"}\n"
+      }
+    ],
+    "notices": [
+      {
+        "path": "notification-history.json",
+        "contents": "{\"title\":\"REAL-3233-CONVERSATION-NORTHSTAR\",\"friend\":\"REAL-3233-FRIEND-MIRA-VALE\",\"key\":\"REAL-3233-KEY-7C91-4E2B-A6D0\",\"file\":\"REAL-3233-FILE-PROJECT-EMBER.OSL\"}\n"
+      }
+    ],
+    "recent_files": [
+      {
+        "path": "AutomaticDestinations/recent-items.txt",
+        "contents": "REAL-3233-CONVERSATION-NORTHSTAR|REAL-3233-FRIEND-MIRA-VALE|REAL-3233-KEY-7C91-4E2B-A6D0|REAL-3233-FILE-PROJECT-EMBER.OSL\n"
+      }
+    ],
+    "windows_search": [
+      {
+        "path": "Windows.edb-export.txt",
+        "contents": "System.ItemName=REAL-3233-FILE-PROJECT-EMBER.OSL; System.Search.Contents=REAL-3233-CONVERSATION-NORTHSTAR REAL-3233-FRIEND-MIRA-VALE REAL-3233-KEY-7C91-4E2B-A6D0\n"
+      }
+    ]
+  },
+  "decoy": {
+    "files": [
+      {
+        "path": "Documents/grocery-list.txt",
+        "contents": "tea\nrice\napples\n"
+      }
+    ],
+    "logs": [
+      {
+        "path": "workspace.log",
+        "contents": "workspace opened\nworkspace closed\n"
+      }
+    ],
+    "deep_links": [
+      {
+        "path": "registered-links.jsonl",
+        "contents": "{\"uri\":\"notes://new\"}\n"
+      }
+    ],
+    "notices": [
+      {
+        "path": "notification-history.json",
+        "contents": "{\"title\":\"Calendar\",\"detail\":\"No events today\"}\n"
+      }
+    ],
+    "recent_files": [
+      {
+        "path": "AutomaticDestinations/recent-items.txt",
+        "contents": "grocery-list.txt\n"
+      }
+    ],
+    "windows_search": [
+      {
+        "path": "Windows.edb-export.txt",
+        "contents": "System.ItemName=grocery-list.txt; System.Search.Contents=tea rice apples\n"
+      }
+    ]
+  }
+}

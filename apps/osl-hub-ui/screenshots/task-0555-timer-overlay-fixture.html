@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark" />
+    <title>OSL Privacy — timer picker over chat</title>
+    <link rel="stylesheet" href="/screenshots/task-0555-timer-overlay.css" />
+  </head>
+  <body>
+    <main class="timer-chat" aria-label="OSL chat with Asha">
+      <aside class="timer-chat-sidebar"><p class="timer-chat-brand">OSL Privacy</p><div class="timer-chat-contact"><span class="timer-chat-avatar">A</span><span>Asha<br /><small>Private chat</small></span></div></aside>
+      <section class="timer-chat-main">
+        <header class="timer-chat-header"><h1>Asha</h1><span class="timer-chat-status">● Protected</span></header>
+        <section class="timer-chat-messages" aria-label="Chat messages"><div class="timer-message incoming">Want to set a timer for this message?<time>10:42</time></div><div class="timer-message outgoing">Yes — I’ll choose it before I send.<time>10:43</time></div></section>
+        <form class="timer-chat-composer"><input aria-label="Message to Asha" value="Meet at the usual place." readonly /><button id="open-timer-picker" type="button">Set timer</button></form>
+      </section>
+    </main>
+    <div id="timer-overlay-host"></div>
+    <script type="module">
+      import { defaultTimerOverlayState, timerOverlayMarkup } from "/src/timer-overlay.ts";
+      import { bindTimerOverlaySave, createTimerOverlaySaveActions } from "/src/timer-overlay-actions.ts";
+
+      document.querySelector("#open-timer-picker").addEventListener("click", () => {
+        const host = document.querySelector("#timer-overlay-host");
+        host.innerHTML = timerOverlayMarkup(defaultTimerOverlayState());
+        bindTimerOverlaySave(host, createTimerOverlaySaveActions());
+        document.documentElement.dataset.task0555 = "timer-picker-open";
+      });
+      document.documentElement.dataset.task0555 = "chat-ready";
+    </script>
+  </body>
+</html>

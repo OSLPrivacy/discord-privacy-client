@@ -590,7 +590,7 @@ describe("trusted composer overlay", () => {
     // The handle is held to the id shape the rest of this path already uses.
     expect(parseNativeDiscordOverlayOpened({ ...opened, messageId: "not-a-peer-id" })).toBeNull();
     const pendingViewOnce = { messageId: "peer-0123456789abcdef0123456789abcdef", expiresAt: prepared.expiresAt, displayDurationSeconds: 15, personToPersonE2ee: true };
-    const batch = { messages: [opened], pendingViewOnce: [pendingViewOnce], acknowledgments: [acknowledgment], fetched: 2, decryptDisplayEnabled: true, deferredRows: 0, unrecognizedWireRows: 0, contentGoneRows: 0 };
+    const batch = { messages: [opened], pendingViewOnce: [pendingViewOnce], acknowledgments: [acknowledgment], fetched: 2, decryptDisplayEnabled: true, deferredRows: 0, unrecognizedWireRows: 0, contentGoneRows: 0, alreadyOpened: 0 };
     expect(parseNativeDiscordOverlayOpenedBatch(batch)).toEqual(batch);
     expect(parseNativeDiscordOverlayOpenedBatch({ ...batch, pendingViewOnce: [{ ...pendingViewOnce, displayDurationSeconds: 61 }] })).toBeNull();
     // A batch that cannot say whether opening was switched on, or how many rows it
@@ -604,6 +604,8 @@ describe("trusted composer overlay", () => {
     expect(parseNativeDiscordOverlayOpenedBatch(batchWithoutUnrecognized)).toBeNull();
     const { contentGoneRows: _gone, ...batchWithoutGone } = batch;
     expect(parseNativeDiscordOverlayOpenedBatch(batchWithoutGone)).toBeNull();
+    const { alreadyOpened: _alreadyOpened, ...batchWithoutAlreadyOpened } = batch;
+    expect(parseNativeDiscordOverlayOpenedBatch(batchWithoutAlreadyOpened)).toBeNull();
     expect(parseNativeDiscordOverlayOpenedBatch({ ...batch, decryptDisplayEnabled: false })?.decryptDisplayEnabled).toBe(false);
     expect(parseNativeDiscordOverlayOpenedBatch({ ...batch, deferredRows: 3 })?.deferredRows).toBe(3);
     expect(parseNativeDiscordOverlayOpenedBatch({ ...batch, deferredRows: -1 })).toBeNull();
@@ -611,6 +613,8 @@ describe("trusted composer overlay", () => {
     expect(parseNativeDiscordOverlayOpenedBatch({ ...batch, unrecognizedWireRows: -1 })).toBeNull();
     expect(parseNativeDiscordOverlayOpenedBatch({ ...batch, contentGoneRows: 1 })?.contentGoneRows).toBe(1);
     expect(parseNativeDiscordOverlayOpenedBatch({ ...batch, contentGoneRows: -1 })).toBeNull();
+    expect(parseNativeDiscordOverlayOpenedBatch({ ...batch, alreadyOpened: 1 })?.alreadyOpened).toBe(1);
+    expect(parseNativeDiscordOverlayOpenedBatch({ ...batch, alreadyOpened: -1 })).toBeNull();
     expect(parseNativeDiscordOverlayState({ ...state, scopeApproved: false })).toBeNull();
     const { discordMarkerAvailable: _marker, ...stateWithoutMarkerAvailability } = state;
     expect(parseNativeDiscordOverlayState(stateWithoutMarkerAvailability)).toBeNull();
@@ -1199,6 +1203,47 @@ describe("trusted composer overlay", () => {
       discordQaShell: false,
     })).toBe(false);
     expect(source).not.toMatch(/localStorage|sessionStorage|indexedDB/);
+  });
+
+  it("TASK4411 wake-up notice enters the guarded fetch-then-repaint path exactly once", () => {
+    const source = readRelative("./overlay.ts");
+    const executableDrainEdges = source.split("\n").filter((line) => {
+      const trimmed = line.trimStart();
+      return !trimmed.startsWith("//")
+        && !line.includes("function requestRealtimeDrain")
+        && line.includes("requestRealtimeDrain(");
+    });
+
+    const listenerStart = source.indexOf("void listen<void>(DISCORD_RECEIVE_WAKEUP_EVENT");
+    expect(listenerStart).toBeGreaterThan(-1);
+    const listenerEnd = source.indexOf("});", listenerStart);
+    const listener = source.slice(listenerStart, listenerEnd);
+    expect(listener.match(/requestRealtimeDrain\(\)/gu)).toHaveLength(1);
+
+    const request = source.slice(
+      source.indexOf("function requestRealtimeDrain(): void {"),
+      source.indexOf("async function drainReceived(): Promise<void> {"),
+    );
+    expect(request.match(/drainReceived\(\)/gu)).toHaveLength(1);
+    expect(request).toContain("shouldPollDiscordOverlay({");
+
+    const drain = source.slice(
+      source.indexOf("async function drainReceived(): Promise<void> {"),
+      source.indexOf('document.addEventListener("visibilitychange"'),
+    );
+    expect(drain).toContain("if (receiveBusy || !shouldPollDiscordOverlay({");
+    expect(drain.match(/openNativeDiscordOverlayText\(\)/gu)).toHaveLength(1);
+    const newMessageEdge = drain.slice(
+      drain.indexOf("// NEW-MESSAGE EDGE."),
+      drain.indexOf("const attachments", drain.indexOf("// NEW-MESSAGE EDGE.")),
+    );
+    expect(newMessageEdge.match(/scheduleTranscriptRehydrate\(\)/gu)).toHaveLength(1);
+
+    console.log(`TASK4411_EDGE_COUNT_AFTER=${executableDrainEdges.length}`);
+    console.log("TASK4411_WAKEUP_FETCHES=1");
+    console.log("TASK4411_WAKEUP_REPAINTS=1");
+    console.log(`TASK4411_SCREEN_REPEATING_TIMERS=${(source.match(/setInterval/gu) ?? []).length}`);
+    expect(executableDrainEdges).toHaveLength(10);
   });
 
   it("names every received message and never swallows a receive failure", () => {

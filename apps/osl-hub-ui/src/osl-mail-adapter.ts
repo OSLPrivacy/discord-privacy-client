@@ -235,13 +235,17 @@ export function parseOslMailThreadList(value: unknown): OslMailThreadSummary[] |
 
 export async function listOslMailThreads(): Promise<OslMailThreadSummary[] | null> {
   if (!isTauriRuntime()) return null;
-  try {
-    return parseOslMailThreadList(await invoke<unknown>("osl_mail_list_threads"));
-  } catch { return null; }
+  try { return parseOslMailThreadList(await invoke<unknown>("osl_mail_list_threads")); }
+  catch { return null; }
 }
 
 export const retrieveOslMailThread = (threadId: string): Promise<OslMailRetrievedThread | null> => OSL_MAIL_ID.test(threadId)
   ? call("osl_mail_retrieve_thread", { threadId }, parseOslMailRetrievedThread)
+  : Promise.resolve(null);
+
+export const acknowledgeOslMailRetrieval = (retrievalId: string, messageIds: string[]): Promise<OslMailDeleteReceipt | null> => OSL_MAIL_ID.test(retrievalId)
+  && messageIds.length > 0 && messageIds.length <= 200 && messageIds.every((id) => OSL_MAIL_ID.test(id))
+  ? call("osl_mail_acknowledge_retrieval", { retrievalId, messageIds }, parseOslMailDeleteReceipt)
   : Promise.resolve(null);
 
 export async function sendOslMail(recipient: string, subject: string, body: string): Promise<OslMailSendReceipt | null> {

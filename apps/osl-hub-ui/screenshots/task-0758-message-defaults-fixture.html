@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark" />
+    <title>Message defaults</title>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module">
+      import "/src/styles.css";
+      const {
+        FACTORY_MESSAGE_DEFAULTS,
+        MESSAGE_DEFAULTS_TITLE,
+        initialMessageDefaultsScreenState,
+        messageDefaultsScreenMarkup,
+      } = await import("/src/message-defaults.ts");
+      const response = await fetch("/screenshots/fixtures/task-0758-message-defaults.json");
+      const fixture = await response.json();
+
+      // main.ts renders this screen as its own route inside the workspace frame
+      // (`route === "message-defaults"` -> messageDefaultsScreenMarkup), NOT
+      // inside the Settings sidebar, so the fixture mounts it the same way. A
+      // capture of the screen in a place the product never puts it would be a
+      // picture of something nobody can reach.
+      window.task0758Render = (saved) => {
+        const state = initialMessageDefaultsScreenState(saved);
+        document.querySelector("#app").innerHTML =
+          `<div class="app-frame">${messageDefaultsScreenMarkup(state)}</div>`;
+        document.title = MESSAGE_DEFAULTS_TITLE;
+        document.documentElement.dataset.task0758 = "ready";
+      };
+
+      window.task0758Factory = FACTORY_MESSAGE_DEFAULTS;
+      window.task0758Render(fixture.sample);
+    </script>
+  </body>
+</html>

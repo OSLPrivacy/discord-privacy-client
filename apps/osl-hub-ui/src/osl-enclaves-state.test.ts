@@ -14,6 +14,7 @@ import {
   visibleSpaceChannels,
   visibleSpaceMessages,
 } from "./osl-enclaves-state";
+import { OSL_KEY_CHANGES_CHANNEL_ID } from "./osl-enclaves-server-access";
 const messages = [
   { messageId: "outgoing", channelId: "general", localSequence: 1, incoming: false, mentionsLocalUser: false },
   { messageId: "hello", channelId: "general", localSequence: 2, incoming: true, mentionsLocalUser: false },
@@ -137,5 +138,11 @@ describe("Enclave local moderation filters", () => {
     const filters = blockSpaceMember(emptyEnclaveLocalFilters(), "member-abusive");
 
     expect(JSON.stringify(filters)).toBe("{}");
+  });
+
+  it("keeps the OSL-authored key-change channel listed when a device hides ordinary channels", () => {
+    const filters = hideSpaceChannel(emptyEnclaveLocalFilters(), OSL_KEY_CHANGES_CHANNEL_ID);
+    expect(visibleSpaceChannels(filters, ["general", OSL_KEY_CHANGES_CHANNEL_ID]))
+      .toEqual(["general", OSL_KEY_CHANGES_CHANNEL_ID]);
   });
 });

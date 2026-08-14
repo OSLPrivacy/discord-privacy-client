@@ -1,0 +1,29 @@
+{
+  "description": "TASK 1340 clipboard paste fixture. Every payload is a thing a real clipboard can hand the OSL Chat composer. `kind` says what the user copied: \"text\" is plain or rich text, \"object\" is a non-image clipboard object (a spreadsheet range, a file blob), \"image\" is the only kind clipboard intake may turn into an attachment. Non-image payloads are the point of this fixture: a fixture without them fails the check.",
+  "payloads": [
+    {
+      "name": "plain-text",
+      "kind": "text",
+      "media_type": "text/plain",
+      "text": "Meeting moved to 19:00 - bring the notes, not the laptop."
+    },
+    {
+      "name": "rich-text-html",
+      "kind": "text",
+      "media_type": "text/html",
+      "text": "<b>Meeting moved to 19:00</b> - bring the notes."
+    },
+    {
+      "name": "unsupported-spreadsheet-object",
+      "kind": "object",
+      "media_type": "application/vnd.oasis.opendocument.spreadsheet",
+      "bytes_hex": "504b03041400000008004f534c31333430cafe0000"
+    },
+    {
+      "name": "png-control",
+      "kind": "image",
+      "media_type": "image/png",
+      "bytes_hex": "89504e470d0a1a0a5441534b31333430"
+    }
+  ]
+}

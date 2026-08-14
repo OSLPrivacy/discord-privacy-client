@@ -1,0 +1,159 @@
+{
+  "schema": "task-0246-account-reach-linux/v1",
+  "window": {
+    "width": 1024,
+    "height": 700
+  },
+  "fixture": "/screenshots/fixtures/task-0246-account-reach-linux.html",
+  "screen": {
+    "viewport": {
+      "width": 1024,
+      "height": 700
+    },
+    "title": "Vera",
+    "list": {
+      "x": 183,
+      "y": 265.390625,
+      "width": 658,
+      "height": 263.5,
+      "right": 841,
+      "bottom": 528.890625
+    },
+    "rows": [
+      {
+        "accountId": "gmail-primary",
+        "label": "Gmail (primary)",
+        "checked": true,
+        "box": {
+          "x": 794,
+          "y": 307.390625,
+          "width": 28,
+          "height": 28,
+          "right": 822,
+          "bottom": 335.390625
+        },
+        "row": {
+          "x": 184,
+          "y": 291.890625,
+          "width": 656,
+          "height": 59,
+          "right": 840,
+          "bottom": 350.890625
+        }
+      },
+      {
+        "accountId": "discord-alt",
+        "label": "Discord (alt)",
+        "checked": false,
+        "box": {
+          "x": 794,
+          "y": 366.890625,
+          "width": 28,
+          "height": 28,
+          "right": 822,
+          "bottom": 394.890625
+        },
+        "row": {
+          "x": 184,
+          "y": 350.890625,
+          "width": 656,
+          "height": 59,
+          "right": 840,
+          "bottom": 409.890625
+        }
+      },
+      {
+        "accountId": "signal-personal",
+        "label": "Signal (personal)",
+        "checked": true,
+        "box": {
+          "x": 794,
+          "y": 425.890625,
+          "width": 28,
+          "height": 28,
+          "right": 822,
+          "bottom": 453.890625
+        },
+        "row": {
+          "x": 184,
+          "y": 409.890625,
+          "width": 656,
+          "height": 59,
+          "right": 840,
+          "bottom": 468.890625
+        }
+      },
+      {
+        "accountId": "telegram-work",
+        "label": "Telegram (work)",
+        "checked": false,
+        "box": {
+          "x": 794,
+          "y": 484.890625,
+          "width": 28,
+          "height": 28,
+          "right": 822,
+          "bottom": 512.890625
+        },
+        "row": {
+          "x": 184,
+          "y": 468.890625,
+          "width": 656,
+          "height": 59,
+          "right": 840,
+          "bottom": 527.890625
+        }
+      }
+    ]
+  },
+  "image": {
+    "path": "friend-account-reach-linux.png",
+    "bytes": 30806,
+    "sha256": "6ae09cd3fcf6225dfdb6468db6f014bcf7d66d2e42d84077cfe5cf6b3a166572",
+    "width": 1024,
+    "height": 700,
+    "distinctColors": 1963,
+    "crops": {
+      "accountReachList": {
+        "width": 658,
+        "height": 264,
+        "pixels": 173712,
+        "distinctColors": 1033,
+        "saturatedPixels": 5217,
+        "meanColor": "30,31,32"
+      },
+      "gmail-primary": {
+        "width": 656,
+        "height": 60,
+        "pixels": 39360,
+        "distinctColors": 313,
+        "saturatedPixels": 1407,
+        "meanColor": "29,32,33"
+      },
+      "discord-alt": {
+        "width": 656,
+        "height": 60,
+        "pixels": 39360,
+        "distinctColors": 266,
+        "saturatedPixels": 723,
+        "meanColor": "29,29,29"
+      },
+      "signal-personal": {
+        "width": 656,
+        "height": 60,
+        "pixels": 39360,
+        "distinctColors": 376,
+        "saturatedPixels": 1442,
+        "meanColor": "29,33,33"
+      },
+      "telegram-work": {
+        "width": 656,
+        "height": 60,
+        "pixels": 39360,
+        "distinctColors": 319,
+        "saturatedPixels": 872,
+        "meanColor": "30,30,30"
+      }
+    }
+  }
+}

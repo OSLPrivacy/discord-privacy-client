@@ -1,7 +1,7 @@
-use ipc::commands::cmd_osl_list_email_send_modes;
+use ipc::commands::{cmd_osl_list_email_send_modes, cmd_osl_open_email_send_review};
 use ipc::email_send_modes::{
-    apply_email_composer_input, prepare_hidden_email_subject, EmailComposerInput,
-    EmailComposerInputEffect, EmailSendMode, DEFAULT_PLAIN_EMAIL_SUBJECT,
+    apply_email_composer_input, open_email_send_review, visible_subject_protection_warning,
+    EmailComposerInput, EmailComposerInputEffect, EmailSendMode, BORING_PROTECTED_SUBJECT,
 };
 
 #[test]
@@ -82,30 +82,99 @@ fn task_1223_email_enter_adds_line_in_all_five_modes() {
     assert_eq!(line_insertions, 5);
 }
 
+/// TASK 1298 - the visible-subject warning has to reach the send review, not
+/// only the send refusal. Fixture: one private subject, one "Hello", plus two
+/// controls that keep the rule from collapsing into "long subjects warn".
 #[test]
-fn task_3139_empty_hidden_email_subject_defaults_and_typed_subject_stays_exact() {
-    let empty = prepare_hidden_email_subject("");
-    let typed_input = "CUSTOM-3139  Mixed Case / punctuation! ";
-    let typed = prepare_hidden_email_subject(typed_input);
+fn task_1298_send_review_warns_about_a_visible_private_subject_before_send() {
+    let protected_body = "Meet me at the west loading door after payroll closes.";
+    let private_subject = protected_body;
+    let fixtures: [(&str, &str); 4] = [
+        ("private subject", private_subject),
+        ("Hello", "Hello"),
+        (
+            "unrelated long subject",
+            "Quarterly logistics planning notes",
+        ),
+        ("boring replacement", BORING_PROTECTED_SUBJECT),
+    ];
 
-    let saved_choice = DEFAULT_PLAIN_EMAIL_SUBJECT;
-    let default_read_back = empty.read_back();
-    let typed_read_back = typed.read_back();
-    let typed_change_count = usize::from(typed_read_back != typed_input);
+    let mut warned = 0usize;
+    for (label, subject) in fixtures {
+        let review = open_email_send_review(EmailSendMode::Manual, subject, protected_body);
+        let rows = review.rows();
 
-    println!("TASK3139 empty_subject={default_read_back:?}");
-    println!("TASK3139 typed_subject={typed_read_back:?}");
-    println!("TASK3139 typed_subject_change_count={typed_change_count}");
-    println!("TASK3139 saved_choice={saved_choice:?}");
-    println!("TASK3139 choice_read_back={default_read_back:?}");
+        println!(
+            "TASK1298 fixture={label} subject={subject:?} warning={:?} rows={rows:?}",
+            review.visible_subject_warning
+        );
 
-    assert_eq!(default_read_back, "Quick note");
-    assert_eq!(default_read_back, saved_choice);
-    assert_eq!(typed_read_back, typed_input);
-    assert_eq!(typed_change_count, 0);
+        assert_eq!(review.named_send_command, "Send");
+        assert_eq!(rows[review.named_send_row_index()], "Send");
 
-    // Sending consumes the prepared value and still returns the exact subject
-    // that was read back, rather than resolving the default a second time.
-    assert_eq!(empty.into_subject(), saved_choice);
-    assert_eq!(typed.into_subject(), typed_input);
+        if let Some(warning) = review.visible_subject_warning.as_deref() {
+            let warning_index = review
+                .visible_subject_warning_row_index()
+                .expect("a warned review must place its warning in a row");
+            println!(
+                "TASK1298 fixture={label} warning_row={warning_index} send_row={}",
+                review.named_send_row_index()
+            );
+            assert_eq!(warning, visible_subject_protection_warning());
+            assert!(warning.contains(BORING_PROTECTED_SUBJECT));
+            assert!(
+                warning_index < review.named_send_row_index(),
+                "the warning must be read before the named Send command"
+            );
+            warned += 1;
+        } else {
+            assert_eq!(rows.len(), 1);
+            assert!(review.visible_subject_warning_row_index().is_none());
+        }
+    }
+
+    // Exactly the private subject warns; "Hello" and both controls do not.
+    let private = open_email_send_review(EmailSendMode::Manual, private_subject, protected_body);
+    let hello = open_email_send_review(EmailSendMode::Manual, "Hello", protected_body);
+    println!(
+        "TASK1298 private_subject_warnings={} hello_warnings={} warned_fixtures={warned}",
+        usize::from(private.warns_about_visible_subject()),
+        usize::from(hello.warns_about_visible_subject())
+    );
+    assert!(private.warns_about_visible_subject());
+    assert!(!hello.warns_about_visible_subject());
+    assert_eq!(warned, 1);
+}
+
+/// The same review reaching the composer UI through the named command.
+#[test]
+fn task_1298_send_review_command_carries_the_warning_to_the_ui() {
+    let protected_body = "Meet me at the west loading door after payroll closes.";
+
+    let private = cmd_osl_open_email_send_review("manual", protected_body, protected_body)
+        .expect("manual is a real send mode");
+    let hello = cmd_osl_open_email_send_review("manual", "Hello", protected_body)
+        .expect("manual is a real send mode");
+
+    println!(
+        "TASK1298 command private rows={:?} warning={:?}",
+        private.rows, private.visible_subject_warning
+    );
+    println!(
+        "TASK1298 command hello rows={:?} warning={:?}",
+        hello.rows, hello.visible_subject_warning
+    );
+
+    assert_eq!(private.mode_name, "Manual");
+    assert_eq!(
+        private.visible_subject_warning.as_deref(),
+        Some(visible_subject_protection_warning().as_str())
+    );
+    assert_eq!(
+        private.rows,
+        vec![visible_subject_protection_warning(), "Send".to_owned()]
+    );
+    assert_eq!(hello.visible_subject_warning, None);
+    assert_eq!(hello.rows, vec!["Send".to_owned()]);
+    assert!(cmd_osl_open_email_send_review("not_a_mode", "Hello", protected_body).is_err());
 }

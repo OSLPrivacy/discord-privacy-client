@@ -6,6 +6,7 @@
 //! not call the attachment upload-size gate: a Free recipient may receive the
 //! full object that the Pro sender was allowed to upload.
 
+use std::collections::HashMap;
 use std::fmt;
 use std::io::Write;
 
@@ -93,11 +94,73 @@ impl RecipientAttachmentDownloadPermission {
     }
 }
 
+/// Receiver-side completed-file permissions. In-flight uploads never enter
+/// this collection, so a burn/cancellation cannot manufacture an openable file.
+#[derive(Default)]
+pub struct RecipientAttachmentInbox {
+    completed: HashMap<String, (RecipientAttachmentDownloadPermission, StoredRecipientAttachment)>,
+}
+
+impl RecipientAttachmentInbox {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn record_completed(
+        &mut self,
+        report: &ProChunkedUploadReport,
+        recipient_osl_user_id: impl Into<String>,
+        fetch_token: [u8; FETCH_TOKEN_BYTES],
+    ) -> Result<bool, RecipientAttachmentDownloadError> {
+        let completed = &report.completed_file;
+        let stored = StoredRecipientAttachment {
+            file_id: completed.file_id.clone(),
+            file_name: "authenticated-attachment".to_owned(),
+            byte_length: completed.total_size_bytes,
+            kind: "application/octet-stream".to_owned(),
+            owner_osl_user_id: "authenticated-sender".to_owned(),
+            receiver_permission: StoredReceiverPermission::Download,
+        };
+        let permission = grant_recipient_download_from_pro_send(
+            report,
+            &stored,
+            recipient_osl_user_id,
+            fetch_token,
+        )?;
+        if self.completed.contains_key(permission.file_id()) {
+            return Ok(false);
+        }
+        self.completed
+            .insert(permission.file_id().to_owned(), (permission, stored));
+        Ok(true)
+    }
+
+    pub fn completed_file_count(&self) -> usize {
+        self.completed.len()
+    }
+
+    pub fn open(
+        &self,
+        file_id: &str,
+        request: &RecipientAttachmentDownloadRequest,
+        client: &CipherStoreClient,
+        output: &mut impl Write,
+    ) -> Result<RecipientAttachmentDownloadReceipt, RecipientAttachmentDownloadError> {
+        let (permission, stored) = self
+            .completed
+            .get(file_id)
+            .ok_or(RecipientAttachmentDownloadError::CompletedFileUnavailable)?;
+        download_pro_attachment_for_recipient(permission, stored, request, client, output)
+    }
+}
+
 #[derive(Debug)]
 pub enum RecipientAttachmentDownloadError {
+    CompletedFileUnavailable,
     ShareRevoked,
     RecipientMismatch,
     InvalidProSendReceipt,
+    InvalidReceivedPermission,
     FileNameChanged,
     FileSizeChanged,
     FileKindChanged,
@@ -111,9 +174,11 @@ impl RecipientAttachmentDownloadError {
     /// Stable refusal name for UI and audit assertions.
     pub const fn name(&self) -> &'static str {
         match self {
+            Self::CompletedFileUnavailable => "completed_file_unavailable",
             Self::ShareRevoked => SHARE_REVOKED_REFUSAL_NAME,
             Self::RecipientMismatch => "recipient_mismatch",
             Self::InvalidProSendReceipt => "invalid_pro_send_receipt",
+            Self::InvalidReceivedPermission => "invalid_received_permission",
             Self::FileNameChanged => "file_name_changed",
             Self::FileSizeChanged => "file_size_changed",
             Self::FileKindChanged => "file_kind_changed",
@@ -128,9 +193,11 @@ impl RecipientAttachmentDownloadError {
 impl fmt::Display for RecipientAttachmentDownloadError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::CompletedFileUnavailable => write!(formatter, "completed_file_unavailable"),
             Self::ShareRevoked => write!(formatter, "{SHARE_REVOKED_REFUSAL_NAME}"),
             Self::RecipientMismatch => write!(formatter, "recipient_mismatch"),
             Self::InvalidProSendReceipt => write!(formatter, "invalid_pro_send_receipt"),
+            Self::InvalidReceivedPermission => write!(formatter, "invalid_received_permission"),
             Self::FileNameChanged => write!(formatter, "file_name_changed"),
             Self::FileSizeChanged => write!(formatter, "file_size_changed"),
             Self::FileKindChanged => write!(formatter, "file_kind_changed"),
@@ -143,6 +210,15 @@ impl fmt::Display for RecipientAttachmentDownloadError {
             Self::Transfer(error) => write!(formatter, "attachment_transfer_failed: {error}"),
         }
     }
+}
+
+fn valid_permission_target(recipient_osl_user_id: &str, file_id: &str, byte_length: u64) -> bool {
+    !recipient_osl_user_id.is_empty()
+        && file_id.len() == 32
+        && file_id
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        && byte_length != 0
 }
 
 impl std::error::Error for RecipientAttachmentDownloadError {}
@@ -175,14 +251,11 @@ pub fn grant_recipient_download_from_pro_send(
         .finished_pieces
         .iter()
         .try_fold(0_u64, |total, piece| total.checked_add(piece.size_bytes));
-    if recipient_osl_user_id.is_empty()
-        || completed.file_id.len() != 32
-        || !completed
-            .file_id
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-        || completed.total_size_bytes == 0
-        || stored_attachment.file_id != completed.file_id
+    if !valid_permission_target(
+        &recipient_osl_user_id,
+        &completed.file_id,
+        completed.total_size_bytes,
+    ) || stored_attachment.file_id != completed.file_id
         || stored_attachment.byte_length != completed.total_size_bytes
         || stored_attachment.file_name.is_empty()
         || stored_attachment.kind.is_empty()
@@ -205,6 +278,57 @@ pub fn grant_recipient_download_from_pro_send(
     })
 }
 
+/// Reconstitute the same receiver authority from an authenticated attachment
+/// notice after it has crossed the encrypted recipient-bound inbox.
+///
+/// The native receive path may call this only after the broker has verified the
+/// notice's sender signature, conversation binding, and exact recipient id.
+/// Keeping this constructor in the receiver-permission module makes the fetch
+/// capability, rather than the receiver's upload tier, the authority used by
+/// the production open path.
+pub fn grant_recipient_download_from_authenticated_notice(
+    recipient_osl_user_id: impl Into<String>,
+    stored_attachment: &StoredRecipientAttachment,
+    fetch_token: [u8; FETCH_TOKEN_BYTES],
+) -> Result<RecipientAttachmentDownloadPermission, RecipientAttachmentDownloadError> {
+    let recipient_osl_user_id = recipient_osl_user_id.into();
+    if !valid_permission_target(
+        &recipient_osl_user_id,
+        &stored_attachment.file_id,
+        stored_attachment.byte_length,
+    ) || stored_attachment.file_name.is_empty()
+        || stored_attachment.kind.is_empty()
+        || stored_attachment.owner_osl_user_id.is_empty()
+        || stored_attachment.receiver_permission != StoredReceiverPermission::Download
+    {
+        return Err(RecipientAttachmentDownloadError::InvalidReceivedPermission);
+    }
+    Ok(RecipientAttachmentDownloadPermission {
+        recipient_osl_user_id,
+        file_id: stored_attachment.file_id.clone(),
+        expected_byte_length: stored_attachment.byte_length,
+        expected_stored_attachment: stored_attachment.clone(),
+        fetch_token,
+        revoked: false,
+    })
+}
+
+/// Check that the current local account is the recipient named by this share.
+/// Account tier is intentionally evidence only: upload ceilings have no part
+/// in receiver authorization.
+pub fn authorize_recipient_attachment_download(
+    permission: &RecipientAttachmentDownloadPermission,
+    request: &RecipientAttachmentDownloadRequest,
+) -> Result<(), RecipientAttachmentDownloadError> {
+    if permission.revoked {
+        return Err(RecipientAttachmentDownloadError::ShareRevoked);
+    }
+    if request.recipient_osl_user_id != permission.recipient_osl_user_id {
+        return Err(RecipientAttachmentDownloadError::RecipientMismatch);
+    }
+    Ok(())
+}
+
 /// Authorize and execute a direct receiver download.
 ///
 /// `request.account_tier` is retained in the receipt as evidence of who made
@@ -217,12 +341,7 @@ pub fn download_pro_attachment_for_recipient(
     client: &CipherStoreClient,
     output: &mut impl Write,
 ) -> Result<RecipientAttachmentDownloadReceipt, RecipientAttachmentDownloadError> {
-    if permission.revoked {
-        return Err(RecipientAttachmentDownloadError::ShareRevoked);
-    }
-    if request.recipient_osl_user_id != permission.recipient_osl_user_id {
-        return Err(RecipientAttachmentDownloadError::RecipientMismatch);
-    }
+    authorize_recipient_attachment_download(permission, request)?;
     verify_stored_attachment(permission, stored_attachment)?;
 
     let byte_length =

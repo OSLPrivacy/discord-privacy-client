@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en" data-fixture-os="linux" data-task-0222="create-ready">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>OSL invite link created</title>
+    <style>
+      :root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
+      * { box-sizing: border-box; }
+      body { min-width: 100vw; min-height: 100vh; margin: 0; background: #101719; color: #eef7f5; }
+      .linux-titlebar { height: 34px; display: flex; align-items: center; padding: 0 14px; border-bottom: 1px solid #2b3b3d; background: #172124; color: #a7b8b8; font-size: 12px; }
+      main { min-height: calc(100vh - 34px); display: grid; place-items: start center; padding: 72px 32px; background: radial-gradient(circle at 78% 8%, #173d3c 0, #101719 42%); }
+      .surface { width: min(760px, 100%); padding: 34px; border: 1px solid #385053; border-radius: 14px; background: #182426; box-shadow: 0 26px 56px rgba(0, 0, 0, .34); }
+      .eyebrow { margin: 0 0 8px; color: #7ee4d2; font-size: 12px; font-weight: 750; letter-spacing: .08em; text-transform: uppercase; }
+      h1 { margin: 0; font-size: 29px; letter-spacing: -.025em; }
+      .intro { max-width: 590px; margin: 10px 0 28px; color: #b5c8c8; line-height: 1.55; }
+      .invite-link-display { padding: 18px; border: 1px solid #436467; border-radius: 10px; background: #111a1c; }
+      .invite-link-display h2 { margin: 0 0 10px; font-size: 16px; }
+      .invite-link-value { display: block; overflow-wrap: anywhere; padding: 13px 14px; border: 1px solid #36575a; border-radius: 7px; background: #0c1315; color: #c6fff2; font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+      .invite-link-actions { display: flex; gap: 10px; margin-top: 14px; }
+      button { min-height: 38px; padding: 0 15px; border: 1px solid #547174; border-radius: 7px; background: #243639; color: #f1fbfa; font: inherit; font-size: 14px; font-weight: 700; cursor: pointer; }
+      button:hover, button:focus-visible { border-color: #80e8d8; outline: 2px solid #80e8d8; outline-offset: 2px; }
+      .primary { border-color: #58cbb9; background: #237e77; }
+      .copy-status { min-height: 22px; margin: 13px 0 0; color: #95e8da; font-size: 14px; }
+      .notice { margin: 25px 0 0; padding: 12px 14px; border-left: 3px solid #62d9c7; border-radius: 0 7px 7px 0; background: #173331; color: #c2d9d7; font-size: 14px; line-height: 1.45; }
+    </style>
+  </head>
+  <body>
+    <div class="linux-titlebar">OSL — Add friend</div>
+    <main>
+      <section class="surface" aria-labelledby="invite-link-title">
+        <p class="eyebrow">Add friend</p>
+        <h1 id="invite-link-title">Invite link created</h1>
+        <p class="intro">This single-use link is ready to copy or share. It expires after one use.</p>
+        <section class="invite-link-display" aria-labelledby="copy-link-title">
+          <h2 id="copy-link-title">Your one-use invite link</h2>
+          <code class="invite-link-value" data-invite-link-value tabindex="0">https://invite.osl.local/one-use/N2mI-dRDm7RQEQ4ywSzIZg.ujrDhhQJfGFdkiBLkHxv6tDuL4Pxp4nyj1z6WecEHX4</code>
+          <div class="invite-link-actions">
+            <button class="primary" type="button" data-invite-link-copy aria-label="Copy invite link">Copy link</button>
+            <button type="button" data-invite-link-share>Share</button>
+          </div>
+          <p class="copy-status" data-copy-status role="status" aria-live="polite"></p>
+        </section>
+        <p class="notice">Only send this to the person you intend to invite. Anyone with the link can use it once.</p>
+      </section>
+    </main>
+    <script>
+      document.querySelector("[data-invite-link-copy]").addEventListener("click", () => {
+        document.querySelector("[data-copy-status]").textContent = "Copied invite link";
+      });
+    </script>
+  </body>
+</html>

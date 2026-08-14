@@ -2,12 +2,10 @@
 
 #[cfg(feature = "whatsapp-qa-identity")]
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-use osl_privacy_hub::account_export::{
-    self, AccountExportSnapshot, OwnedAttachment, OwnedDocument, PostWriteMediaFault,
-};
 use osl_privacy_hub::account_recovery;
 use osl_privacy_hub::ai_carrier::{
-    ai_carrier_status_for, set_ai_carrier_preview_enabled_for, AiCarrierState,
+    ai_carrier_status_for, set_ai_carrier_preview_enabled_for, set_ai_covertext_selected_for,
+    AiCarrierState,
 };
 use osl_privacy_hub::autoscrub_run::{self, AutoScrubFleetStatus, AutoScrubReviewedRunRequest};
 use osl_privacy_hub::broker::{
@@ -38,6 +36,10 @@ use osl_privacy_hub::core_bridge::{
 use osl_privacy_hub::deadman;
 use osl_privacy_hub::discord_carrier_geometry::CarrierDecision;
 use osl_privacy_hub::entitlement_refresh;
+#[cfg(windows)]
+use osl_privacy_hub::follow_active_app_window::{
+    FollowActiveAppWindowMover, WindowPosition, WindowRect,
+};
 use osl_privacy_hub::identity_binding_verifier::{
     AccountRef, BindingScope, IdentityBindingVerifier, PinnedOwner,
 };
@@ -45,6 +47,7 @@ use osl_privacy_hub::identity_registry::{
     self, HubIdentityBurnResult, HubIdentityRegistryState, HubIdentitySlotCreation,
     HubIdentitySlotDto, HubIdentitySwitchResult,
 };
+use osl_privacy_hub::irreversible_actions;
 use osl_privacy_hub::main_window_reveal::{
     main_window_reveal, main_window_should_start_hidden, CaptureAffinity, MainWindowReveal,
     PageLoadPhase,
@@ -76,13 +79,13 @@ use osl_privacy_hub::native_window_host::{
     NativeWindowHostState,
 };
 use osl_privacy_hub::osl_mail::{self, OslMailState, OslMailStatus};
-use osl_privacy_hub::osl_profile::{self, HubProfileDto, HubProfileInput};
+use osl_privacy_hub::osl_profile::{self, HubProfileDto, HubProfileInput, OwnerProfilePictureDto};
 use osl_privacy_hub::password_lifecycle::{
     self, HubIdentityCreationOwnerSignoff, HubIdentitySetupResult, HubMainPasswordSetupResult,
     HubPasswordReadiness, HubPasswordResetPhraseCheck,
 };
 use osl_privacy_hub::peer_attachment_io;
-use osl_privacy_hub::preferences::PreviewState;
+use osl_privacy_hub::preferences::{apply_saved_message_runtime_preferences, PreviewState};
 use osl_privacy_hub::privacy_scan::{self, LocalMessageCandidate, LocalPrivacyScanResult};
 use osl_privacy_hub::pro_context_cover::LocalCoverState;
 use osl_privacy_hub::revocation_drain_timer;
@@ -98,7 +101,7 @@ use osl_privacy_hub::security::{
 use osl_privacy_hub::security_credentials::{self, HubPasswordRoleStatus};
 use osl_privacy_hub::service_host::{self, ActiveServiceHost, ServiceHostState};
 use osl_privacy_hub::service_scope_index::{ImmutableServiceBurnManifest, ServiceScopeIndexState};
-use osl_privacy_hub::services::ServiceRegistryState;
+use osl_privacy_hub::services::{DetectedAccountDescriptor, ServiceRegistryState};
 use osl_privacy_hub::startup_gate::{self, HubGateUnlockResult, VerifiedGateRole};
 use osl_privacy_hub::tor_pref::{TorPreference, TorPreferenceState};
 use osl_privacy_hub::updates::{
@@ -118,7 +121,6 @@ use std::sync::{
     Mutex,
 };
 use tauri::{Emitter, Manager, State};
-use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_updater::UpdaterExt;
 #[cfg(feature = "whatsapp-qa-identity")]
 use zeroize::{Zeroize, Zeroizing};
@@ -189,7 +191,6 @@ mod window_border;
 
 mod native_attachment_transport;
 mod native_discord_overlay;
-mod recovery_kit_picker;
 mod native_image_viewer;
 mod native_whatsapp_overlay;
 
@@ -646,11 +647,26 @@ fn set_hub_screenshot_protection(app: tauri::AppHandle, enabled: bool) -> Result
 }
 
 #[tauri::command]
+async fn reset_hub_setting_group(
+    caller: tauri::WebviewWindow,
+    core: State<'_, HubCoreState>,
+    security_state: State<'_, HubSecurityState>,
+    session: State<'_, HubAccountSessionState>,
+    group: String,
+) -> Result<security::ResetSettingGroupRecord, String> {
+    if caller.label() != "main" {
+        return Err("Only the trusted OSL window may reset settings".to_owned());
+    }
+    let _session = session.transition.lock().await;
+    security::reset_setting_group(&core, &security_state, group)
+}
+
+#[tauri::command]
 fn save_onboarding_preferences(
     state: State<'_, PreviewState>,
     preferences: OnboardingPreferences,
 ) -> Result<OnboardingPreferences, String> {
-    state.save(preferences)
+    account_recovery::save_normal_setup_completion(&state, preferences)
 }
 
 /// Persist the explicit connection route selected during onboarding.
@@ -663,6 +679,19 @@ fn set_tor_preference(
     preference: TorPreference,
 ) -> Result<TorPreference, String> {
     state.set_preference(preference)
+}
+
+#[tauri::command]
+fn get_follow_active_app_choice(core: State<'_, HubCoreState>) -> Result<String, String> {
+    ipc::commands::cmd_osl_get_follow_active_app_choice(&core.osl)
+}
+
+#[tauri::command]
+fn set_follow_active_app_choice(
+    core: State<'_, HubCoreState>,
+    value: String,
+) -> Result<String, String> {
+    ipc::commands::cmd_osl_set_follow_active_app_choice(&core.osl, &value, None)
 }
 
 #[tauri::command]
@@ -1181,6 +1210,74 @@ fn main_window_is_live(_window: &tauri::WebviewWindow) -> bool {
     true
 }
 
+/// Move only OSL's own window beside a newly foregrounded application when the
+/// owner has explicitly enabled following. The foreground application is
+/// observed, never focused, resized, or moved.
+#[cfg(windows)]
+fn spawn_follow_active_app_window_watcher(app: tauri::AppHandle) {
+    use ipc::app_preferences::FollowActiveAppChoice;
+    use windows_sys::Win32::Foundation::RECT;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowRect};
+
+    std::thread::spawn(move || {
+        let mut mover = FollowActiveAppWindowMover::default();
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            let choice = app
+                .state::<HubCoreState>()
+                .osl
+                .app_preferences
+                .lock()
+                .expect("app_preferences mutex poisoned")
+                .follow_active_app_choice;
+            if choice == FollowActiveAppChoice::Off {
+                mover.disable();
+                continue;
+            }
+
+            let Some(osl_window) = app.get_webview_window("main") else {
+                continue;
+            };
+            let Ok(osl_handle) = osl_window.hwnd() else {
+                continue;
+            };
+            let osl_hwnd = osl_handle.0 as windows_sys::Win32::Foundation::HWND;
+            let front_window = unsafe { GetForegroundWindow() };
+            if front_window.is_null() || front_window == osl_hwnd {
+                continue;
+            }
+
+            let mut front_bounds = RECT::default();
+            if unsafe { GetWindowRect(front_window, &mut front_bounds) } == 0 {
+                continue;
+            }
+            let Ok(current) = osl_window.outer_position() else {
+                continue;
+            };
+            let target = mover.observe(
+                choice,
+                front_window as isize,
+                WindowRect::new(
+                    front_bounds.left,
+                    front_bounds.top,
+                    front_bounds.right,
+                    front_bounds.bottom,
+                ),
+                WindowPosition {
+                    x: current.x,
+                    y: current.y,
+                },
+            );
+            if let Some(target) = target {
+                let _ = osl_window.set_position(tauri::PhysicalPosition::new(target.x, target.y));
+            }
+        }
+    });
+}
+
+#[cfg(not(windows))]
+fn spawn_follow_active_app_window_watcher(_app: tauri::AppHandle) {}
+
 #[tauri::command]
 async fn list_linked_services(
     state: State<'_, ServiceRegistryState>,
@@ -1190,6 +1287,17 @@ async fn list_linked_services(
     let _session = session.transition.lock().await;
     let owner = active_unlocked_osl_user_id(&core)?;
     state.list_for_owner(&owner)
+}
+
+#[tauri::command]
+async fn list_detected_accounts(
+    state: State<'_, ServiceRegistryState>,
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+) -> Result<Vec<DetectedAccountDescriptor>, String> {
+    let _session = session.transition.lock().await;
+    let owner = active_unlocked_osl_user_id(&core)?;
+    state.list_detected_accounts_with_open_choices(&owner)
 }
 
 #[tauri::command]
@@ -1236,7 +1344,7 @@ async fn osl_mail_provision(
     }
     let _session = session.transition.lock().await;
     tauri::async_runtime::spawn_blocking(move || {
-        osl_mail::provision(
+        osl_mail::osl_mail_provision(
             &app.state::<HubCoreState>(),
             &app.state::<OslMailState>(),
             username,
@@ -1244,6 +1352,96 @@ async fn osl_mail_provision(
     })
     .await
     .map_err(|_| "OSL Mail provisioning worker failed".to_owned())?
+}
+
+#[tauri::command]
+async fn osl_mail_agree_to_sender(
+    app: tauri::AppHandle,
+    caller: tauri::WebviewWindow,
+    session: State<'_, HubAccountSessionState>,
+    sender_username: String,
+    allowed: bool,
+) -> Result<osl_mail::OslMailAgreementReceipt, String> {
+    if caller.label() != "main" {
+        return Err("Only the trusted OSL window may change OSL Mail sender agreement".to_owned());
+    }
+    let _session = session.transition.lock().await;
+    tauri::async_runtime::spawn_blocking(move || {
+        osl_mail::osl_mail_agree_to_sender(
+            &app.state::<HubCoreState>(),
+            &app.state::<OslMailState>(),
+            sender_username,
+            allowed,
+        )
+    })
+    .await
+    .map_err(|_| "OSL Mail sender agreement worker failed".to_owned())?
+}
+
+#[tauri::command]
+async fn osl_mail_list_threads(
+    app: tauri::AppHandle,
+    caller: tauri::WebviewWindow,
+    session: State<'_, HubAccountSessionState>,
+) -> Result<Vec<osl_mail::OslMailThreadSummary>, String> {
+    if caller.label() != "main" {
+        return Err("Only the trusted OSL window may list OSL Mail threads".to_owned());
+    }
+    let _session = session.transition.lock().await;
+    tauri::async_runtime::spawn_blocking(move || {
+        osl_mail::osl_mail_list_threads(
+            &app.state::<HubCoreState>(),
+            &app.state::<OslMailState>(),
+        )
+    })
+    .await
+    .map_err(|_| "OSL Mail thread-list worker failed".to_owned())?
+}
+
+#[tauri::command]
+async fn osl_mail_retrieve_thread(
+    app: tauri::AppHandle,
+    caller: tauri::WebviewWindow,
+    session: State<'_, HubAccountSessionState>,
+    thread_id: String,
+) -> Result<osl_mail::OslMailRetrievedThread, String> {
+    if caller.label() != "main" {
+        return Err("Only the trusted OSL window may retrieve an OSL Mail thread".to_owned());
+    }
+    let _session = session.transition.lock().await;
+    tauri::async_runtime::spawn_blocking(move || {
+        osl_mail::osl_mail_retrieve_thread(
+            &app.state::<HubCoreState>(),
+            &app.state::<OslMailState>(),
+            thread_id,
+        )
+    })
+    .await
+    .map_err(|_| "OSL Mail retrieval worker failed".to_owned())?
+}
+
+#[tauri::command]
+async fn osl_mail_acknowledge_retrieval(
+    app: tauri::AppHandle,
+    caller: tauri::WebviewWindow,
+    session: State<'_, HubAccountSessionState>,
+    retrieval_id: String,
+    message_ids: Vec<String>,
+) -> Result<osl_mail::OslMailDeleteReceipt, String> {
+    if caller.label() != "main" {
+        return Err("Only the trusted OSL window may acknowledge OSL Mail".to_owned());
+    }
+    let _session = session.transition.lock().await;
+    tauri::async_runtime::spawn_blocking(move || {
+        osl_mail::osl_mail_acknowledge_retrieval(
+            &app.state::<HubCoreState>(),
+            &app.state::<OslMailState>(),
+            retrieval_id,
+            message_ids,
+        )
+    })
+    .await
+    .map_err(|_| "OSL Mail acknowledgement worker failed".to_owned())?
 }
 
 #[tauri::command]
@@ -1260,7 +1458,7 @@ async fn osl_mail_send(
     }
     let _session = session.transition.lock().await;
     tauri::async_runtime::spawn_blocking(move || {
-        osl_mail::send(
+        osl_mail::osl_mail_send(
             &app.state::<HubCoreState>(),
             &app.state::<OslMailState>(),
             recipient,
@@ -1377,6 +1575,61 @@ async fn clear_hub_activation_code(app: tauri::AppHandle) -> Result<HubLicenseSt
     .map_err(|_| "OSL activation worker failed".to_owned())?
 }
 
+const REALTIME_WAKEUP_URL_ENV: &str = "OSL_REALTIME_WAKEUP_URL";
+
+fn realtime_wakeup_endpoint() -> Result<osl_privacy_hub::realtime_pipe::RealtimeEndpoint, String> {
+    let url = match std::env::var(REALTIME_WAKEUP_URL_ENV) {
+        Ok(url) if !url.trim().is_empty() => url,
+        _ => {
+            let config_dir =
+                keystore::osl_config_dir().map_err(|_| "OSL account storage is unavailable")?;
+            let base = ipc::cipher_store_client::resolve_cipher_store_base_url(&config_dir)
+                .map_err(|error| format!("OSL cipher-store route unavailable: {error}"))?;
+            realtime_websocket_url_from_base(&base)?
+        }
+    };
+    osl_privacy_hub::realtime_pipe::RealtimeEndpoint::parse(&url)
+        .map_err(|error| format!("OSL realtime wake-up endpoint refused {url:?}: {error:?}"))
+}
+
+fn realtime_websocket_url_from_base(base: &str) -> Result<String, String> {
+    let parsed = url::Url::parse(base)
+        .map_err(|error| format!("OSL cipher-store base URL is invalid: {error}"))?;
+    let scheme = match parsed.scheme() {
+        "http" => "ws",
+        "https" => "ws",
+        "ws" => "ws",
+        other => return Err(format!("OSL cipher-store scheme cannot carry wake-up: {other}")),
+    };
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| "OSL cipher-store base URL has no host".to_owned())?;
+    let authority = match parsed.port() {
+        Some(port) => format!("{host}:{port}"),
+        None => host.to_owned(),
+    };
+    Ok(format!("{scheme}://{authority}/v1/realtime"))
+}
+
+#[tauri::command]
+fn get_realtime_wakeup_status(
+    app: tauri::AppHandle,
+) -> osl_privacy_hub::realtime_wakeup::RealtimeWakeupStatus {
+    app.state::<osl_privacy_hub::realtime_wakeup::RealtimeWakeupRuntime>()
+        .status()
+}
+
+fn note_account_unlocked(app: &tauri::AppHandle) {
+    match realtime_wakeup_endpoint() {
+        Ok(endpoint) => app
+            .state::<osl_privacy_hub::realtime_wakeup::RealtimeWakeupRuntime>()
+            .connect_after_unlock(endpoint),
+        Err(error) => app
+            .state::<osl_privacy_hub::realtime_wakeup::RealtimeWakeupRuntime>()
+            .record_start_error(error),
+    }
+}
+
 #[tauri::command]
 // D80: ONE credential argument, ONE verifier. This command used to take a
 // second duress-PIN argument fed by a second, labelled input on the unlock
@@ -1419,6 +1672,7 @@ async fn unlock_hub_password_gate(
             // sweep itself happens on the tick thread.
             app.state::<LifecycleTickState>().nudge();
             let readiness = startup_gate::readiness_after_main(&app.state::<HubCoreState>());
+            note_account_unlocked(&app);
             Ok(HubGateUnlockResult::unlocked(verification, readiness))
         }
         VerifiedGateRole::Stealth => {
@@ -1428,6 +1682,10 @@ async fn unlock_hub_password_gate(
             let _ = app.state::<MullvadWindowHostState>().restore();
             let _ = app.state::<BrowserCompanionState>().terminate();
             app.state::<HubBrokerState>().clear()?;
+            app.get_webview_window("main")
+                .ok_or_else(|| "Decoy workspace window is unavailable".to_owned())?
+                .set_title("")
+                .map_err(|_| "Decoy workspace window could not be made private".to_owned())?;
             startup_gate::enter_stealth_landing(&app.state::<HubCoreState>());
             Ok(HubGateUnlockResult::decoy(verification))
         }
@@ -1513,12 +1771,21 @@ async fn setup_hub_main_password(
     app: tauri::AppHandle,
     password: String,
 ) -> Result<HubMainPasswordSetupResult, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let state = app.state::<HubCoreState>();
+    let setup_app = app.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let state = setup_app.state::<HubCoreState>();
         password_lifecycle::setup_main_password(&state, password)
     })
     .await
-    .map_err(|_| "OSL password setup worker failed".to_string())?
+    .map_err(|_| "OSL password setup worker failed".to_string())?;
+    if result
+        .as_ref()
+        .map(|result| result.readiness.unlocked)
+        .unwrap_or(false)
+    {
+        note_account_unlocked(&app);
+    }
+    result
 }
 
 #[tauri::command]
@@ -1572,35 +1839,15 @@ async fn check_hub_password_reset_phrase(
     .map_err(|_| "OSL password reset phrase worker failed".to_string())?
 }
 
-/// TASK 6804 — open the installed picker for a recovery kit.
-///
-/// `Ok(None)` is cancellation. It is deliberately not an error: a person who
-/// closes the dialog has not failed at anything, and a refusal message here
-/// would be read as one about their recovery kit.
 #[tauri::command]
-async fn pick_hub_recovery_kit_file(
-    app: tauri::AppHandle,
-) -> Result<Option<recovery_kit_picker::PickedRecoveryKitFileDto>, String> {
+async fn check_hub_recovery_word_retype(
+    request: password_lifecycle::RecoveryWordRetypeRequest,
+) -> Result<password_lifecycle::RecoveryWordRetypeResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let core = app.state::<HubCoreState>();
-        recovery_kit_picker::pick_recovery_kit_file(&app, &core)
+        password_lifecycle::check_recovery_word_retype(request)
     })
     .await
-    .map_err(|_| "OSL recovery-kit picker worker failed".to_owned())?
-}
-
-/// TASK 6804 — which account a recovery kit's identity phrase belongs to.
-///
-/// Read-only: it derives in memory and returns only the public `osl_` routing
-/// label, so a kit for another account can be refused before its phrase reaches
-/// the authenticated importer and before a recovery attempt is spent.
-#[tauri::command]
-async fn derive_hub_recovery_kit_identity(identity_phrase: String) -> Result<String, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        password_lifecycle::identity_user_id_for_recovery_phrase(&identity_phrase)
-    })
-    .await
-    .map_err(|_| "OSL recovery-kit identity worker failed".to_owned())?
+    .map_err(|_| "OSL recovery word check worker failed".to_owned())?
 }
 
 #[tauri::command]
@@ -1623,31 +1870,6 @@ async fn set_hub_recovery_kit_unsaved(unsaved: bool) -> Result<(), String> {
     .map_err(|_| "OSL recovery-kit status worker failed".to_owned())?
 }
 
-#[tauri::command]
-async fn get_coach_tip_state(
-    core: State<'_, HubCoreState>,
-    session: State<'_, HubAccountSessionState>,
-) -> Result<osl_privacy_hub::coach_tips::CoachTipState, String> {
-    let _session = session.transition.lock().await;
-    let _owner = active_unlocked_osl_user_id(&core)?;
-    tauri::async_runtime::spawn_blocking(osl_privacy_hub::coach_tips::get_active)
-        .await
-        .map_err(|_| "OSL profile UI state worker failed".to_owned())?
-}
-
-#[tauri::command]
-async fn save_coach_tip_state(
-    core: State<'_, HubCoreState>,
-    session: State<'_, HubAccountSessionState>,
-    state: osl_privacy_hub::coach_tips::CoachTipState,
-) -> Result<osl_privacy_hub::coach_tips::CoachTipState, String> {
-    let _session = session.transition.lock().await;
-    let _owner = active_unlocked_osl_user_id(&core)?;
-    tauri::async_runtime::spawn_blocking(move || osl_privacy_hub::coach_tips::save_active(state))
-        .await
-        .map_err(|_| "OSL profile UI state worker failed".to_owned())?
-}
-
 /// A7: manual "Lock now" from the trusted OSL Privacy UI.
 ///
 /// Locking is not a UI flag. This drops the identity secret, the prekey pool,
@@ -1657,182 +1879,18 @@ async fn save_coach_tip_state(
 /// password gate runs again.
 #[tauri::command]
 async fn lock_hub_session(app: tauri::AppHandle) -> Result<ipc::commands::SessionLockDto, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let state = app.state::<HubCoreState>();
+    let lock_app = app.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let state = lock_app.state::<HubCoreState>();
         ipc::commands::cmd_osl_lock_session(&state.osl)
     })
     .await
-    .map_err(|_| "OSL session lock worker failed".to_string())?
-}
-
-/// Settings → Export my data. The renderer supplies only the reauthorization
-/// credential. Both destinations are chosen in parented native save journeys,
-/// and neither path nor key material crosses into JavaScript.
-#[tauri::command]
-async fn export_hub_account_data(
-    app: tauri::AppHandle,
-    caller: tauri::WebviewWindow,
-    session: State<'_, HubAccountSessionState>,
-    password: String,
-) -> Result<account_export::ExportReceipt, String> {
-    if caller.label() != "main" {
-        return Err("Only the trusted OSL Settings window may export account data".to_owned());
+    .map_err(|_| "OSL session lock worker failed".to_string())?;
+    if result.is_ok() {
+        app.state::<osl_privacy_hub::realtime_wakeup::RealtimeWakeupRuntime>()
+            .stop_after_lock();
     }
-    let _session = session.transition.lock().await;
-    let verify_app = app.clone();
-    let verification = tauri::async_runtime::spawn_blocking(move || {
-        startup_gate::verify_password_role(&verify_app.state::<HubCoreState>(), password)
-    })
-    .await
-    .map_err(|_| "OSL export reauthorization worker failed".to_owned())??;
-    if verification.role != VerifiedGateRole::Main {
-        return Err("Export my data requires the signed-in account's current password".to_owned());
-    }
-    let owner = active_unlocked_osl_user_id(&app.state::<HubCoreState>())?;
-    tauri::async_runtime::spawn_blocking(move || export_hub_account_data_inner(&app, &owner))
-        .await
-        .map_err(|_| "OSL account export worker failed".to_owned())?
-}
-
-fn export_hub_account_data_inner(
-    app: &tauri::AppHandle,
-    owner: &str,
-) -> Result<account_export::ExportReceipt, String> {
-    let parent = app
-        .get_webview_window("main")
-        .ok_or_else(|| "The trusted export save window is unavailable".to_owned())?;
-    let archive_path = app
-        .dialog()
-        .file()
-        .set_parent(&parent)
-        .set_title("Save encrypted OSL account export")
-        .set_file_name("osl-account-export.oslexport")
-        .add_filter("OSL encrypted export", &["oslexport"])
-        .blocking_save_file()
-        .ok_or_else(|| "Archive save was cancelled".to_owned())?
-        .into_path()
-        .map_err(|_| "The archive destination is unavailable".to_owned())?;
-    let key_path = app
-        .dialog()
-        .file()
-        .set_parent(&parent)
-        .set_title("Save separate OSL export key")
-        .set_file_name("osl-account-export.key.json")
-        .add_filter("OSL export key", &["json"])
-        .blocking_save_file()
-        .ok_or_else(|| "Key save was cancelled".to_owned())?
-        .into_path()
-        .map_err(|_| "The key destination is unavailable".to_owned())?;
-    if archive_path == key_path {
-        return Err("Archive and key require separate save locations".to_owned());
-    }
-
-    let core = app.state::<HubCoreState>();
-    if active_unlocked_osl_user_id(&core)? != owner {
-        return Err("The signed-in account changed during export".to_owned());
-    }
-    let identity = ipc::commands::cmd_osl_get_identity_info(&core.osl)?;
-    let profile = osl_profile::get_active_profile(owner)?;
-    let identity_fields = serde_json::json!({
-        "identity": identity,
-        "profile": profile,
-    });
-    let mut documents = vec![
-        OwnedDocument {
-            class: "identity_profile".to_owned(),
-            id: "active-identity-profile".to_owned(),
-            owner_id: owner.to_owned(),
-            fields: identity_fields,
-            attachment_ids: Vec::new(),
-        },
-        OwnedDocument {
-            class: "settings".to_owned(),
-            id: "account-security-settings".to_owned(),
-            owner_id: owner.to_owned(),
-            fields: security::account_export_settings_document()?,
-            attachment_ids: Vec::new(),
-        },
-    ];
-    for (person_id, fields) in security::account_export_friend_documents()? {
-        documents.push(OwnedDocument {
-            class: "friend_relationships".to_owned(),
-            id: person_id,
-            owner_id: owner.to_owned(),
-            fields,
-            attachment_ids: Vec::new(),
-        });
-    }
-
-    let mut attachments = Vec::new();
-    let store_guard = core
-        .osl
-        .message_store
-        .lock()
-        .map_err(|_| "OSL message store is unavailable for export".to_owned())?;
-    let store = store_guard
-        .as_ref()
-        .ok_or_else(|| "OSL message store is unavailable for export".to_owned())?;
-    let mut cursor = None;
-    loop {
-        let page = store
-            .account_export_page(cursor, account_export::PAGE_ITEMS as u32)
-            .map_err(|error| format!("OSL message export page failed: {error}"))?;
-        if page.is_empty() {
-            break;
-        }
-        for row in page {
-            cursor = Some(row.cursor);
-            let message = row.message;
-            let message_id = message.discord_message_id.clone();
-            let attachment_ids = row
-                .attachments
-                .iter()
-                .map(|attachment| format!("{}:{}", message_id, attachment.random_filename))
-                .collect::<Vec<_>>();
-            documents.push(OwnedDocument {
-                class: "messages".to_owned(),
-                id: message_id.clone(),
-                owner_id: owner.to_owned(),
-                fields: serde_json::json!({
-                    "discordMessageId": message_id.clone(),
-                    "channelId": message.channel_id,
-                    "senderDiscordId": message.sender_discord_id,
-                    "senderOslUserId": message.sender_osl_user_id,
-                    "plaintext": message.plaintext,
-                    "decryptedAt": message.decrypted_at,
-                    "replyParentId": message.reply_parent_id,
-                    "editRevision": message.edit_revision,
-                    "burned": message.burned,
-                    "timerMinutes": row.timer_minutes,
-                }),
-                attachment_ids: attachment_ids.clone(),
-            });
-            for (id, attachment) in attachment_ids.into_iter().zip(row.attachments) {
-                attachments.push(OwnedAttachment {
-                    id,
-                    owner_id: owner.to_owned(),
-                    message_id: message_id.clone(),
-                    filename: attachment.random_filename,
-                    mime_type: attachment.mime,
-                    bytes: attachment.plaintext,
-                });
-            }
-        }
-    }
-    drop(store_guard);
-    if active_unlocked_osl_user_id(&core)? != owner {
-        return Err("The signed-in account changed during export".to_owned());
-    }
-    account_export::export_to_user_paths(
-        &AccountExportSnapshot {
-            account_id: owner.to_owned(),
-            documents,
-            attachments,
-        },
-        &archive_path,
-        &key_path,
-        PostWriteMediaFault::None,
-    )
+    result
 }
 
 /// Send a ratchet-independent SESSION_RESET to the currently authorised peer
@@ -2160,6 +2218,21 @@ async fn set_hub_chat_approval_suggestion_choice(
 }
 
 #[tauri::command]
+async fn reset_every_setting(
+    caller: tauri::WebviewWindow,
+    core: State<'_, HubCoreState>,
+    security_state: State<'_, HubSecurityState>,
+    session: State<'_, HubAccountSessionState>,
+    confirmed: bool,
+) -> Result<ipc::irreversible_action::IrreversibleActionAnswer<security::ResetEverySettingRecord>, String> {
+    if caller.label() != "main" {
+        return Err("Only the trusted OSL window may reset settings".to_owned());
+    }
+    let _session = session.transition.lock().await;
+    irreversible_actions::reset_every_setting(&core, &security_state, confirmed)
+}
+
+#[tauri::command]
 async fn answer_hub_chat_approval_suggestion(
     caller: tauri::WebviewWindow,
     broker_state: State<'_, HubBrokerState>,
@@ -2190,8 +2263,10 @@ async fn check_hub_for_updates(
 ) -> Result<HubUpdateCheck, String> {
     let _transition = state.transition.lock().await;
     let current = app.package_info().version.to_string();
-    let Ok(updater) = app.updater() else {
-        return Ok(HubUpdateCheck::CouldNotCheck);
+    let updater = match routed_hub_updater(&app) {
+        Ok(updater) => updater,
+        Err(error) if error == keystore::egress::TOR_UNAVAILABLE => return Err(error),
+        Err(_) => return Ok(HubUpdateCheck::CouldNotCheck),
     };
     match updater.check().await {
         Ok(Some(update)) => {
@@ -2218,9 +2293,7 @@ async fn install_hub_update(
     let expected_version = bounded_version(&expected_version)
         .ok_or_else(|| "The expected update version is invalid".to_owned())?;
     let _transition = state.transition.lock().await;
-    let updater = app
-        .updater()
-        .map_err(|_| "The signed OSL updater is unavailable".to_owned())?;
+    let updater = routed_hub_updater(&app)?;
     let update = match updater.check().await {
         Ok(Some(update)) => update,
         Ok(None) => return Ok(HubUpdateInstall::NoUpdate),
@@ -2236,6 +2309,25 @@ async fn install_hub_update(
         .await
         .map_err(|_| "The update could not be verified and was not installed".to_owned())?;
     app.restart();
+}
+
+fn routed_hub_updater(app: &tauri::AppHandle) -> Result<tauri_plugin_updater::Updater, String> {
+    match keystore::egress::socket_route_decision() {
+        keystore::egress::SocketRouteDecision::Direct => app
+            .updater()
+            .map_err(|_| "The signed OSL updater is unavailable".to_owned()),
+        keystore::egress::SocketRouteDecision::Tor(socks_addr) => {
+            let proxy = url::Url::parse(&format!("socks5h://{socks_addr}"))
+                .map_err(|_| "OSL Tor transport is unavailable".to_owned())?;
+            app.updater_builder()
+                .proxy(proxy)
+                .build()
+                .map_err(|_| "The signed OSL updater is unavailable".to_owned())
+        }
+        keystore::egress::SocketRouteDecision::Refuse => {
+            Err(keystore::egress::TOR_UNAVAILABLE.to_owned())
+        }
+    }
 }
 
 #[tauri::command]
@@ -3699,6 +3791,11 @@ fn send_native_discord_overlay_carrier(
             require_same_overlay_context(&app, epoch, &host)?;
             let placement_context =
                 NativeDiscordPlacementContext::new(&placement_scope_binding, mode);
+            // This is the last decision before the native writer can stage its
+            // marked carrier.  Discord may close after the earlier host/context
+            // proof, in which case the overlay guard clears this epoch and we
+            // must refuse without creating a placed or clipboard mark.
+            carrier_placement.allow_marked_placement(epoch)?;
             let receipt = composer.place_carrier(
                 &app.state::<NativeWindowHostState>(),
                 &owner,
@@ -3930,6 +4027,21 @@ fn set_native_discord_covertext_enabled(
     let state = app.state::<OverlaySessionState>();
     state.set_covertext_enabled(enabled);
     Ok(state.covertext_enabled())
+}
+
+/// The plain shared Covertext button is itself the wordbank choice.  It does
+/// not disable carrier placement or accept a second chooser value.
+#[tauri::command]
+fn select_native_discord_covertext_writer(
+    app: tauri::AppHandle,
+    caller: tauri::WebviewWindow,
+) -> Result<bool, String> {
+    if caller.label() != "main" {
+        return Err("Only the trusted OSL header may choose Covertext".to_owned());
+    }
+    let state = app.state::<ai_carrier::AiCarrierState>();
+    state.set_wordbank_writer_selected(true);
+    Ok(state.wordbank_writer_selected())
 }
 
 #[tauri::command]
@@ -5351,7 +5463,7 @@ async fn list_osl_chat_history(
     app: tauri::AppHandle,
     caller: tauri::WebviewWindow,
     session: State<'_, HubAccountSessionState>,
-) -> Result<Vec<ipc::commands::StoredMessageDto>, String> {
+) -> Result<Vec<broker::OslChatHistoryRow>, String> {
     if caller.label() != "main" {
         return Err("Only the trusted OSL window may read OSL Chat history".to_owned());
     }
@@ -5400,7 +5512,6 @@ async fn list_osl_chat_attachments(
     if caller.label() != "main" {
         return Err("Only the trusted OSL window may list OSL Chat attachments".to_owned());
     }
-    require_active_pro_entitlement(&app.state::<HubCoreState>())?;
     let _session = session.transition.lock().await;
     tauri::async_runtime::spawn_blocking(move || {
         native_attachment_transport::list_osl_chat_pending(
@@ -5426,7 +5537,6 @@ async fn open_osl_chat_attachment(
     screenshot::apply_to_window(&caller, active_osl_capture_protection()).map_err(|_| {
         "Windows capture resistance is required to open OSL Chat attachments".to_owned()
     })?;
-    require_active_pro_entitlement(&app.state::<HubCoreState>())?;
     let _session = session.transition.lock().await;
     tauri::async_runtime::spawn_blocking(move || {
         native_attachment_transport::open_osl_chat_pending(
@@ -5480,7 +5590,6 @@ async fn list_native_discord_overlay_attachments(
     if caller.label() != native_discord_overlay::OVERLAY_LABEL {
         return Err("Only the trusted native Discord overlay may list attachments".to_owned());
     }
-    require_active_pro_entitlement(&app.state::<HubCoreState>())?;
     let _session = session.transition.lock().await;
     tauri::async_runtime::spawn_blocking(move || {
         let (context_epoch, host) = require_overlay_context_snapshot(&app)?;
@@ -5506,7 +5615,6 @@ async fn open_native_discord_overlay_attachment(
     if caller.label() != native_discord_overlay::OVERLAY_LABEL {
         return Err("Only the trusted native Discord overlay may open attachments".to_owned());
     }
-    require_active_pro_entitlement(&app.state::<HubCoreState>())?;
     let _session = session.transition.lock().await;
     tauri::async_runtime::spawn_blocking(move || {
         let (context_epoch, host) = require_overlay_context_snapshot(&app)?;
@@ -5695,6 +5803,72 @@ async fn create_service_account(
         return Err(error);
     }
     Ok(account)
+}
+
+#[tauri::command]
+async fn agree_messaging_service_risk(
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+    registry: State<'_, ServiceRegistryState>,
+    service_id: String,
+    account_id: String,
+) -> Result<(), String> {
+    let _session = session.transition.lock().await;
+    let owner = active_unlocked_osl_user_id(&core)?;
+    let service_kind = osl_privacy_hub::services::service_kind_from_id(&service_id)
+        .ok_or_else(|| "unknown service".to_owned())?;
+    registry.require_owned(&owner, service_kind, &account_id)?;
+    osl_privacy_hub::services::save_messaging_risk_agreement(&owner, &service_id, &account_id)
+}
+
+/// TASK 3113 -- what the window has to know before OSL acts in a service:
+/// has *this* signed-in service account already been shown the risk page and
+/// agreed? The record is the per-account one TASK 3111 writes, so the answer
+/// survives a restart and never leaks across accounts in the same service.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MessagingRiskAgreementRead {
+    service_id: String,
+    account_id: String,
+    agreed: bool,
+    agreed_at: Option<i64>,
+    wording: Vec<String>,
+}
+
+#[tauri::command]
+async fn read_messaging_service_risk_agreement(
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+    registry: State<'_, ServiceRegistryState>,
+    service_id: String,
+    account_id: String,
+) -> Result<MessagingRiskAgreementRead, String> {
+    let _session = session.transition.lock().await;
+    let owner = active_unlocked_osl_user_id(&core)?;
+    let service_kind = osl_privacy_hub::services::service_kind_from_id(&service_id)
+        .ok_or_else(|| "unknown service".to_owned())?;
+    registry.require_owned(&owner, service_kind, &account_id)?;
+    let stored = osl_privacy_hub::services::read_messaging_risk_agreement(
+        &owner,
+        &service_id,
+        &account_id,
+    )?;
+    Ok(match stored {
+        Some(agreement) => MessagingRiskAgreementRead {
+            service_id: agreement.service_id,
+            account_id: agreement.account_id,
+            agreed: true,
+            agreed_at: Some(agreement.agreed_at),
+            wording: agreement.wording,
+        },
+        None => MessagingRiskAgreementRead {
+            service_id,
+            account_id,
+            agreed: false,
+            agreed_at: None,
+            wording: Vec::new(),
+        },
+    })
 }
 
 #[tauri::command]
@@ -6273,6 +6447,25 @@ async fn copy_hub_friend_invite(
     }
 }
 
+/// Create one opaque contact capability for the unlocked identity. The owner
+/// binding stays in encrypted local state; the setup page receives the opaque
+/// link but deliberately does not render the stable person ID in this DTO.
+#[tauri::command]
+async fn create_hub_private_contact_link(
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+) -> Result<ipc::private_contact_link::PrivateContactLinkDto, String> {
+    let _session = session.transition.lock().await;
+    let person_id = active_unlocked_osl_user_id(&core)?;
+    let directory = keystore::osl_base_dir()
+        .map_err(|_| "OSL private contact link storage is unavailable".to_owned())?;
+    ipc::private_contact_link::create_private_contact_link(
+        &directory,
+        &person_id,
+        browser_consent_now_unix_ms(),
+    )
+}
+
 #[cfg(windows)]
 fn write_windows_clipboard_text(value: &str) -> Result<(), String> {
     use std::{ptr, thread, time::Duration};
@@ -6359,120 +6552,6 @@ async fn add_hub_friend(
     alias: Option<String>,
 ) -> Result<AddFriendResult, String> {
     let _session = session.transition.lock().await;
-    security::add_friend_code(&core, &security_state, friend_code, alias)
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct HubPrivateContactLink {
-    link_value: String,
-    revocation_secret: String,
-    issued_at_unix_seconds: u64,
-    expires_at_unix_seconds: u64,
-    uses_allowed: u32,
-    uses_recorded: u32,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct HubPrivateContactLinkStatus {
-    issued_at_unix_seconds: u64,
-    expires_at_unix_seconds: u64,
-    terminal_state: String,
-    terminal_at_unix_seconds: Option<u64>,
-}
-
-fn private_contact_link_client() -> Result<keystore::KeyServerClient, String> {
-    let directory = keystore::osl_config_dir().map_err(|error| {
-        format!("OSL private contact link service configuration is unavailable: {error}")
-    })?;
-    keystore::KeyServerClient::new(ipc::commands::resolve_keyserver_base_url(&directory))
-        .map_err(|error| format!("OSL private contact link service is unavailable: {error}"))
-}
-
-/// Issue one link at the deployed keyserver. The webview receives the exact
-/// service timestamps and the per-link revocation capability, never a local
-/// clock projection or a stable public-name identifier.
-#[tauri::command]
-async fn create_hub_private_contact_link(
-    core: State<'_, HubCoreState>,
-    session: State<'_, HubAccountSessionState>,
-) -> Result<HubPrivateContactLink, String> {
-    let _session = session.transition.lock().await;
-    active_unlocked_osl_user_id(&core)?;
-    let friend_code = security::export_friend_code(&core)?.friend_code;
-    let issued = tauri::async_runtime::spawn_blocking(move || {
-        private_contact_link_client()?
-            .issue_private_contact_link(&friend_code)
-            .map_err(|error| format!("OSL private contact link issue failed: {error}"))
-    })
-    .await
-    .map_err(|_| "OSL private contact link issue was interrupted".to_owned())??;
-    Ok(HubPrivateContactLink {
-        link_value: issued.link_value,
-        revocation_secret: issued.revocation_secret,
-        issued_at_unix_seconds: issued.issued_at_unix_seconds,
-        expires_at_unix_seconds: issued.expires_at_unix_seconds,
-        uses_allowed: issued.uses_allowed,
-        uses_recorded: issued.uses_recorded,
-    })
-}
-
-#[tauri::command]
-async fn get_hub_private_contact_link_status(
-    session: State<'_, HubAccountSessionState>,
-    link_value: String,
-    revocation_secret: String,
-) -> Result<HubPrivateContactLinkStatus, String> {
-    let _session = session.transition.lock().await;
-    let status = tauri::async_runtime::spawn_blocking(move || {
-        private_contact_link_client()?
-            .private_contact_link_status(&link_value, &revocation_secret)
-            .map_err(|error| format!("OSL private contact link status failed: {error}"))
-    })
-    .await
-    .map_err(|_| "OSL private contact link status was interrupted".to_owned())??;
-    Ok(HubPrivateContactLinkStatus {
-        issued_at_unix_seconds: status.issued_at_unix_seconds,
-        expires_at_unix_seconds: status.expires_at_unix_seconds,
-        terminal_state: status.terminal_state,
-        terminal_at_unix_seconds: status.terminal_at_unix_seconds,
-    })
-}
-
-#[tauri::command]
-async fn revoke_hub_private_contact_link(
-    session: State<'_, HubAccountSessionState>,
-    link_value: String,
-    revocation_secret: String,
-) -> Result<(), String> {
-    let _session = session.transition.lock().await;
-    tauri::async_runtime::spawn_blocking(move || {
-        private_contact_link_client()?
-            .revoke_private_contact_link(&link_value, &revocation_secret)
-            .map_err(|error| format!("OSL private contact link revocation failed: {error}"))
-    })
-    .await
-    .map_err(|_| "OSL private contact link revocation was interrupted".to_owned())?
-}
-
-#[tauri::command]
-async fn add_hub_private_contact_link(
-    core: State<'_, HubCoreState>,
-    security_state: State<'_, security::HubSecurityState>,
-    session: State<'_, HubAccountSessionState>,
-    link_value: String,
-    alias: Option<String>,
-) -> Result<security::AddFriendResult, String> {
-    let _session = session.transition.lock().await;
-    active_unlocked_osl_user_id(&core)?;
-    let (friend_code, _) = tauri::async_runtime::spawn_blocking(move || {
-        private_contact_link_client()?
-            .redeem_private_contact_link(&link_value)
-            .map_err(|_| "OSL private contact link is unavailable".to_owned())
-    })
-    .await
-    .map_err(|_| "OSL private contact link redemption was interrupted".to_owned())??;
     security::add_friend_code(&core, &security_state, friend_code, alias)
 }
 
@@ -6737,6 +6816,54 @@ async fn get_osl_profile(
     let _session = session.transition.lock().await;
     let owner = active_unlocked_osl_user_id(&core)?;
     osl_profile::get_active_profile(&owner)
+}
+
+#[tauri::command]
+async fn set_owner_profile_picture(
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+    image: String,
+) -> Result<OwnerProfilePictureDto, String> {
+    let _session = session.transition.lock().await;
+    let owner = active_unlocked_osl_user_id(&core)?;
+    osl_profile::set_active_profile_picture(&owner, image)
+}
+
+#[tauri::command]
+async fn read_owner_profile_picture(
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+) -> Result<OwnerProfilePictureDto, String> {
+    let _session = session.transition.lock().await;
+    let owner = active_unlocked_osl_user_id(&core)?;
+    osl_profile::read_active_profile_picture(&owner)
+}
+
+#[tauri::command]
+async fn read_owner_profile_picture_for_friend(
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+    reader_id: String,
+) -> Result<OwnerProfilePictureDto, String> {
+    let _session = session.transition.lock().await;
+    let owner = active_unlocked_osl_user_id(&core)?;
+    let accepted_friend_ids = core
+        .osl
+        .friend_ids
+        .lock()
+        .map_err(|_| "OSL accepted friend state is unavailable".to_owned())?
+        .clone();
+    osl_profile::read_active_profile_picture_for_reader(&owner, &reader_id, &accepted_friend_ids)
+}
+
+#[tauri::command]
+async fn clear_owner_profile_picture(
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+) -> Result<OwnerProfilePictureDto, String> {
+    let _session = session.transition.lock().await;
+    let owner = active_unlocked_osl_user_id(&core)?;
+    osl_profile::clear_active_profile_picture(&owner)
 }
 
 /// Hand the renderer the HKDF subkey for OSL Chat's local (webview) state.
@@ -7113,7 +7240,6 @@ async fn open_hub_attachment(
     let _session = session.transition.lock().await;
     tauri::async_runtime::spawn_blocking(move || {
         let core = app.state::<HubCoreState>();
-        require_active_pro_entitlement(&core)?;
         let broker_state = app.state::<HubBrokerState>();
         let host_state = app.state::<ServiceHostState>();
         let active = host_state
@@ -7136,7 +7262,6 @@ async fn open_hub_attachment(
             .map_err(|error| error.to_string())?
             .ok_or_else(|| "OSL service closed during attachment opening".to_owned())?;
         broker_state.validate_active_host(&context_token, &still_active)?;
-        require_active_pro_entitlement(&core)?;
         Ok(opened)
     })
     .await
@@ -7639,8 +7764,9 @@ mod qa_selftest {
     use osl_privacy_hub::native_window_host::NativeWindowHostStatus;
     use osl_privacy_hub::qa_selftest_request::{
         instance_file_token, not_ready_refusal, parse_request, readiness_criterion_is_graded,
-        DrainReport, HostAction, HostReport, ParsedRequest, RehydrateReport, RevealReport,
-        RevealTarget, SelftestRequest, Verb,
+        DrainReport, HostAction, HostReport, ParsedRequest, ProviderVersion, RehydrateReport,
+        RevealReport, RevealTarget, SelftestRequest, Verb, REFUSAL_PROVIDER_NAME_MISSING,
+        REFUSAL_PROVIDER_VERSION_MISSING,
     };
     use std::collections::BTreeMap;
     use std::path::{Path, PathBuf};
@@ -7853,6 +7979,10 @@ mod qa_selftest {
         /// never a fragment of the request, so a malformed request cannot write
         /// its own bytes into this file.
         request_status: &'static str,
+        /// Runtime identity of the exact provider this result concerns.  A
+        /// completed result cannot pass unless both values were observed.
+        provider_name: Option<String>,
+        exact_version: Option<String>,
         /// The one fixed plaintext the `send` verb transmits, and `null` for
         /// every other verb -- none of which sends anything at all.
         probe: Option<&'static str>,
@@ -7966,6 +8096,7 @@ mod qa_selftest {
         request_format: &'static str,
         request_status: &'static str,
         refusal: Option<&'static str>,
+        provider: Option<ProviderVersion>,
         verb_error: Option<String>,
         drain: Option<DrainReport>,
         host: Option<HostReport>,
@@ -7983,6 +8114,7 @@ mod qa_selftest {
                 request_format: "none",
                 request_status: "accepted",
                 refusal: None,
+                provider: None,
                 verb_error: None,
                 drain: None,
                 host: None,
@@ -7995,6 +8127,11 @@ mod qa_selftest {
         fn refused(mut self, refusal: &'static str) -> Self {
             self.request_status = refusal;
             self.refusal = Some(refusal);
+            self
+        }
+
+        fn with_provider(mut self, provider: ProviderVersion) -> Self {
+            self.provider = Some(provider);
             self
         }
     }
@@ -8437,6 +8574,25 @@ mod qa_selftest {
             observation.overlay_context_detail.clone(),
         );
 
+        insert(
+            &mut criteria,
+            "provider_name_recorded",
+            outcome_detail.provider.is_some(),
+            outcome_detail
+                .provider
+                .is_none()
+                .then(|| REFUSAL_PROVIDER_NAME_MISSING.to_owned()),
+        );
+        insert(
+            &mut criteria,
+            "provider_exact_version_recorded",
+            outcome_detail.provider.is_some(),
+            outcome_detail
+                .provider
+                .is_none()
+                .then(|| REFUSAL_PROVIDER_VERSION_MISSING.to_owned()),
+        );
+
         let carrier = match send {
             Some(Ok(result)) => Some(&result.carrier),
             _ => None,
@@ -8521,6 +8677,14 @@ mod qa_selftest {
             verb: outcome_detail.verb,
             request_format: outcome_detail.request_format,
             request_status: outcome_detail.request_status,
+            provider_name: outcome_detail
+                .provider
+                .as_ref()
+                .map(|provider| provider.provider_name.clone()),
+            exact_version: outcome_detail
+                .provider
+                .as_ref()
+                .map(|provider| provider.exact_version.clone()),
             probe: is_send.then_some(PROBE_PLAINTEXT),
             outcome,
             ready: observation.ready_for(verb),
@@ -8922,6 +9086,48 @@ mod qa_selftest {
         }
     }
 
+    /// Bind the test verdict to the provider selected by the production
+    /// request.  The version is read from that provider's verified executable
+    /// at run time; manifests name providers, but never supply versions.
+    fn provider_version_for_request(
+        request: &SelftestRequest,
+    ) -> Result<ProviderVersion, &'static str> {
+        let native_app = match request.verb {
+            Verb::Status | Verb::Send | Verb::Drain | Verb::Rehydrate | Verb::RevealViewOnce => {
+                Some(NativeAppId::Discord)
+            }
+            Verb::Host => request.host.map(|host| host.app_id),
+            Verb::ListBrowserProfiles
+            | Verb::GrantBrowserProfile
+            | Verb::RevokeBrowserProfile
+            | Verb::RunBrowserImport => None,
+        };
+        if let Some(id) = native_app {
+            let version = native_apps::native_app_exact_version(id)
+                .ok_or(REFUSAL_PROVIDER_VERSION_MISSING)?;
+            return ProviderVersion::new(native_apps::native_app_display_name(id), version);
+        }
+
+        let browser = request
+            .browser_profile
+            .as_ref()
+            .and_then(|profile| {
+                serde_json::from_value::<BrowserImportId>(serde_json::Value::String(
+                    profile.browser_id.clone(),
+                ))
+                .ok()
+            })
+            .ok_or(REFUSAL_PROVIDER_NAME_MISSING)?;
+        let version = native_apps::browser_import_exact_version(browser)
+            .ok_or(REFUSAL_PROVIDER_VERSION_MISSING)?;
+        ProviderVersion::new(
+            native_apps::provider_version_target_name(
+                native_apps::ProviderVersionTarget::Browser(browser),
+            ),
+            version,
+        )
+    }
+
     fn run_once(
         app: &tauri::AppHandle,
         request: &SelftestRequest,
@@ -8931,6 +9137,26 @@ mod qa_selftest {
         let verb = request.verb;
         let mut outcome_detail = VerbOutcome::new(verb.label(), instance, trigger_file);
         outcome_detail.request_format = request.format;
+        match provider_version_for_request(request) {
+            Ok(provider) => outcome_detail = outcome_detail.with_provider(provider),
+            Err(refusal) => {
+                outcome_detail = outcome_detail.refused(refusal);
+                let observation = observe(app);
+                let (stages, in_order) = stage_criteria(&[]);
+                return build_verdict(
+                    verb,
+                    "refused",
+                    &observation,
+                    "none",
+                    None,
+                    stages,
+                    in_order,
+                    None,
+                    None,
+                    outcome_detail,
+                );
+            }
+        }
 
         // Bounded readiness wait. The operator establishes the adopted Discord
         // window and the engaged lock by hand; this waits for them and then
@@ -9941,10 +10167,14 @@ fn spawn_lifecycle_tick(app: tauri::AppHandle, local_data_dir: std::path::PathBu
     ]);
 */
 
+struct AiCarrierModelPackRoot(std::path::PathBuf);
+
 #[tauri::command]
 fn ai_carrier_status(
     state: tauri::State<'_, AiCarrierState>,
+    model_pack_root: tauri::State<'_, AiCarrierModelPackRoot>,
 ) -> osl_privacy_hub::ai_carrier::AiCarrierStatus {
+    let _ = state.refresh_bundled_local_model(&model_pack_root.0);
     ai_carrier_status_for(&state)
 }
 
@@ -9958,38 +10188,18 @@ fn set_ai_carrier_preview_enabled(
 }
 
 #[tauri::command]
+fn set_ai_covertext_selected(
+    state: tauri::State<'_, AiCarrierState>,
+    selected: bool,
+) -> Result<osl_privacy_hub::ai_carrier::AiCarrierStatus, String> {
+    set_ai_covertext_selected_for(&state, selected)
+}
+
+#[tauri::command]
 fn build_integrity_status(state: tauri::State<'_, BuildIntegrity>) -> BuildIntegrity {
     *state.inner()
 }
 
-#[tauri::command]
-fn resolve_english_catalogue_string(
-    catalogue: tauri::State<'_, osl_english_catalogue::EnglishCatalogue>,
-    key: String,
-    variables: std::collections::BTreeMap<String, String>,
-) -> Result<osl_english_catalogue::ResolvedString, String> {
-    catalogue
-        .resolve(&key, variables)
-        .map_err(|error| error.to_string())
-}
-
-#[tauri::command]
-fn get_discovery_replies_switch(state: tauri::State<'_, HubCoreState>) -> Result<String, String> {
-    ipc::commands::cmd_osl_read_discovery_replies_switch(&state.osl)
-}
-
-#[tauri::command]
-async fn set_discovery_replies_switch(
-    state: tauri::State<'_, HubCoreState>,
-    value: String,
-) -> Result<String, String> {
-    let osl = state.osl.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        ipc::commands::cmd_osl_set_discovery_replies_switch(&osl, value, None)
-    })
-    .await
-    .map_err(|error| format!("OSL: discovery transition task failed: {error}"))?
-}
 macro_rules! hub_tauri_generate_handler {
     ($($(#[$meta:meta])* $command:ident),* $(,)?) => {
         tauri::generate_handler![$($(#[$meta])* $command,)*]
@@ -10033,15 +10243,7 @@ macro_rules! hub_tauri_command_names {
 
 #[cfg(feature = "signal-qa-shell")]
 fn main() {
-    let english_catalogue =
-        osl_privacy_hub::english_catalogue_entry::load_packaged_windows_catalogue().unwrap_or_else(
-            |error| {
-                eprintln!("5205 Windows startup refusal: {error}");
-                std::process::exit(78);
-            },
-        );
-    let builder = tauri::Builder::default().setup(move |app| {
-        app.manage(english_catalogue);
+    let builder = tauri::Builder::default().setup(|app| {
         let profiles =
             osl_privacy_hub::adapter_profile_boot::load_verified_adapter_profiles_at_boot()
                 .map_err(|_| {
@@ -10064,7 +10266,6 @@ fn main() {
         focus_native_app_window,
         detach_native_app_window,
         get_signal_protected_send_readiness,
-        resolve_english_catalogue_string,
     ]);
     let app = builder
         .build(tauri::generate_context!("tauri.signal-qa.conf.json"))
@@ -10074,15 +10275,8 @@ fn main() {
 
 #[cfg(not(feature = "signal-qa-shell"))]
 fn main() {
-    let english_catalogue =
-        osl_privacy_hub::english_catalogue_entry::load_packaged_windows_catalogue().unwrap_or_else(
-            |error| {
-                eprintln!("5205 Windows startup refusal: {error}");
-                std::process::exit(78);
-            },
-        );
     if let Some(exit_code) =
-        osl_privacy_hub::discord_typing_box_check::run_discord_typing_box_check_cli_from_env()
+        osl_privacy_hub::front_window_grab::run_front_window_grab_cli_from_env()
     {
         std::process::exit(exit_code);
     }
@@ -10091,6 +10285,54 @@ fn main() {
         osl_privacy_hub::allowed_place_commands::run_allowed_place_cli_from_env()
     {
         std::process::exit(exit_code);
+    }
+
+    // Report whether this installation can find its packaged Tor sidecar,
+    // then exit. Exists so a packaged build can be checked without a
+    // display server or an unlocked profile; it runs the exact resolver
+    // the Tor route uses at startup.
+    if std::env::args_os().any(|arg| arg == std::ffi::OsStr::new("--osl-tor-sidecar-status")) {
+        match osl_privacy_hub::tor_pref::resolve_tor_sidecar_program() {
+            Ok(program) => {
+                println!("OSL tor sidecar: {}", program.display());
+                std::process::exit(0);
+            }
+            Err(refusal) => {
+                eprintln!("{refusal}");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    #[cfg(feature = "core")]
+    if std::env::args_os()
+        .any(|arg| arg == std::ffi::OsStr::new(cleanup::WINDOWS_REMOVE_PROGRAM_UNINSTALL_ARG))
+    {
+        match cleanup::execute_windows_remove_program_uninstall_from_env() {
+            Ok(report) if report.local_cleanup_complete => {
+                println!(
+                    "OSL uninstall step {} complete: removed_targets={} failed_targets=0",
+                    cleanup::WINDOWS_REMOVE_PROGRAM_UNINSTALL_STEP,
+                    report.removed_targets.len()
+                );
+                std::process::exit(0);
+            }
+            Ok(report) => {
+                eprintln!(
+                    "OSL uninstall step {} incomplete: failed_targets={:?}",
+                    cleanup::WINDOWS_REMOVE_PROGRAM_UNINSTALL_STEP,
+                    report.failed_targets
+                );
+                std::process::exit(1);
+            }
+            Err(error) => {
+                eprintln!(
+                    "OSL uninstall step {} failed: {error}",
+                    cleanup::WINDOWS_REMOVE_PROGRAM_UNINSTALL_STEP
+                );
+                std::process::exit(1);
+            }
+        }
     }
 
     #[cfg(feature = "discord-qa-shell")]
@@ -10275,7 +10517,6 @@ fn main() {
     startup_breadcrumb("setup_before"); // STARTUP-TRACE
     let builder = builder.setup(|app| {
         startup_breadcrumb("setup_enter"); // STARTUP-TRACE
-        app.manage(english_catalogue);
         let profiles =
             osl_privacy_hub::adapter_profile_boot::load_verified_adapter_profiles_at_boot()
                 .map_err(|_| {
@@ -10350,9 +10591,13 @@ fn main() {
             config_dir.join("preview-preferences.json"),
         ));
         startup_breadcrumb("setup_step_14_preview_state_managed"); // STARTUP-TRACE
-        app.manage(TorPreferenceState::load_with_arti_proxy_config(
+        app.manage(BurnReviewState::load(
+            config_dir.join("burn-review-state.json"),
+        ));
+        startup_breadcrumb("setup_step_14b_burn_review_state_managed"); // STARTUP-TRACE
+        app.manage(TorPreferenceState::load_with_tor_sidecar_config(
             config_dir.join("tor-preference.json"),
-            osl_privacy_hub::tor_pref::arti_proxy_config_from_env(),
+            osl_privacy_hub::tor_pref::tor_sidecar_config_from_env_or_bundle(&config_dir),
         ));
         app.manage(ServiceRegistryState::load(
             config_dir.join("service-registry.json"),
@@ -10402,6 +10647,13 @@ fn main() {
             &security_state,
         )?;
         app.manage(core);
+        {
+            let core = app.state::<HubCoreState>();
+            let preferences = app.state::<PreviewState>();
+            let _ = apply_saved_message_runtime_preferences(&core, &preferences);
+        }
+        startup_breadcrumb("setup_step_24a_message_runtime_preferences_applied"); // STARTUP-TRACE
+        spawn_follow_active_app_window_watcher(app.handle().clone());
         entitlement_refresh::spawn(app.handle().clone());
         #[cfg(feature = "whatsapp-qa-shell")]
         {
@@ -10464,7 +10716,11 @@ fn main() {
         app.manage(WhatsAppQaProtectionState::default());
         app.manage(LocalCoverState::default());
         startup_breadcrumb("setup_step_31_local_cover_state_managed"); // STARTUP-TRACE
-        app.manage(AiCarrierState::default());
+        let ai_carrier = AiCarrierState::default();
+        let ai_model_pack_root = config_dir.join("cover-model");
+        let _ = ai_carrier.ensure_bundled_local_model(&ai_model_pack_root);
+        app.manage(AiCarrierModelPackRoot(ai_model_pack_root));
+        app.manage(ai_carrier);
         app.manage(ChatCaptureProtectionState::default());
         // Evaluate the bundled signed manifest once per launch, before the UI
         // can present a local integrity verdict.
@@ -10531,6 +10787,7 @@ fn main() {
                                                                              // This is also why `scavenge_staging_on_startup` above cannot be the
                                                                              // home for any of it: no key exists yet at that point.
         app.manage(LifecycleTickState::default());
+        app.manage(osl_privacy_hub::realtime_wakeup::RealtimeWakeupRuntime::default());
         spawn_lifecycle_tick(app.handle().clone(), local_data_dir.clone());
         startup_breadcrumb("setup_step_45_lifecycle_tick_spawned"); // STARTUP-TRACE
                                                                     // Last, so every state the driver reads is already managed. It only
@@ -11085,7 +11342,11 @@ mod tauri_command_acl_tests {
 
     #[test]
     fn t13_td8_ai_carrier_command_is_reachable_from_the_shipping_binary() {
-        assert_registered_and_acl_granted(&["ai_carrier_status", "set_ai_carrier_preview_enabled"]);
+        assert_registered_and_acl_granted(&[
+            "ai_carrier_status",
+            "set_ai_carrier_preview_enabled",
+            "set_ai_covertext_selected",
+        ]);
     }
 
     #[test]

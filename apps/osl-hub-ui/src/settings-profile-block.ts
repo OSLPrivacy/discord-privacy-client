@@ -98,6 +98,15 @@ export function settingsProfileVibeLeft(vibe: string): number {
   return Math.max(0, SETTINGS_PROFILE_VIBE_LIMIT - Array.from(vibe).length);
 }
 
+export function settingsProfileVibeInput(value: string): { value: string; left: number } {
+  const bounded = Array.from(value).slice(0, SETTINGS_PROFILE_VIBE_LIMIT).join("");
+  return { value: bounded, left: settingsProfileVibeLeft(bounded) };
+}
+
+export function settingsProfileAvatarTypeAccepted(type: string): boolean {
+  return ["image/png", "image/jpeg", "image/gif"].includes(type);
+}
+
 function checked(value: boolean): string { return value ? " checked" : ""; }
 
 function avatarPreview(record: ScopedProfileRecord): string {
@@ -105,13 +114,20 @@ function avatarPreview(record: ScopedProfileRecord): string {
   return `<span aria-hidden="true">${escapeHtml(Array.from(record.displayName.trim())[0]?.toUpperCase() ?? "?")}</span>`;
 }
 
+/** The preview card must consume the current editor record, never persisted storage. */
+export function settingsProfileCardMarkup(record: ScopedProfileRecord): string {
+  if (record.scope.kind !== "global") throw new Error("Settings profile card only accepts the global OSL profile record.");
+  return `<article class="settings-profile-card" data-settings-profile-card><div class="settings-profile-card-avatar" style="--settings-profile-avatar-colour:${escapeHtml(record.colour)}">${avatarPreview(record)}</div><div><strong data-settings-profile-card-name>${escapeHtml(record.displayName)}</strong><small>${escapeHtml(record.status)}</small></div></article>`;
+}
+
 /** Renders the YOUR PROFILE group; it intentionally does not include friends-visible accounts. */
 export function settingsProfileBlockMarkup(record: ScopedProfileRecord): string {
   if (record.scope.kind !== "global") throw new Error("Settings profile markup only accepts the global OSL profile record.");
-  const vibe = Array.from(record.status).slice(0, SETTINGS_PROFILE_VIBE_LIMIT).join("");
+  const vibe = settingsProfileVibeInput(record.status).value;
   return [
     `<section class="settings-profile-block" aria-labelledby="settings-profile-heading">`,
     `<div class="settings-profile-block-heading"><h3 id="settings-profile-heading">YOUR PROFILE</h3><p>How you appear on a friend's card.</p></div>`,
+    settingsProfileCardMarkup(record),
     `<label class="settings-profile-field"><span>Display name</span><input type="text" maxlength="64" value="${escapeHtml(record.displayName)}" data-settings-profile-display-name/></label>`,
     `<label class="settings-profile-field"><span class="settings-profile-label-line">Vibe <small data-settings-profile-vibe-count>${settingsProfileVibeLeft(vibe)} left</small></span><input type="text" maxlength="40" placeholder="what's your vibe right now" value="${escapeHtml(vibe)}" data-settings-profile-vibe/></label>`,
     `<fieldset class="settings-profile-choice-group"><legend>Avatar colour</legend><div class="settings-profile-colours">${SETTINGS_PROFILE_AVATAR_COLOURS.map((colour) => `<label class="settings-profile-colour" title="Avatar colour ${colour}"><input type="radio" name="settings-profile-colour" value="${colour}" data-settings-profile-colour aria-label="Avatar colour ${colour}"${checked(record.colour.toLowerCase() === colour)}/><span style="--settings-profile-swatch:${colour}" aria-hidden="true"></span></label>`).join("")}</div></fieldset>`,
@@ -122,7 +138,7 @@ export function settingsProfileBlockMarkup(record: ScopedProfileRecord): string 
 }
 
 function avatarDataUrl(file: File): Promise<string> {
-  if (!["image/png", "image/jpeg", "image/gif"].includes(file.type)) {
+  if (!settingsProfileAvatarTypeAccepted(file.type)) {
     return Promise.reject(new Error("Avatar image must be PNG, JPG, or GIF."));
   }
   return new Promise((resolve, reject) => {
@@ -149,9 +165,10 @@ export function attachSettingsProfileBlock(mount: HTMLElement, state: OslProfile
     if (!target) return;
     if (target.matches("[data-settings-profile-display-name]")) state.setField("global", "displayName", target.value);
     else if (target.matches("[data-settings-profile-vibe]")) {
-      state.setField("global", "status", Array.from(target.value).slice(0, SETTINGS_PROFILE_VIBE_LIMIT).join(""));
+      const vibe = settingsProfileVibeInput(target.value);
+      state.setField("global", "status", vibe.value);
       const counter = mount.querySelector<HTMLElement>("[data-settings-profile-vibe-count]");
-      if (counter) counter.textContent = `${settingsProfileVibeLeft(target.value)} left`;
+      if (counter) counter.textContent = `${vibe.left} left`;
     } else return;
     persist();
   };

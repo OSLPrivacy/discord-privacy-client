@@ -1,0 +1,77 @@
+--- crates/ipc/src/commands.rs	2026-08-07 17:23:11.171548409 -0700
++++ /tmp/osl-0282b-copy/crates/ipc/src/commands.rs	2026-08-07 17:25:44.167418682 -0700
+@@ -24005,6 +24005,58 @@
+     Ok(())
+ }
+ 
++// ===== TASK 0282b THROWAWAY BREAK - copy of the tree only, never committed =====
++// The break under test: an unblock that hands the person their old allowed
++// places back. The block remembers what it took away; the unblock puts it back.
++static TASK_0282B_STASHED_PLACES: std::sync::Mutex<
++    Vec<(String, crate::allowed_places::AllowedPlaceRecord)>,
++> = std::sync::Mutex::new(Vec::new());
++
++fn task_0282b_remember_places_on_block(allowed_place_dir: Option<&Path>, person_id: &str) {
++    let Some(dir) = allowed_place_dir else {
++        return;
++    };
++    let records = crate::allowed_places::list_allowed_place_records(dir).unwrap_or_default();
++    let mut stash = TASK_0282B_STASHED_PLACES
++        .lock()
++        .unwrap_or_else(|error| error.into_inner());
++    for record in records {
++        let belongs = record.stable_id == person_id
++            || record.stable_id.rsplit(':').next() == Some(person_id);
++        if belongs {
++            eprintln!(
++                "TASK_0282B_REMEMBERED person={person_id} stable_id={}",
++                record.stable_id
++            );
++            stash.push((person_id.to_owned(), record));
++        }
++    }
++}
++
++fn task_0282b_restore_places_on_unblock(allowed_place_dir: Option<&Path>, person_id: &str) {
++    let Some(dir) = allowed_place_dir else {
++        return;
++    };
++    let mut stash = TASK_0282B_STASHED_PLACES
++        .lock()
++        .unwrap_or_else(|error| error.into_inner());
++    let mine = stash
++        .iter()
++        .filter(|(person, _)| person == person_id)
++        .map(|(_, record)| record.clone())
++        .collect::<Vec<_>>();
++    stash.retain(|(person, _)| person != person_id);
++    drop(stash);
++    for record in mine {
++        eprintln!(
++            "TASK_0282B_RESTORED person={person_id} app={} account={} kind={} stable_id={} place_name=\"{}\"",
++            record.app, record.account, record.kind, record.stable_id, record.place_name
++        );
++        let _ = crate::allowed_places::add_allowed_place_record(dir, record);
++    }
++}
++// ===== end TASK 0282b THROWAWAY BREAK =====
++
+ pub fn cmd_osl_block_friend_request(
+     state: &AppState,
+     peer_discord_id: String,
+@@ -24035,6 +24087,7 @@
+         persist_peer_map_now(state);
+     }
+ 
++    task_0282b_remember_places_on_block(allowed_place_dir.as_deref(), &peer_discord_id); // TASK 0282b THROWAWAY BREAK
+     clear_allowed_places_for_optional_dir(allowed_place_dir.as_deref(), &peer_discord_id)?;
+ 
+     let blocked_path = blocked_people_path(&dir);
+@@ -24086,6 +24139,7 @@
+         persist_peer_map_now(state);
+     }
+     clear_allowed_places_for_optional_dir(allowed_place_dir.as_deref(), &peer_discord_id)?;
++    task_0282b_restore_places_on_unblock(allowed_place_dir.as_deref(), &peer_discord_id); // TASK 0282b THROWAWAY BREAK
+ 
+     Ok(UnblockPersonResult {
+         person_id: peer_discord_id.clone(),

@@ -1,7 +1,6 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/english-catalogue",
     "crates/adapter-profile",
     "crates/cover-draft",
     "crates/cover-ai",
@@ -13,13 +12,9 @@ members = [
     "crates/ipc",
     "crates/message-lifecycle",
     "crates/runtime",
-    "crates/shipping-transition-guard",
     "crates/sensitive-classify",
     "crates/store",
-    "crates/story-privacy",
-    "crates/place-departure",
-    "tools/task-6860-story-privacy/win-capture-proof",
-    "services/voucher-redemption",
+    "crates/task-4325c-mail-fetch",
     # OSL-RN is integrated through `crates/ipc/src/wire_rn.rs`, including
     # production version-selection and session-state paths. The compile-time
     # fuse is open in this build; real OSL-RN traffic remains closed by the
@@ -102,10 +97,9 @@ keyring = "3"
 windows = { version = "0.56", features = ["Win32_Foundation", "Win32_Security_Tpm"] }
 
 # Transport
-# `crates/transport` owns Tor routing. T1-70 chose a supervised Arti SOCKS5
-# subprocess instead of embedding `arti-client`: embedding requires Rust 1.91
-# and edition 2024, while this workspace remains on Rust 1.97.1 and edition 2021.
-# See crates/transport/README.md.
+# `crates/transport` owns Tor routing. It supervises the OSL Tor sidecar and
+# consumes the sidecar's reported ephemeral SOCKS address. See
+# crates/transport/README.md.
 
 [profile.release]
 codegen-units = 1

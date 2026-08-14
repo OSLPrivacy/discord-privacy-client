@@ -43,69 +43,6 @@
   line-height: 1.45;
 }
 
-.account-buyer-notice {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 18px;
-  padding: 12px 14px;
-  border: 1px solid var(--brand);
-  border-radius: var(--radius);
-  background: var(--brand-wash);
-}
-
-.account-buyer-notice-copy {
-  display: grid;
-  gap: 3px;
-}
-
-.account-buyer-notice h2,
-.account-buyer-notice p {
-  margin: 0;
-}
-
-.account-buyer-notice h2 {
-  font-size: 13px;
-  font-weight: 650;
-}
-
-.account-buyer-notice p {
-  color: var(--text);
-  font-size: 12px;
-  line-height: 1.45;
-}
-
-.account-buyer-notice-actions {
-  display: flex;
-  flex: 0 0 auto;
-  gap: 8px;
-}
-
-.account-buyer-notice-actions button {
-  padding: 6px 10px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  background: var(--panel);
-  color: var(--text);
-  font-family: var(--font-ui);
-  font-size: 12px;
-  cursor: pointer;
-}
-
-.account-buyer-notice-actions button:first-child {
-  border-color: var(--brand);
-  color: var(--brand);
-}
-
-.account-buyer-notice-actions button:hover {
-  border-color: var(--brand);
-}
-
-.account-buyer-notice-actions button:focus-visible {
-  outline: 2px solid var(--brand);
-  outline-offset: 2px;
-}
-
 .account-controls {
   display: grid;
   gap: 6px;

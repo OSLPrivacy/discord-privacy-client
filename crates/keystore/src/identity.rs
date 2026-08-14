@@ -237,7 +237,8 @@ pub const COPIED_IDENTITY_FILE_REFUSAL: &str = "Copying one identity file onto e
 const ACCOUNT_ROOT_DEVICE_NOTE_DOMAIN: &[u8] = b"OSL-account-root-device-note-v1";
 const ACCOUNT_ROOT_DEVICE_LIST_DOMAIN: &[u8] = b"OSL-account-root-device-list-v1";
 const DEVICE_ID_BYTES: usize = 16;
-pub const DEVICE_PRIVATE_KEY_FILE_BYTES: usize = x25519::SECRET_KEY_SIZE + ed25519::SECRET_KEY_SIZE;
+pub const DEVICE_PRIVATE_KEY_FILE_BYTES: usize =
+    x25519::SECRET_KEY_SIZE + ed25519::SECRET_KEY_SIZE;
 
 /// One account root key. The root is the account authority: it signs
 /// short device membership notes and the current whole device list.
@@ -260,16 +261,6 @@ impl AccountRootKey {
         self.signing_public
     }
 
-    /// Sign a canonical account-authority payload owned by another keystore
-    /// module. Keeping this crate-private prevents callers from turning the
-    /// account root into a general-purpose signing oracle.
-    pub(crate) fn sign_account_authority_payload(
-        &self,
-        payload: &[u8],
-    ) -> [u8; ed25519::SIGNATURE_SIZE] {
-        *ed25519::sign(&self.signing_secret, payload).as_bytes()
-    }
-
     pub fn account_id(&self) -> String {
         hex_lower(&Sha256::digest(self.signing_public.as_bytes())[..DEVICE_ID_BYTES])
     }
@@ -283,7 +274,11 @@ impl AccountRootKey {
         }
     }
 
-    pub fn sign_device_list(&self, version: u64, devices: Vec<AccountDevice>) -> SignedDeviceList {
+    pub fn sign_device_list(
+        &self,
+        version: u64,
+        devices: Vec<AccountDevice>,
+    ) -> SignedDeviceList {
         let signature = ed25519::sign(
             &self.signing_secret,
             &canonical_device_list(self.signing_public, version, &devices),
@@ -342,89 +337,14 @@ impl DevicePrivateKeys {
         ]
     }
 
-    /// TASK 5402: write this device's private keys sealed to the device.
-    ///
-    /// This used to be `write_private_key_file`, which called `fs::write` with
-    /// [`Self::private_key_file_bytes`] — sixty-four raw bytes of X25519 and
-    /// Ed25519 secret, in the clear, in the replacement profile a lost-device
-    /// recovery had just created. The file IS the secret, so there is no hash
-    /// form available; it has to be authenticated ciphertext. Device private
-    /// keys are meaningful only on the device that holds them, so the unlock
-    /// key is the platform sealer (TPM → OS credential store → encrypted
-    /// process-ephemeral) rather than a passphrase: another OS account's
-    /// credential store cannot open it, and nothing beside the file carries the
-    /// key.
-    pub fn save_sealed_private_key_file(
-        &self,
-        path: &Path,
-        sealer: &dyn crate::sealer::Sealer,
-    ) -> crate::Result<()> {
+    pub fn write_private_key_file(&self, path: &Path) -> crate::Result<()> {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        let plaintext = Zeroizing::new(self.private_key_file_bytes());
-        let sealed = crate::secret_at_rest::seal_with_device_sealer(
-            DEVICE_PRIVATE_KEY_FILE_DOMAIN,
-            sealer,
-            &plaintext[..],
-        )
-        .map_err(|error| crate::Error::Sealer(crate::sealer::SealerError::Malformed(
-            error.to_string(),
-        )))?;
-        fs::write(path, &sealed)?;
-        crate::secret_trace::record(
-            crate::secret_trace::SecretOp::Write,
-            crate::secret_trace::SecretClass::IdentityPrivateMaterial,
-            crate::secret_trace::Protection::DeviceSealedAead,
-            "keystore::identity::DevicePrivateKeys::save_sealed_private_key_file",
-            path,
-            sealed.len(),
-        );
+        fs::write(path, self.private_key_file_bytes())?;
         Ok(())
     }
-
-    /// Inverse of [`Self::save_sealed_private_key_file`].
-    ///
-    /// Returns the same sixty-four bytes the sealed file was created from, and
-    /// nothing at all for a wrong OS account, a wrong device or a tampered
-    /// file.
-    pub fn open_sealed_private_key_file(
-        path: &Path,
-        sealer: &dyn crate::sealer::Sealer,
-    ) -> crate::Result<Zeroizing<[u8; DEVICE_PRIVATE_KEY_FILE_BYTES]>> {
-        let bytes = fs::read(path)?;
-        let opened = crate::secret_at_rest::open_with_device_sealer(
-            DEVICE_PRIVATE_KEY_FILE_DOMAIN,
-            sealer,
-            &bytes,
-        )
-        .map_err(|error| {
-            crate::Error::Sealer(crate::sealer::SealerError::Malformed(error.to_string()))
-        })?;
-        if opened.len() != DEVICE_PRIVATE_KEY_FILE_BYTES {
-            return Err(crate::Error::BlobFieldLength {
-                field: "device_private_keys",
-                got: opened.len(),
-                expected: DEVICE_PRIVATE_KEY_FILE_BYTES,
-            });
-        }
-        let mut out = Zeroizing::new([0u8; DEVICE_PRIVATE_KEY_FILE_BYTES]);
-        out.copy_from_slice(&opened);
-        crate::secret_trace::record(
-            crate::secret_trace::SecretOp::Read,
-            crate::secret_trace::SecretClass::IdentityPrivateMaterial,
-            crate::secret_trace::Protection::DeviceSealedAead,
-            "keystore::identity::DevicePrivateKeys::open_sealed_private_key_file",
-            path,
-            bytes.len(),
-        );
-        Ok(out)
-    }
 }
-
-/// AEAD associated data for a sealed `device-private-keys.bin`, so the blob
-/// cannot be replayed as any other device-sealed record.
-pub const DEVICE_PRIVATE_KEY_FILE_DOMAIN: &[u8] = b"OSL/device-private-keys/file/v1";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DevicePublicKeys {
@@ -478,10 +398,6 @@ impl StoredDeviceList {
 
     pub fn version(&self) -> u64 {
         self.version
-    }
-
-    pub fn device_count(&self) -> usize {
-        self.devices.len()
     }
 
     pub fn device_names(&self) -> Vec<&str> {

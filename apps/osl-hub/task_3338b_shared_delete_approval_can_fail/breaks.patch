@@ -1,0 +1,267 @@
+--- a/apps/osl-hub/src/shared_delete_action.rs
++++ b/apps/osl-hub/src/shared_delete_action.rs
+@@ -284,6 +284,8 @@
+ #[derive(Default)]
+ pub struct PerAppDeleteActions {
+     actions: BTreeMap<String, Box<dyn AppDeleteAction>>,
++    /// TASK 3338b BREAK 2: a second, timer-only delete action per app.
++    timer_only: BTreeMap<String, Box<dyn AppDeleteAction>>,
+ }
+ 
+ impl PerAppDeleteActions {
+@@ -299,27 +301,44 @@
+                 "delete action app or name is invalid",
+             ));
+         }
+-        if let Some(existing) = self.actions.get(&app) {
+-            return Err(DeleteRefusal::new(
+-                REFUSAL_DUPLICATE_DELETE_ACTION,
+-                format!(
+-                    "app {app} already has the delete action {}",
+-                    existing.action_name()
+-                ),
+-            ));
+-        }
+-        self.actions.insert(app, action);
+-        Ok(())
++        if !self.actions.contains_key(&app) {
++            self.actions.insert(app, action);
++            return Ok(());
++        }
++        // TASK 3338b BREAK 2: a second action for an app is no longer refused.
++        // It is kept as that app's timer-only delete action, so discord ends up
++        // with two.
++        if !self.timer_only.contains_key(&app) {
++            self.timer_only.insert(app, action);
++            return Ok(());
++        }
++        let existing = self.actions.get(&app).expect("primary action");
++        Err(DeleteRefusal::new(
++            REFUSAL_DUPLICATE_DELETE_ACTION,
++            format!(
++                "app {app} already has the delete action {}",
++                existing.action_name()
++            ),
++        ))
+     }
+ 
+     /// Every app that has a delete action, in a stable order.
+     pub fn apps(&self) -> Vec<&str> {
+-        self.actions.keys().map(String::as_str).collect()
++        let mut apps: Vec<&str> = self
++            .actions
++            .keys()
++            .chain(self.timer_only.keys())
++            .map(String::as_str)
++            .collect();
++        apps.sort_unstable();
++        apps.dedup();
++        apps
+     }
+ 
+     /// How many delete actions an app has. Never more than 1.
+     pub fn action_count_for_app(&self, app: &str) -> usize {
+         usize::from(self.actions.contains_key(app))
++            + usize::from(self.timer_only.contains_key(app))
+     }
+ 
+     pub fn action_name_for_app(&self, app: &str) -> Option<&str> {
+@@ -331,18 +350,27 @@
+     pub fn action_names_for_app(&self, app: &str) -> Vec<&str> {
+         self.actions
+             .get(app)
+-            .map(|action| vec![action.action_name()])
+-            .unwrap_or_default()
++            .into_iter()
++            .chain(self.timer_only.get(app))
++            .map(|action| action.action_name())
++            .collect()
+     }
+ 
+     pub fn total_action_count(&self) -> usize {
+-        self.actions.len()
++        self.actions.len() + self.timer_only.len()
+     }
+ 
+     fn action_for_app_mut(
+         &mut self,
+         app: &str,
++        approval: DeleteApproval,
+     ) -> Result<&mut Box<dyn AppDeleteAction>, DeleteRefusal> {
++        // TASK 3338b BREAK 2: a due timer is routed to the app's timer-only
++        // delete action when it has one, so the two approvals no longer share
++        // a single action.
++        if approval == DeleteApproval::DueTimedDelete && self.timer_only.contains_key(app) {
++            return Ok(self.timer_only.get_mut(app).expect("timer-only action"));
++        }
+         self.actions.get_mut(app).ok_or_else(|| {
+             DeleteRefusal::new(
+                 REFUSAL_NO_DELETE_ACTION,
+@@ -371,11 +399,17 @@
+                 "scrub mark names a target that is not well formed",
+             ));
+         }
+-        if mark.confirmed && mark.target == request.target {
+-            return Ok(DeleteApproval::ConfirmedScrubMark);
+-        }
+     }
+ 
++    // TASK 3338b BREAK 1: timed delete now requires a Scrub mark. A due record
++    // on its own approves nothing; it only approves when a confirmed mark names
++    // the same message. The record loop runs first so that a record that IS
++    // allowed through still reports itself as the reason.
++    let confirmed_mark_for_this_target = request
++        .scrub_mark
++        .as_ref()
++        .map_or(false, |mark| mark.confirmed && mark.target == request.target);
++
+     for record in &request.timed_delete_records {
+         let target = record.target();
+         if !target.is_well_formed() || record.delete_at <= record.sent_at || record.sent_at < 0 {
+@@ -384,11 +418,18 @@
+                 "timed-delete record is not well formed",
+             ));
+         }
+-        if target == request.target && record.is_due_at(request.now_unix_secs) {
++        if target == request.target
++            && record.is_due_at(request.now_unix_secs)
++            && confirmed_mark_for_this_target
++        {
+             return Ok(DeleteApproval::DueTimedDelete);
+         }
+     }
+ 
++    if confirmed_mark_for_this_target {
++        return Ok(DeleteApproval::ConfirmedScrubMark);
++    }
++
+     Err(DeleteRefusal::new(
+         REFUSAL_NOT_APPROVED,
+         format!(
+@@ -430,7 +471,7 @@
+     let approval = approve_delete(request)?;
+     require_owned(request)?;
+ 
+-    let action = actions.action_for_app_mut(&request.target.app)?;
++    let action = actions.action_for_app_mut(&request.target.app, approval)?;
+     let action_name = action.action_name().to_owned();
+     action
+         .delete_message(&request.target)
+--- a/apps/osl-hub/task_3338_shared_delete_action/src/lib.rs
++++ b/apps/osl-hub/task_3338_shared_delete_action/src/lib.rs
+@@ -79,13 +79,22 @@
+ 
+ impl PlaceDeleteAction {
+     pub fn new(app: &str, messages: Vec<DeleteTarget>) -> (Self, PlaceHandle) {
++        Self::new_named(app, &format!("{app}.delete-own-message"), messages)
++    }
++
++    /// TASK 3338b BREAK 2: an action registered under a name of its own.
++    pub fn new_named(
++        app: &str,
++        action_name: &str,
++        messages: Vec<DeleteTarget>,
++    ) -> (Self, PlaceHandle) {
+         let state = Rc::new(RefCell::new(PlaceState {
+             messages,
+             calls: Vec::new(),
+         }));
+         let action = Self {
+             app: app.to_owned(),
+-            action_name: format!("{app}.delete-own-message"),
++            action_name: action_name.to_owned(),
+             state: Rc::clone(&state),
+         };
+         (action, PlaceHandle { state })
+@@ -165,6 +174,8 @@
+     pub actions: PerAppDeleteActions,
+     pub discord: PlaceHandle,
+     pub whatsapp: PlaceHandle,
++    /// TASK 3338b BREAK 2: discord's second, timer-only delete action.
++    pub discord_timer_only: PlaceHandle,
+ }
+ 
+ impl World {
+@@ -189,10 +200,27 @@
+             .register(Box::new(whatsapp_action))
+             .expect("whatsapp takes its one delete action");
+ 
++        // TASK 3338b BREAK 2: discord takes a SECOND delete action, used only
++        // by due timers.
++        let (discord_timer_only_action, discord_timer_only) = PlaceDeleteAction::new_named(
++            "discord",
++            "discord.timer-only-delete",
++            vec![
++                discord_target(MARKED_LOCATOR),
++                discord_target(TIMER_LOCATOR),
++                discord_target(PLAIN_LOCATOR),
++                discord_target(THEIRS_LOCATOR),
++            ],
++        );
++        actions
++            .register(Box::new(discord_timer_only_action))
++            .expect("discord takes a second, timer-only delete action");
++
+         Self {
+             actions,
+             discord,
+             whatsapp,
++            discord_timer_only,
+         }
+     }
+ }
+@@ -310,6 +338,29 @@
+     })
+ }
+ 
++/// TASK 3338b BREAK 2: a request a due timer really can carry through, to show
++/// discord's second delete action is a live delete path and not just a name.
++/// Returns (approval, action used, timer-only call log, primary call log).
++pub fn timer_only_route() -> (String, String, Vec<String>, Vec<String>) {
++    let mut world = World::new();
++    let target = discord_target(TIMER_LOCATOR);
++    let request = DeleteRequest {
++        target: target.clone(),
++        signed_in_account_sender: Some(SIGNED_IN_ACCOUNT.to_owned()),
++        message_sender: Some(SIGNED_IN_ACCOUNT.to_owned()),
++        scrub_mark: Some(ScrubMark::confirmed(target)),
++        timed_delete_records: vec![accepted_timed_delete_record()],
++        now_unix_secs: NOW_UNIX_SECS,
++    };
++    let outcome = delete_one_owned_target(&mut world.actions, &request).expect("approved");
++    (
++        outcome.approval.as_str().to_owned(),
++        outcome.action_name,
++        world.discord_timer_only.call_locators(),
++        world.discord.call_locators(),
++    )
++}
++
+ /// Every case name the command knows, in the order it runs them.
+ pub const CASES: [&str; 4] = [
+     "scrub-marked-mine",
+--- a/apps/osl-hub/task_3338_shared_delete_action/src/main.rs
++++ b/apps/osl-hub/task_3338_shared_delete_action/src/main.rs
+@@ -83,9 +83,22 @@
+     );
+ }
+ 
++fn print_timer_only_route() {
++    let (approval, action, timer_only_calls, primary_calls) =
++        task_3338_shared_delete_action::timer_only_route();
++    println!("### timer-only-route");
++    println!(
++        "TASK3338_ROUTE command=delete_one_owned_target approved_by={approval} action={action} timer_only_action_calls={timer_only_calls:?} delete_own_message_calls={primary_calls:?}"
++    );
++}
++
+ fn main() {
+     let args: Vec<String> = std::env::args().skip(1).collect();
+     match args.split_first() {
++        Some((flag, rest)) if flag == "--timer-only-route" && rest.is_empty() => {
++            print_timer_only_route();
++            std::process::exit(0);
++        }
+         Some((flag, rest)) if flag == "--action-count" && rest.is_empty() => {
+             print_action_count();
+             std::process::exit(0);

@@ -17,6 +17,8 @@ pub enum AllowedPlaceStoreError {
     Invalid(String),
     #[error("allowed-place stable_id is invalid: {stable_id}")]
     InvalidStableId { stable_id: String },
+    #[error("stable ID required")]
+    StableIdRequired,
     #[error("allowed place is not allowed: {stable_id}")]
     NotAllowed { stable_id: String },
     #[error(transparent)]
@@ -30,7 +32,6 @@ pub enum AllowedPlaceStoreError {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AllowedPlaceRecord {
-
     pub app: String,
     pub account: String,
     pub kind: String,
@@ -39,7 +40,6 @@ pub struct AllowedPlaceRecord {
     pub place_name: String,
     #[serde(default)]
     pub person_name: String,
-
 }
 
 impl AllowedPlaceRecord {
@@ -90,6 +90,22 @@ impl AllowedPlaceRecord {
             account.clone(),
             kind.clone(),
             format!("{APP_TELEGRAM}:{account}:{kind}:{place_id}"),
+        ))
+    }
+
+    pub fn messenger(
+        account: impl Into<String>,
+        kind: impl AsRef<str>,
+        place_id: impl Into<String>,
+    ) -> std::result::Result<Self, String> {
+        let account = account.into();
+        let kind = normalize_messenger_whitelist_kind(kind.as_ref())?;
+        let place_id = place_id.into();
+        Ok(Self::from_parts(
+            APP_MESSENGER,
+            account.clone(),
+            kind.clone(),
+            format!("{APP_MESSENGER}:{account}:{kind}:{place_id}"),
         ))
     }
 
@@ -148,6 +164,9 @@ impl AllowedPlaceRecord {
     }
 
     pub fn validate(&self) -> Result<()> {
+        if self.stable_id.is_empty() {
+            return Err(AllowedPlaceStoreError::StableIdRequired);
+        }
         for (field, value) in [
             ("app", self.app.as_str()),
             ("account", self.account.as_str()),
@@ -439,10 +458,14 @@ pub fn write_allowed_places(path: &Path, places: &SavedAllowedPlaces) -> Result<
 
 pub const APP_DISCORD: &str = "discord";
 pub const APP_TELEGRAM: &str = "telegram";
+pub const APP_MESSENGER: &str = "messenger";
 pub const KIND_DIRECT_MESSAGE: &str = "direct_message";
 pub const KIND_GROUP_CHAT: &str = "group_chat";
+pub const KIND_STORY: &str = "story";
 pub const KIND_CHANNEL: &str = "channel";
+pub const KIND_COMMUNITY: &str = "community";
 pub const KIND_PUBLIC_POST: &str = "public_post";
+pub const KIND_SUPERGROUP: &str = "supergroup";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AllowedPlaceKind {
@@ -463,6 +486,7 @@ pub fn telegram_whitelist_kinds() -> Vec<AllowedPlaceKind> {
         KIND_GROUP_CHAT,
         KIND_CHANNEL,
         KIND_PUBLIC_POST,
+        KIND_SUPERGROUP,
     ]
     .into_iter()
     .map(|name| AllowedPlaceKind {
@@ -479,12 +503,22 @@ pub fn normalize_telegram_whitelist_kind(input: &str) -> std::result::Result<Str
         KIND_GROUP_CHAT,
         KIND_CHANNEL,
         KIND_PUBLIC_POST,
+        KIND_SUPERGROUP,
     ]
     .contains(&normalized.as_str())
     {
         Ok(normalized)
     } else {
         Err(format!("OSL: unknown Telegram whitelist kind '{input}'"))
+    }
+}
+
+pub fn normalize_messenger_whitelist_kind(input: &str) -> std::result::Result<String, String> {
+    let normalized = input.trim().to_ascii_lowercase().replace('-', "_");
+    if [KIND_DIRECT_MESSAGE, KIND_GROUP_CHAT, KIND_COMMUNITY].contains(&normalized.as_str()) {
+        Ok(normalized)
+    } else {
+        Err(format!("OSL: unknown Messenger whitelist kind '{input}'"))
     }
 }
 
@@ -538,6 +572,9 @@ pub fn remove_allowed_place_record(
     app_data_dir: impl AsRef<Path>,
     stable_id: impl AsRef<str>,
 ) -> Result<bool> {
+    if stable_id.as_ref().is_empty() {
+        return Err(AllowedPlaceStoreError::StableIdRequired);
+    }
     validate_field(stable_id.as_ref(), "stable_id")?;
     std::fs::create_dir_all(app_data_dir.as_ref())?;
     let conn = Connection::open(allowed_places_db_path(app_data_dir))?;
@@ -1034,8 +1071,7 @@ fn validate_stable_id_shape(stable_id: &str) -> Result<()> {
             if matches!(
                     (app, kind),
                     ("discord", _)
-                        | ("email", "sender_address" | "sender_domain")
-                        | ("signal", KIND_DIRECT_MESSAGE | KIND_GROUP_CHAT)
+                        | ("signal", KIND_DIRECT_MESSAGE | KIND_GROUP_CHAT | KIND_STORY)
                 )
                 && !account.trim().is_empty()
                 && !kind.trim().is_empty()

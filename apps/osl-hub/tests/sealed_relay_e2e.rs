@@ -2,15 +2,10 @@
 
 use osl_privacy_hub::broker::{
     activate_owned_osl_chat_context, documented_message_service_send_failures, drain_osl_chat_text,
-    prepare_osl_chat_text, prepare_peer_prose_text,
+    load_osl_chat_history, prepare_osl_chat_text, prepare_peer_prose_text,
     retry_available_for_message_service_send_failure_before_cover_preparation, HubBrokerState,
-    NativeOverlayAcknowledgmentStatus, OSL_RELAY_NOTICE_QUEUED,
-    activate_owned_osl_chat_context, drain_osl_chat_text, load_osl_chat_history,
-    prepare_osl_chat_text, prepare_peer_prose_text, HubBrokerState,
-    NativeOverlayAcknowledgmentStatus, OpenedNativeOverlayTextBatch, OSL_RELAY_NOTICE_QUEUED,
-    activate_owned_osl_chat_context, drain_osl_chat_text, load_osl_chat_history,
-    prepare_osl_chat_text, prepare_peer_prose_text, HubBrokerState,
-    NativeOverlayAcknowledgmentStatus, OSL_RELAY_NOTICE_QUEUED,
+    NativeOverlayAcknowledgmentStatus, OpenedNativeOverlayTextBatch, PreparedNativeOverlayText,
+    OSL_RELAY_NOTICE_QUEUED,
 };
 use osl_privacy_hub::core_bridge::HubCoreState;
 use osl_privacy_hub::security::{
@@ -19,7 +14,7 @@ use osl_privacy_hub::security::{
     HubSecurityState,
 };
 use serde_json::{json, Value};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -30,6 +25,8 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const TEST_MAIN_PASSWORD: &str = "sealed-relay-fixture-password";
+const CONTROL_INBOX_TTL_SECONDS: i64 = 7 * 24 * 60 * 60;
+const MAX_PENDING_ROWS_PER_SENDER_RECIPIENT: usize = 32;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct InboxRow {
@@ -176,6 +173,37 @@ impl RelayServer {
             .count()
     }
 
+    fn pending_for_pair(&self, sender_id: &str, recipient_id: &str) -> usize {
+        self.state
+            .lock()
+            .unwrap()
+            .inbox
+            .iter()
+            .filter(|row| row.sender_id == sender_id && row.recipient_id == recipient_id)
+            .count()
+    }
+
+    fn remove_wrapped_key(&self, content_id: &str) -> bool {
+        self.state
+            .lock()
+            .unwrap()
+            .wrapped_keys
+            .remove(content_id)
+            .is_some()
+    }
+
+    fn wrapped_key_ids_for_pair(&self, sender_id: &str, recipient_id: &str) -> BTreeSet<String> {
+        self.state
+            .lock()
+            .unwrap()
+            .wrapped_keys
+            .iter()
+            .filter_map(|(id, row)| {
+                (row.sender_id == sender_id && row.recipient_id == recipient_id).then(|| id.clone())
+            })
+            .collect()
+    }
+
     fn posted_for(&self, sender_id: &str, recipient_id: &str) -> Vec<InboxRow> {
         self.state
             .lock()
@@ -301,6 +329,129 @@ fn core(identity: keystore::Identity, relay_url: &str) -> HubCoreState {
     *core.osl.identity.lock().unwrap() = Some(identity);
     *core.osl.keyserver.lock().unwrap() = Some(keystore::KeyServerClient::new(relay_url).unwrap());
     core
+}
+
+struct OslChatPair {
+    alice_dir: PathBuf,
+    bob_dir: PathBuf,
+    alice_id: String,
+    bob_id: String,
+    alice: HubCoreState,
+    bob: HubCoreState,
+    alice_security: HubSecurityState,
+    bob_security: HubSecurityState,
+    alice_broker: HubBrokerState,
+    bob_broker: HubBrokerState,
+}
+
+fn paired_osl_chat_fixture(relay: &RelayServer, storage: &TestStorage, label: &str) -> OslChatPair {
+    let relay_url = relay.base_url();
+    let alice_dir = storage.account(&format!("{label}-alice"), &relay_url);
+    let bob_dir = storage.account(&format!("{label}-bob"), &relay_url);
+
+    let alice_identity = keystore::generate_identity(format!("osl-{label}-alice"));
+    let bob_identity = keystore::generate_identity(format!("osl-{label}-bob"));
+    let alice_id = alice_identity.user_id.clone();
+    let bob_id = bob_identity.user_id.clone();
+    relay.register_floor_identity(&alice_identity);
+    relay.register_floor_identity(&bob_identity);
+    let alice = core(alice_identity, &relay_url);
+    let bob = core(bob_identity, &relay_url);
+    let alice_security = HubSecurityState::default();
+    let bob_security = HubSecurityState::default();
+    let alice_broker = HubBrokerState::default();
+    let bob_broker = HubBrokerState::default();
+
+    let alice_code = export_friend_code(&alice).unwrap();
+    let bob_code = export_friend_code(&bob).unwrap();
+
+    TestStorage::activate(&alice_dir);
+    let bob_friend = add_friend_code(
+        &alice,
+        &alice_security,
+        bob_code.friend_code,
+        Some("Bob fixture".to_owned()),
+    )
+    .unwrap();
+    verify_friend_safety_number(
+        &alice,
+        &alice_security,
+        bob_friend.person_id.clone(),
+        bob_friend.safety_number.clone(),
+    )
+    .unwrap();
+    let alice_binding = manual_peer_binding(&alice, bob_friend.person_id.clone()).unwrap();
+    let alice_context =
+        activate_owned_osl_chat_context(&alice_broker, &alice_id, alice_binding).unwrap();
+    set_manual_peer_scope_permission(
+        &alice,
+        &alice_security,
+        "osl-chat",
+        "osl-main",
+        alice_context.person_id.clone(),
+        alice_context.scope.clone(),
+        true,
+    )
+    .unwrap();
+    set_scope_security(&alice_security, alice_context.scope.clone(), 3600, true).unwrap();
+
+    TestStorage::activate(&bob_dir);
+    let alice_friend = add_friend_code(
+        &bob,
+        &bob_security,
+        alice_code.friend_code,
+        Some("Alice fixture".to_owned()),
+    )
+    .unwrap();
+    verify_friend_safety_number(
+        &bob,
+        &bob_security,
+        alice_friend.person_id.clone(),
+        alice_friend.safety_number.clone(),
+    )
+    .unwrap();
+    let bob_binding = manual_peer_binding(&bob, alice_friend.person_id.clone()).unwrap();
+    let bob_context = activate_owned_osl_chat_context(&bob_broker, &bob_id, bob_binding).unwrap();
+    set_manual_peer_scope_permission(
+        &bob,
+        &bob_security,
+        "osl-chat",
+        "osl-main",
+        bob_context.person_id.clone(),
+        bob_context.scope.clone(),
+        true,
+    )
+    .unwrap();
+    set_scope_security(&bob_security, bob_context.scope.clone(), 3600, true).unwrap();
+
+    OslChatPair {
+        alice_dir,
+        bob_dir,
+        alice_id,
+        bob_id,
+        alice,
+        bob,
+        alice_security,
+        bob_security,
+        alice_broker,
+        bob_broker,
+    }
+}
+
+fn send_osl_chat_text(
+    pair: &OslChatPair,
+    plaintext: String,
+) -> Result<PreparedNativeOverlayText, String> {
+    TestStorage::activate(&pair.alice_dir);
+    let ai_carrier = osl_privacy_hub::ai_carrier::AiCarrierState::default();
+    prepare_osl_chat_text(
+        &pair.alice,
+        &pair.alice_security,
+        &pair.alice_broker,
+        &ai_carrier,
+        plaintext,
+        true,
+    )
 }
 
 fn attach_history_store(core: &HubCoreState, identity: &keystore::Identity, account_dir: &Path) {
@@ -655,18 +806,38 @@ fn serve_request(stream: &mut TcpStream, state: &Arc<Mutex<RelayState>>) {
         ("POST", "/v1/control-inbox") => {
             let value: Value = serde_json::from_slice(&body).expect("valid control-inbox post");
             let mut state = state.lock().unwrap();
-            state.next_id += 1;
-            let row = InboxRow {
-                id: format!("{:032x}", state.next_id),
-                sender_id: value["sender_id"].as_str().unwrap().to_owned(),
-                recipient_id: value["recipient_id"].as_str().unwrap().to_owned(),
-                scope_id: value["scope_id"].as_str().unwrap().to_owned(),
-                bundle_b64: value["bundle_b64"].as_str().unwrap().to_owned(),
-                created_at: now,
-            };
-            state.posted.push(row.clone());
-            state.inbox.push(row.clone());
-            json_response(200, json!({ "id": row.id, "expires_at": now + 3600 }))
+            let sender_id = value["sender_id"].as_str().unwrap().to_owned();
+            let recipient_id = value["recipient_id"].as_str().unwrap().to_owned();
+            let pending_for_pair = state
+                .inbox
+                .iter()
+                .filter(|row| row.sender_id == sender_id && row.recipient_id == recipient_id)
+                .count();
+            if pending_for_pair >= MAX_PENDING_ROWS_PER_SENDER_RECIPIENT {
+                json_response(
+                    429,
+                    json!({
+                        "error": "recipient_inbox_full",
+                        "scope": "sender_recipient",
+                    }),
+                )
+            } else {
+                state.next_id += 1;
+                let row = InboxRow {
+                    id: format!("{:032x}", state.next_id),
+                    sender_id,
+                    recipient_id,
+                    scope_id: value["scope_id"].as_str().unwrap().to_owned(),
+                    bundle_b64: value["bundle_b64"].as_str().unwrap().to_owned(),
+                    created_at: now,
+                };
+                state.posted.push(row.clone());
+                state.inbox.push(row.clone());
+                json_response(
+                    200,
+                    json!({ "id": row.id, "expires_at": now + CONTROL_INBOX_TTL_SECONDS }),
+                )
+            }
         }
         ("GET", route) if route.starts_with("/v1/control-inbox/") => {
             let target = url::Url::parse(&format!("http://relay.invalid{path}"))
@@ -1038,11 +1209,13 @@ pub fn osl_chat_message_survives_a_lost_wrapped_key_response() {
     let wrong_scope = relay.replay_first_message(&alice_id, &bob_id, Some("wrong-scope"));
     TestStorage::activate(&bob_dir);
     let opened = drain_osl_chat_text(&bob, &bob_security, &bob_broker, true).unwrap();
-    assert_eq!(opened.messages.len(), 1);
+    let opened_private_messages_after_first = opened.messages.len();
+    assert_eq!(opened_private_messages_after_first, 1);
     assert_eq!(opened.messages[0].plaintext, plaintext);
     assert!(opened.messages[0].context_verified);
     assert!(opened.messages[0].person_to_person_e2ee);
     assert!(opened.messages[0].view_once_consumed);
+    assert_eq!(opened.already_opened, 0);
     assert_eq!(relay.pending_for(&bob_id), 1);
     relay.remove_inbox(&wrong_scope);
 
@@ -1082,6 +1255,19 @@ pub fn osl_chat_message_survives_a_lost_wrapped_key_response() {
     let replay = drain_osl_chat_text(&bob, &bob_security, &bob_broker, true).unwrap();
     assert!(replay.messages.is_empty());
     assert!(replay.pending_view_once.is_empty());
+    let opened_private_messages_after_second =
+        opened_private_messages_after_first + replay.messages.len();
+    assert_eq!(opened_private_messages_after_second, 1);
+    assert_eq!(replay.already_opened, 1);
+    eprintln!("TASK3984 opened_private_messages_after_first={opened_private_messages_after_first}");
+    eprintln!(
+        "TASK3984 opened_private_messages_after_second={opened_private_messages_after_second}"
+    );
+    eprintln!("TASK3984 second_attempt_recorded_as=already opened");
+    eprintln!(
+        "TASK3984 second_attempt_already_opened_count={}",
+        replay.already_opened
+    );
     assert_eq!(relay.pending_for(&bob_id), 0);
 
     TestStorage::activate(&alice_dir);
@@ -2224,6 +2410,104 @@ fn task_1304_unprotected_osl_chat_drain_is_refused_without_adding_a_message() {
 
     *maple.osl.message_store.lock().expect("message store lock") = None;
     drop(relay);
+}
+
+#[test]
+fn task_4018_missing_one_time_keys_jam_waiting_friend_slots() {
+    let relay = RelayServer::start();
+    let storage = TestStorage::new();
+    let pair = paired_osl_chat_fixture(&relay, &storage, "task-4018");
+
+    let mut good_messages_arrived_before_slot_blocked = 0usize;
+    for index in 0..2 {
+        let plaintext = format!("task 4018 good message {index}");
+        let prepared = send_osl_chat_text(&pair, plaintext.clone()).unwrap();
+        assert!(prepared.delivered_to_osl_inbox);
+
+        TestStorage::activate(&pair.bob_dir);
+        let opened = drain_osl_chat_text(&pair.bob, &pair.bob_security, &pair.bob_broker, true)
+            .expect("Bob's real receive job opens the good message");
+        assert_eq!(opened.messages.len(), 1);
+        assert_eq!(opened.messages[0].plaintext, plaintext);
+        good_messages_arrived_before_slot_blocked += opened.messages.len();
+        assert_eq!(relay.pending_for_pair(&pair.alice_id, &pair.bob_id), 0);
+    }
+    assert!(
+        good_messages_arrived_before_slot_blocked > 0,
+        "the measurement must fail if the receive job is stubbed to do nothing"
+    );
+
+    let mut stuck_messages_needed_to_stop_new_ones_arriving = 0usize;
+    let jam_refusal = loop {
+        let plaintext = format!(
+            "task 4018 message with missing one-time key {}",
+            stuck_messages_needed_to_stop_new_ones_arriving
+        );
+        let wrapped_keys_before_send = relay.wrapped_key_ids_for_pair(&pair.alice_id, &pair.bob_id);
+        let prepared = match send_osl_chat_text(&pair, plaintext) {
+            Ok(prepared) => prepared,
+            Err(refusal) => break refusal,
+        };
+        assert!(prepared.delivered_to_osl_inbox);
+        let wrapped_keys_after_send = relay.wrapped_key_ids_for_pair(&pair.alice_id, &pair.bob_id);
+        let new_wrapped_keys = wrapped_keys_after_send
+            .difference(&wrapped_keys_before_send)
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_eq!(
+            new_wrapped_keys.len(),
+            1,
+            "each task 4018 fixture send should upload exactly one wrapped key"
+        );
+        assert!(
+            relay.remove_wrapped_key(&new_wrapped_keys[0]),
+            "the wrapped key must be gone before the receive job sees the row"
+        );
+
+        TestStorage::activate(&pair.bob_dir);
+        let opened = drain_osl_chat_text(&pair.bob, &pair.bob_security, &pair.bob_broker, true)
+            .expect("Bob's receive job should retain the unopenable row");
+        assert_eq!(
+            opened.messages.len(),
+            0,
+            "a row whose one-time key is gone must not produce plaintext"
+        );
+        assert_eq!(opened.pending_view_once.len(), 0);
+
+        stuck_messages_needed_to_stop_new_ones_arriving += 1;
+        assert_eq!(
+            relay.pending_for_pair(&pair.alice_id, &pair.bob_id),
+            stuck_messages_needed_to_stop_new_ones_arriving
+        );
+        assert!(
+            stuck_messages_needed_to_stop_new_ones_arriving
+                <= MAX_PENDING_ROWS_PER_SENDER_RECIPIENT
+        );
+    };
+
+    assert_eq!(
+        stuck_messages_needed_to_stop_new_ones_arriving,
+        MAX_PENDING_ROWS_PER_SENDER_RECIPIENT
+    );
+    assert!(
+        jam_refusal.contains("too many messages waiting"),
+        "expected the inbox-full refusal, got: {jam_refusal}"
+    );
+
+    TestStorage::activate(&pair.bob_dir);
+    let after_jam = drain_osl_chat_text(&pair.bob, &pair.bob_security, &pair.bob_broker, true)
+        .expect("Bob's receive job still cannot clear the stuck rows");
+    let new_messages_arrived_after_jam = after_jam.messages.len();
+    assert_eq!(new_messages_arrived_after_jam, 0);
+
+    println!(
+        "TASK4018 good_messages_arrived_before_slot_blocked={good_messages_arrived_before_slot_blocked}"
+    );
+    println!(
+        "TASK4018 stuck_messages_needed_to_stop_new_ones_arriving={stuck_messages_needed_to_stop_new_ones_arriving}"
+    );
+    println!("TASK4018 new_messages_arrived_after_jam={new_messages_arrived_after_jam}");
+    println!("TASK4018 jam_lasts_seconds={CONTROL_INBOX_TTL_SECONDS} jam_lasts_days=7");
 }
 
 // =========================================================================

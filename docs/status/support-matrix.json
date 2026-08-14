@@ -6,11 +6,17 @@
   "surface_ruling": {
     "schema": "osl-surface-ruling-v1",
     "ruled_on": "2026-08-05",
-    "chat_carriers": ["discord", "signal", "whatsapp", "telegram"],
+    "chat_carriers": ["discord", "signal", "whatsapp", "telegram", "messenger"],
     "email_carriers": ["gmail", "outlook", "proton", "yahoo", "aol", "gmx", "maildotcom", "icloud", "tuta"],
     "native_email_carriers": ["outlook"],
     "first_party_surfaces": ["osl-chats", "osl-mail"],
-    "cut_surfaces": ["instagram", "snapchat", "x", "messenger", "slack", "linkedin", "teams"]
+    "cut_surfaces": ["instagram", "snapchat", "x", "slack", "linkedin", "teams"],
+    "mailbox_reading_ruling": {
+      "ruled_on": "2026-08-07",
+      "allowed": true,
+      "owner_words": "mailboxes can be read",
+      "outside_services_correction": "Nothing was ever removed for the ten outside services, so there is nothing to put back there, only new work."
+    }
   },
   "updated": "2026-07-30",
   "versioned_public_support_matrix": {

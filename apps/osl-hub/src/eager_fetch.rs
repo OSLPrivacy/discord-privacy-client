@@ -27,10 +27,73 @@ pub struct PointerArrival {
     pub manage_cap: Vec<u8>,
 }
 
+impl From<ipc::prose_token::ProseTokenPointerArrival> for PointerArrival {
+    fn from(pointer: ipc::prose_token::ProseTokenPointerArrival) -> Self {
+        Self {
+            blob_id: pointer.blob_id,
+            fetch_cap: pointer.fetch_cap.to_vec(),
+            manage_cap: pointer.manage_cap.to_vec(),
+        }
+    }
+}
+
 /// Network operations supplied by T6-R2's cipher-store client adapter.
 pub trait CipherStoreTransport {
     fn fetch(&mut self, blob_id: &str, fetch_cap: &[u8]) -> Result<Vec<u8>, String>;
     fn burn(&mut self, blob_id: &str, manage_cap: &[u8]) -> Result<(), String>;
+}
+
+fn fixed_store_token(
+    token: &[u8],
+) -> Result<[u8; ipc::cipher_store_client::FETCH_TOKEN_BYTES], String> {
+    token
+        .try_into()
+        .map_err(|_| "cipher-store capability has the wrong length".to_owned())
+}
+
+fn canonical_lower_hex(value: &str, length: usize) -> bool {
+    value.len() == length
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn deployed_bridge_blob_id(value: &str) -> bool {
+    canonical_lower_hex(value, ipc::prose_token::BRIDGE_ID_BYTES * 2)
+}
+
+fn destination_capability_blob_id(value: &str) -> bool {
+    canonical_lower_hex(value, ipc::cipher_store_client::FETCH_TOKEN_BYTES * 2)
+}
+
+impl CipherStoreTransport for ipc::cipher_store_client::CipherStoreClient {
+    fn fetch(&mut self, blob_id: &str, fetch_cap: &[u8]) -> Result<Vec<u8>, String> {
+        let token = fixed_store_token(fetch_cap)?;
+        if deployed_bridge_blob_id(blob_id) {
+            return self
+                .fetch_legacy_token(blob_id, &token)
+                .map_err(|error| error.to_string());
+        }
+        if destination_capability_blob_id(blob_id) {
+            return ipc::cipher_store_client::CipherStoreClient::fetch(self, blob_id, &token)
+                .map_err(|error| error.to_string());
+        }
+        Err("cipher-store blob id has the wrong shape".to_owned())
+    }
+
+    fn burn(&mut self, blob_id: &str, manage_cap: &[u8]) -> Result<(), String> {
+        let token = fixed_store_token(manage_cap)?;
+        if deployed_bridge_blob_id(blob_id) {
+            return self
+                .delete(blob_id, &token)
+                .map_err(|error| error.to_string());
+        }
+        if destination_capability_blob_id(blob_id) {
+            return ipc::cipher_store_client::CipherStoreClient::burn(self, blob_id, &token)
+                .map_err(|error| error.to_string());
+        }
+        Err("cipher-store blob id has the wrong shape".to_owned())
+    }
 }
 
 /// Trusted local persistence.  It must authenticate/decrypt and durably write

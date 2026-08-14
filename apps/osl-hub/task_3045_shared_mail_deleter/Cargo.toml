@@ -1,0 +1,20 @@
+[package]
+name = "task-3045-shared-mail-deleter"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# A standalone per-task command crate, the pattern `task_3406_place_text/`
+# established. It does not copy the shared mail deleter: `src/main.rs` compiles
+# `../src/shared_mail_deleter.rs` and the real TASK 3044 owner check in
+# `../src/mail_owner_check.rs` straight out of `apps/osl-hub/src/`, by path.
+#
+# It exists because the `osl-hub` lib does not parse on this branch:
+# `src/autoscrub_run.rs`, `src/burn_review_state.rs` and `src/website_driver.rs`
+# carry merge damage that predates this task (present at HEAD~1 and HEAD~5).
+# This crate is what lets the shared deleter be run and checked today, against
+# the same bytes the lib will build once that damage is repaired.
+[dependencies]
+serde = { version = "=1.0.228", features = ["derive"] }
+
+[workspace]

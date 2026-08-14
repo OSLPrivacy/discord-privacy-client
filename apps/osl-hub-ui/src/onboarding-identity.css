@@ -1,0 +1,174 @@
+/* Identity discovery choice and its no-public-name result page. */
+.onboarding-shell:has(.identity-choice-onboarding),
+.onboarding-panel:has(.identity-choice-onboarding),
+.onboarding-shell:has(.private-link-onboarding),
+.onboarding-panel:has(.private-link-onboarding) {
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: var(--osl-setup-bg);
+  display: grid;
+  place-items: center;
+  align-content: center;
+}
+
+.identity-choice-onboarding,
+.private-link-onboarding {
+  width: min(700px, 100%);
+  padding: 0 18px;
+  color: var(--osl-setup-text);
+  text-align: center;
+  font-family: "Onest Variable", Onest, var(--font-ui);
+}
+
+.onboarding-panel .identity-choice-onboarding h1,
+.onboarding-panel .private-link-onboarding h1 {
+  margin: 0 0 10px;
+  color: var(--osl-setup-text);
+  font: 600 32px/1.2 "Onest Variable", Onest, var(--font-ui);
+  letter-spacing: -.025em;
+}
+
+.identity-choice-lead {
+  max-width: 560px;
+  margin: 0 auto 26px;
+  color: var(--osl-setup-muted);
+  font: 400 16px/1.5 "Source Sans 3 Variable", "Source Sans 3", var(--font-ui);
+}
+
+.identity-choice-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+  text-align: left;
+}
+
+.identity-choice-card {
+  display: flex;
+  min-width: 0;
+  min-height: 310px;
+  flex-direction: column;
+  padding: 22px;
+  border: 1.5px solid var(--osl-setup-line);
+  border-radius: 2px;
+  background: var(--osl-setup-card);
+}
+
+.identity-choice-card:focus-within { border-color: var(--osl-setup-accent); }
+
+.identity-choice-kicker {
+  color: var(--osl-setup-accent);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: .09em;
+  text-transform: uppercase;
+}
+
+.identity-choice-card > strong {
+  margin-top: 8px;
+  color: var(--osl-setup-text);
+  font-size: 19px;
+}
+
+.identity-choice-card > small {
+  min-height: 64px;
+  margin-top: 8px;
+  color: var(--osl-setup-muted);
+  font: 400 14px/1.45 "Source Sans 3 Variable", "Source Sans 3", var(--font-ui);
+}
+
+.identity-choice-card label {
+  margin: 14px 0 6px;
+  color: var(--osl-setup-second);
+  font-size: 13px;
+}
+
+.identity-choice-card input {
+  width: 100%;
+  min-height: 44px;
+  padding: 0 12px;
+  border: 1px solid var(--osl-setup-field-line);
+  border-radius: 2px;
+  background: #080c0d;
+  color: var(--osl-setup-text);
+  font: 500 15px/1 var(--font-mono);
+}
+
+.identity-choice-card input:focus-visible,
+.identity-choice-action:focus-visible {
+  outline: 2px solid var(--osl-setup-accent);
+  outline-offset: 2px;
+}
+
+.identity-choice-card #public-name-help {
+  margin-top: 6px;
+  color: var(--osl-setup-quiet);
+  font-size: 12px;
+}
+
+.identity-choice-action {
+  min-height: 44px;
+  margin-top: auto;
+  padding: 10px 14px;
+  border: 1.5px solid var(--osl-setup-line);
+  border-radius: 2px;
+  background: transparent;
+  color: var(--osl-setup-text);
+  font: 600 14px/1.2 "Onest Variable", Onest, var(--font-ui);
+  cursor: pointer;
+}
+
+.identity-choice-action:hover { border-color: var(--osl-setup-accent); color: var(--osl-setup-accent); }
+
+.identity-choice-private .identity-choice-action {
+  background: var(--osl-setup-text);
+  color: var(--osl-setup-bg);
+}
+
+.identity-choice-error {
+  min-height: 22px;
+  margin: 14px 0 0;
+  color: #ff8e8e;
+  font-size: 14px;
+}
+
+.private-link-onboarding { width: min(620px, 100%); }
+.private-link-onboarding > .identity-choice-kicker { display: inline-block; margin-bottom: 9px; }
+
+.private-link-value {
+  display: grid;
+  gap: 9px;
+  padding: 18px;
+  border: 1.5px solid var(--osl-setup-line);
+  background: var(--osl-setup-card);
+  text-align: left;
+}
+
+.private-link-value span { color: var(--osl-setup-muted); font-size: 13px; }
+.private-link-value code {
+  overflow-wrap: anywhere;
+  color: var(--osl-setup-text);
+  font-size: 14px;
+  user-select: all;
+}
+
+.private-link-use,
+.private-link-status {
+  margin: 14px 0 0;
+  color: var(--osl-setup-muted);
+  font: 400 14px/1.45 "Source Sans 3 Variable", "Source Sans 3", var(--font-ui);
+}
+
+.private-link-copy { width: 100%; margin-top: 18px; }
+.private-link-onboarding .setup-footer { margin: 12px 0 0; padding: 0; border: 0; }
+
+@media (max-width: 46rem) {
+  .identity-choice-grid { grid-template-columns: 1fr; }
+  .identity-choice-card { min-height: 280px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .identity-choice-action { transition: none; }
+}

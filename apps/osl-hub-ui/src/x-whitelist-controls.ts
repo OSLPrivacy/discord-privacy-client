@@ -37,15 +37,17 @@ function escapeHtml(value: string): string {
     .replace(/"/gu, "&quot;").replace(/'/gu, "&#39;");
 }
 
-/** The only place that may render this X control. */
+/** The X private-message contexts that may render a local allow control. */
 export function xDirectMessageControlsVisible(place: XAllowedPlace): boolean {
-  return place.app === "x" && place.kind === "direct_message" && place.allowed;
+  return place.app === "x"
+    && ["direct_message", "group_direct_message"].includes(place.kind)
+    && place.allowed;
 }
 
 /** A verification tick means that both named accounts saved the reciprocal DM allowance. */
 export function xVerificationTicked(state: XVerificationState): boolean {
   return state.app === "x"
-    && state.kind === "direct_message"
+    && ["direct_message", "group_direct_message"].includes(state.kind)
     && state.firstToSecondAllowed
     && state.secondToFirstAllowed
     && state.state === "two-way";
@@ -55,9 +57,10 @@ export function xWhitelistControlsMarkup(place: XAllowedPlace, verification: XVe
   if (!xDirectMessageControlsVisible(place)) return "";
   const ticked = xVerificationTicked(verification);
   const peer = escapeHtml(place.personName);
-  return `<section class="x-whitelist-controls" data-x-whitelist-controls data-x-place-id="${escapeHtml(place.stableId)}" aria-label="X direct message protection">`
-    + `<label><input type="checkbox" data-x-whitelist-toggle="${escapeHtml(place.stableId)}" checked/> Allow OSL in this direct message with ${peer}</label>`
-    + `<span class="x-whitelist-verification" data-x-verification-tick="${ticked ? "visible" : "hidden"}" aria-live="polite">${ticked ? "✓ Both people have allowed this direct message" : "Waiting for the other person to allow this direct message"}</span>`
+  const kindLabel = place.kind === "group_direct_message" ? "group direct message" : "direct message";
+  return `<section class="x-whitelist-controls" data-x-whitelist-controls data-x-place-kind="${escapeHtml(place.kind)}" data-x-place-id="${escapeHtml(place.stableId)}" aria-label="X ${kindLabel} protection">`
+    + `<label><input type="checkbox" data-x-whitelist-toggle="${escapeHtml(place.stableId)}" checked/> Allow OSL in this ${kindLabel} with ${peer}</label>`
+    + `<span class="x-whitelist-verification" data-x-verification-tick="${ticked ? "visible" : "hidden"}" aria-live="polite">${ticked ? `✓ Both people have allowed this ${kindLabel}` : `Waiting for the other person to allow this ${kindLabel}`}</span>`
     + `</section>`;
 }
 
@@ -67,7 +70,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function verificationState(raw: unknown): XVerificationState | null {
   if (!isRecord(raw)
-    || raw.app !== "x" || raw.kind !== "direct_message"
+    || raw.app !== "x" || !["direct_message", "group_direct_message"].includes(String(raw.kind))
     || typeof raw.firstAccount !== "string" || typeof raw.secondAccount !== "string"
     || typeof raw.firstToSecondAllowed !== "boolean" || typeof raw.secondToFirstAllowed !== "boolean"
     || !["none", "one-way", "two-way"].includes(String(raw.state))) return null;
@@ -82,7 +85,7 @@ export async function loadXVerificationState(
 ): Promise<XVerificationState | null> {
   if (!xDirectMessageControlsVisible(place) || !peerAccount) return null;
   return verificationState(await dependencies.invoke(COMPARE_ALLOWED_PLACE_COMMAND, {
-    app: "x", kind: "direct_message", firstAccount: place.account, secondAccount: peerAccount,
+    app: "x", kind: place.kind, firstAccount: place.account, secondAccount: peerAccount,
   }));
 }
 
@@ -95,7 +98,7 @@ export async function setXDirectMessageAllowed(
   if (!xDirectMessageControlsVisible(place)) return false;
   if (allowed) {
     await dependencies.invoke(ADD_ALLOWED_PLACE_COMMAND, { record: {
-      app: "x", account: place.account, kind: "direct_message", stableId: place.stableId,
+      app: "x", account: place.account, kind: place.kind, stableId: place.stableId,
       personName: place.personName, placeName: place.placeName,
     } });
   } else {

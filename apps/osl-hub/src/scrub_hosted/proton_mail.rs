@@ -7,7 +7,12 @@ use crate::scrub_hosted::reader::{
 };
 use crate::services::{read_shared_mailbox_messages, MailboxReaderSnapshot};
 
-pub const PROTON_MAIL_SERVICE_ID: &str = "proton";
+/// Proton's service id now lives beside the deleter fill-in (TASK 3058) so that
+/// module does not have to pull this file's mailbox-reader plumbing in with it.
+/// Re-exported here, so every existing `proton_mail::PROTON_MAIL_SERVICE_ID`
+/// path is unchanged.
+pub use crate::scrub_hosted::proton_mail_deleter::PROTON_MAIL_SERVICE_ID;
+
 pub const PROTON_MAIL_PAGE_SIZE: usize = 30;
 
 pub fn read_proton_mailbox_folder_page_through_for_scrub(

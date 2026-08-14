@@ -33,6 +33,7 @@ const SHEETS = [
   "./onboarding-tor.css",
   "./onboarding-cover.css",
   "./onboarding-forward-secrecy.css",
+  "./onboarding-identity.css",
   "./recovery-screen.css",
   "./onboarding-before-send.css",
   "./onboarding-delete.css",
@@ -57,7 +58,7 @@ const SHEETS = [
  * nothing. Scanning both is what keeps the pair load-bearing.
  */
 const MARKUP = [
-  "./onboarding-sending.ts","./main.ts", "./osl-mail-view.ts", "./osl-chats-view.ts", "./password-roles.ts"] as const;
+  "./onboarding-sending.ts", "./onboarding-identity.ts", "./main.ts", "./osl-mail-view.ts", "./osl-chats-view.ts", "./password-roles.ts"] as const;
 
 interface ClassAttribute {
   readonly tokens: readonly string[];

@@ -149,14 +149,11 @@ describe("review defaults onboarding", () => {
     const branches = { detected: false, install: false };
     const { reviewDefaultsOnboardingContent, sendingSetupContent } = ui;
 
-    expect(nextOnboardingRoute("privacy", branches)).toBe("defaults");
-    expect(previousOnboardingRoute("defaults", branches)).toBe("privacy");
-    expect(nextOnboardingRoute("defaults", branches)).toBe("tor");
-    expect(previousOnboardingRoute("tor", branches)).toBe("defaults");
-    expect(nextOnboardingRoute("tor", branches)).toBe("sending");
-    expect(previousOnboardingRoute("sending", branches)).toBe("tor");
-    expect(nextOnboardingRoute("cover", branches)).toBe("visibility");
-    expect(previousOnboardingRoute("visibility", branches)).toBe("cover");
+    // ONE spine. A second, contradictory block of these assertions used to sit
+    // above this one (privacy -> defaults -> tor), pasted in from a lane that
+    // was never integrated; the real order is privacy -> tor -> defaults.
+    expect(nextOnboardingRoute("cover", branches)).toBe("silent-visible");
+    expect(previousOnboardingRoute("silent-visible", branches)).toBe("cover");
     expect(nextOnboardingRoute("privacy", branches)).toBe("tor");
     expect(previousOnboardingRoute("tor", branches)).toBe("privacy");
     expect(nextOnboardingRoute("tor", branches)).toBe("defaults");
@@ -188,7 +185,8 @@ describe("review defaults onboarding", () => {
 
     backButton.dispatch("click");
     const afterBack = ui.__oslHubUiTest.snapshot().onboardingRoute;
-    expect(afterBack).toBe("privacy");
+    // ONE step back from defaults is the Tor choice.
+    expect(afterBack).toBe("tor");
 
     console.log(`TASK0342_MISSING_DEFAULTS_RECORD=missing`);
     console.log(`TASK0342_CONTINUE_ROUTE_AFTER_MISSING_DEFAULTS=${afterContinue}`);

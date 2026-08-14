@@ -1,9 +1,11 @@
 import { oslEnclaveStateMarkup, type OslEnclaveState } from "./osl-enclaves-view";
-import { enclaveEntryDisclosuresMarkup } from "./enclave-disclosures";
+import { oslEnclavesFiveRegionSurface } from "./osl-enclaves-surface";
+import { serverMemberPermissionsMarkup } from "./server-channel-sidebar";
+import { oslEnclaveChannelListMarkup, type EnclaveChannelList } from "./osl-enclave-channel-list";
 import {
-  enclaveHistoryForNewMembersSettingsMarkup,
-  type SignedEnclaveHistoryRecord,
-} from "./enclave-history-settings";
+  enclaveChannelPermissionEditorMarkup,
+  type EnclaveChannelPermissionEditorSnapshot,
+} from "./osl-enclave-channel-permissions";
 
 /**
  * The Enclaves surface is intentionally independent of the application shell.
@@ -12,13 +14,28 @@ import {
  */
 export interface OslEnclavesSurfaceModel {
   readonly state?: OslEnclaveState;
+  readonly channelList?: EnclaveChannelList;
   readonly statusTag: (label: string) => string;
-  /** Signed enclave configuration; a freshly created enclave supplies HIDDEN. */
-  readonly historyRecord?: SignedEnclaveHistoryRecord;
+  readonly roleEditorMarkup?: string;
+  readonly channelPermissions?: EnclaveChannelPermissionEditorSnapshot;
 }
 
-/** Render the first-party entry point for encrypted OSL Enclaves. */
-export function oslEnclavesSurfaceMarkup({ state = {}, statusTag, historyRecord }: OslEnclavesSurfaceModel): string {
-  const historySettings = historyRecord ? enclaveHistoryForNewMembersSettingsMarkup(historyRecord) : "";
-  return `<main class="content-viewport osl-servers-page"><header class="osl-chat-page-header"><button class="text-button" data-route="home" type="button">Back</button><h1 id="route-heading" tabindex="-1">OSL Enclaves</h1></header><p>Enclaves are OSL's encrypted communities for the members you choose.</p>${enclaveEntryDisclosuresMarkup()}${historySettings}<section class="settings-list" aria-label="OSL Enclaves"><div class="setting-line"><span><strong>Enclaves</strong><small>Create and use encrypted Enclaves with their own membership.</small></span>${statusTag("Available")}</div></section>${oslEnclaveStateMarkup(state)}<p class="scope-approval-note">OSL Enclaves are separate from third-party platforms. OSL does not claim access to provider communities or read provider pages.</p></main>`;
+/**
+ * Render the first-party entry point for encrypted OSL Enclaves: the
+ * five-region community surface (app rail, enclave rail, channel sidebar,
+ * channel pane, member list — see osl-enclaves-surface.ts). The honest
+ * transport notices from `oslEnclaveStateMarkup` render at the top of the
+ * channel pane, and the capability/honesty sheet lives on as the surface's
+ * About subpage rather than being the whole screen.
+ */
+export function oslEnclavesSurfaceMarkup({ state = {}, channelList, statusTag, roleEditorMarkup = "", channelPermissions }: OslEnclavesSurfaceModel): string {
+  const channelPermissionEditor = channelPermissions
+    ? enclaveChannelPermissionEditorMarkup(channelPermissions)
+    : "";
+  return oslEnclavesFiveRegionSurface({
+    stateNotices: oslEnclaveStateMarkup(state),
+    statusTag,
+    supplementaryChannelListMarkup: `${channelList ? oslEnclaveChannelListMarkup(channelList) : ""}${channelPermissionEditor}`,
+    roleEditorMarkup: `${serverMemberPermissionsMarkup()}${roleEditorMarkup}`,
+  });
 }

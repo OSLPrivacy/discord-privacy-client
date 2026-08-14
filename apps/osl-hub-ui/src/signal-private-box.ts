@@ -1,3 +1,5 @@
+import { signalAttachmentTrayMarkup } from "./signal-attachment-tray";
+
 /**
  * Structural receipt supplied by the Signal finder gate.
  *
@@ -27,6 +29,26 @@ export interface SignalPrivateBoxState {
   readonly privateBytes: Uint8Array;
   /** Live UTF-8 byte count displayed beside the OSL-owned private input. */
   readonly privateByteCount: number;
+  readonly signalComposerCharacters: 0;
+}
+
+export type SignalPrivateBoxCommand =
+  | { readonly type: "enterPrivateText"; readonly text: string }
+  | { readonly type: "clearPrivateText" };
+
+/**
+ * Reads the OSL-owned private box after a command has completed. Keeping this
+ * boundary independent prevents a count check from trusting the command input.
+ */
+export interface SignalPrivateBoxReader {
+  readPrivateByteCount(privateBox: SignalPrivateBoxState): number;
+}
+
+export interface SignalPrivateCountCheck {
+  readonly fixtureCharacters: number;
+  readonly fixtureBytes: number;
+  readonly countAfterEnter: number;
+  readonly countAfterClear: number;
   readonly signalComposerCharacters: 0;
 }
 
@@ -113,6 +135,59 @@ export class SignalPrivateBoxController {
   }
 }
 
+/** Apply an explicit private-box command while preserving Signal's locked box. */
+export function executeSignalPrivateBoxCommand(
+  controller: SignalPrivateBoxController,
+  command: SignalPrivateBoxCommand,
+): SignalPrivateBoxState {
+  switch (command.type) {
+    case "enterPrivateText":
+      return controller.typePrivate(command.text);
+    case "clearPrivateText":
+      return controller.clearPrivate();
+  }
+}
+
+/**
+ * Execute multi-byte entry and clear commands, observing the private box after
+ * each. A stale or no-op reader cannot satisfy the entry assertion.
+ */
+export function checkSignalPrivateCount(
+  controller: SignalPrivateBoxController,
+  reader: SignalPrivateBoxReader,
+): SignalPrivateCountCheck {
+  const fixture = `${"a".repeat(34)}€`;
+  const fixtureCharacters = Array.from(fixture).length;
+  const fixtureBytes = new TextEncoder().encode(fixture).length;
+
+  const entered = executeSignalPrivateBoxCommand(controller, {
+    type: "enterPrivateText",
+    text: fixture,
+  });
+  const countAfterEnter = reader.readPrivateByteCount(entered);
+  if (countAfterEnter !== fixtureBytes) {
+    throw new Error(
+      `Signal private-box reader returned ${countAfterEnter} bytes after enter; expected ${fixtureBytes}`,
+    );
+  }
+
+  const cleared = executeSignalPrivateBoxCommand(controller, { type: "clearPrivateText" });
+  const countAfterClear = reader.readPrivateByteCount(cleared);
+  if (countAfterClear !== 0) {
+    throw new Error(
+      `Signal private-box reader returned ${countAfterClear} bytes after clear; expected 0`,
+    );
+  }
+
+  return {
+    fixtureCharacters,
+    fixtureBytes,
+    countAfterEnter,
+    countAfterClear,
+    signalComposerCharacters: cleared.signalComposerCharacters,
+  };
+}
+
 /** Pure markup for the locked private box positioned over Signal's composer. */
 export function signalPrivateBoxMarkup(state: SignalPrivateBoxState): string {
   return `<section class="signal-private-box" data-over-signal-node="${state.typingBoxNodeIndex}" data-lock-state="locked" aria-label="OSL private message box">`
@@ -120,5 +195,6 @@ export function signalPrivateBoxMarkup(state: SignalPrivateBoxState): string {
     + `<label for="signal-private-draft">Private message</label>`
     + `<textarea id="signal-private-draft" autocomplete="off" spellcheck="true" aria-describedby="signal-private-draft-bytes">${escapeHtml(state.privateDraft)}</textarea>`
     + `<output id="signal-private-draft-bytes" aria-live="polite">${state.privateByteCount} bytes</output>`
+    + signalAttachmentTrayMarkup([])
     + `</section>`;
 }

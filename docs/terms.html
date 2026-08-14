@@ -10,25 +10,25 @@
   <main>
     <h1>Terms</h1>
 
-    <section aria-labelledby="scrub-terms">
+    <section aria-labelledby="service-risk-terms" id="service-risk-terms-section">
+      <h2 id="service-risk-terms">Service-rule and ban-risk agreement</h2>
+      <p>Read and accept this section first. It comes before every other term on this page, including the terms about reading and removing your content.</p>
+      <p>Using OSL with another service may break that service's rules and could put your account at risk, including suspension or a ban.</p>
+      <p>Experimental assisted placement, sending, cleanup, or deletion requires a separate risk agreement for the specific service and account before OSL uses it. You stay responsible for following each service's own rules, and OSL cannot promise that a service will permit what you ask OSL to do.</p>
+    </section>
+
+    <section aria-labelledby="scrub-terms" id="scrub-terms-section">
       <h2 id="scrub-terms">Scanning and deletion</h2>
       <p>OSL may scan only the messages, exports, app windows, or accounts you choose. Deletion is separate from scanning: OSL shows the scope first, asks for confirmation, and reports only what it can verify. Apps, people, exports, backups, and opened copies may retain content.</p>
+      <p id="account-scanning-terms">Account terms for scanning: OSL reads an account only while you are signed in to that account on this device, only for the run you start, and only inside the scope you picked for that run; OSL never signs in for you and never widens that scope on its own.</p>
+      <p id="account-deletion-terms">Account terms for deletion: OSL removes only the items inside the scope you confirmed, works through them one at a time so you can stop part way, and lists every item it could not remove instead of counting it as gone.</p>
     </section>
 
-    <section aria-labelledby="service-risk-terms">
-      <h2 id="service-risk-terms">Service-rule and ban-risk agreement</h2>
-      <p>Using OSL with another service may break that service's rules and could put your account at risk, including suspension or a ban. Experimental assisted placement, sending, cleanup, or deletion requires a separate risk agreement for the specific service and account before OSL uses it.</p>
-    </section>
-
-    <section aria-labelledby="recovery-risk-terms">
-      <h2 id="recovery-risk-terms">Backup and recovery limits</h2>
-      <p>OSL's hosted recovery is Cloudflare D1 Time Travel only. Live D1 and recovery share provider Cloudflare, WNAM location with no separately observed recovery region, one account, the same control plane, one administrator, shared credentials, and Cloudflare-managed key authority. Isolation is 0 on all seven axes and guaranteed recovery claims are 0. A provider or WNAM-correlated loss, account closure or takeover, control-plane failure, administrator error or lockout, credential compromise, or key-authority failure can lose both D1 states: relay and attachment metadata, deletion and expiry state, identities, prekeys, wrapped keys, mailbox state, licences, payments, commerce records, and service secrets. R2 message, attachment, and archive ciphertext has no second copy and can be unrecoverable even if D1 returns.</p>
-      <p>Task 6582 is held under owner ruling T7 because genuine disaster isolation is wanted but not funded or operated for this release. Recovery after a shared-domain failure is not guaranteed. This does not defer serving-copy deletion, backup deletion, or object-specific cryptographic erasure.</p>
-    </section>
-
-    <section aria-labelledby="pro-terms">
+    <section aria-labelledby="pro-terms" id="pro-terms-section">
       <h2 id="pro-terms">One-month no-renewal Pro</h2>
+      <p id="shared-pricing-facts">5 dollars, one month from code entry, no renewal, no OSL card storage.</p>
       <p>Pro is a prepaid one-month activation code. Nothing renews automatically, there is nothing to cancel, and OSL does not store payment details. When Pro access ends, Free OSL keeps working.</p>
+      <p id="shared-purchase-terms">Pro is an early-access purchase. Today it unlocks early access to new privacy tools as they reach the beta channel — not the v1 feature set, which is still being finished. Automatic one-month expiry and return to Free are not implemented yet.</p>
     </section>
 
     <section aria-labelledby="liability">

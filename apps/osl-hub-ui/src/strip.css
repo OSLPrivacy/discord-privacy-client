@@ -36,17 +36,13 @@
   --osl-strip-sans: 'Segoe UI', system-ui, sans-serif;   /* type.interface */
 }
 
-/* Native reserves exactly 44px above Discord's measured composer. Keep the
-   strip anchored to the bottom of the transcript track so a surface grown for
-   revealed rows does not pull the bar away from the composer. */
-.osl-strip-band {
-  display: block;
-  grid-row: 1;
-  align-self: end;
-  min-width: 0;
-  height: 44px;
-  z-index: 30;
-}
+/* Inside the natively sized 736x58 protected composer window there is no room
+   for a 44px band and painting one would cover the operator's own draft, so
+   the band only exists where the window actually has the height for it. */
+.osl-strip-band { display: none; }
+@media (min-height: 102px) { .osl-strip-band { display: block; } }
+/* A dedicated strip surface (fixture / future strip window) always shows it. */
+[data-osl-strip-surface="1"] .osl-strip-band { display: block; }
 
 .osl-strip {
   position: relative;
@@ -386,85 +382,4 @@
   font-size: 11.5px;
   color: var(--osl-strip-faint);
   line-height: 1.5;
-}
-
-/* First-use coach. Geometry is written as SVG attributes in strip-coach-tour.ts
-   so this remains compatible with the renderer's no-inline-style CSP. */
-.osl-strip-coach {
-  position: fixed;
-  inset: 0;
-  z-index: 90;
-  pointer-events: none;
-}
-.osl-strip-coach__svg,
-.osl-strip-coach__card-svg {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  overflow: visible;
-}
-.osl-strip-coach__svg line {
-  stroke: var(--osl-strip-accent);
-  stroke-width: 2;
-}
-.osl-strip-coach__svg marker path { fill: var(--osl-strip-accent); }
-.osl-strip-coach__card {
-  box-sizing: border-box;
-  width: 100%;
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-  padding: 17px 18px 15px;
-  background: var(--osl-strip-popup-surface);
-  border: 1px solid var(--osl-strip-accent);
-  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.6);
-  color: var(--osl-strip-text);
-  font-family: var(--osl-strip-sans);
-  pointer-events: auto;
-}
-.osl-strip-coach__kicker {
-  color: var(--osl-strip-accent);
-  font-family: var(--osl-strip-mono);
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.14em;
-}
-.osl-strip-coach__card h2 {
-  margin: 8px 0 0;
-  font-size: 17px;
-  letter-spacing: 0.02em;
-}
-.osl-strip-coach__card p {
-  margin: 9px 0 0;
-  color: var(--osl-strip-muted);
-  font-size: 13px;
-  line-height: 1.45;
-}
-.osl-strip-coach__actions {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  margin-top: auto;
-}
-.osl-strip-coach__actions button {
-  min-height: 30px;
-  padding: 0 11px;
-  border: 1.5px solid var(--osl-strip-border);
-  border-radius: 2px;
-  background: transparent;
-  color: var(--osl-strip-text);
-  cursor: pointer;
-  font-family: var(--osl-strip-mono);
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.1em;
-}
-.osl-strip-coach__actions button:last-child {
-  border-color: var(--osl-strip-accent);
-  color: var(--osl-strip-accent);
-}
-.osl-strip-coach__actions button:hover {
-  border-color: var(--osl-strip-accent);
-  color: var(--osl-strip-accent);
 }

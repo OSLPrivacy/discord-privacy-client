@@ -19,6 +19,8 @@ describe("TASK 0650 - connect upload progress display", () => {
     const trayId = tray.attachments[0]?.trayId;
     if (!trayId) throw new Error("37-byte fixture did not create a tray card");
 
+    // This is the fixed screen snapshot taken after the throttled uploader has
+    // read one 17-byte buffer, before it can finish the 37-byte fixture.
     setOslChatAttachmentUploadProgress(tray, trayId, {
       uploadedBytes: 17,
       totalBytes: 37,

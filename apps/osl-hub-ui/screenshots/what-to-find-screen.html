@@ -1,0 +1,41 @@
+<!doctype html>
+<!--
+  TASK 1413 capture fixture. Dev-server only: it is deliberately absent from
+  vite.config.ts's rollup inputs, so it mounts the real Scrub setup page for a
+  screenshot without shipping an extra page in the app bundle.
+
+  The page is mounted with a recording save port instead of the Tauri one, so
+  the capture can read back exactly what Continue handed the backend.
+-->
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="color-scheme" content="dark" />
+    <title>What counts as a bad message</title>
+    <style>
+      body { margin: 0; background: #0a0a0a; }
+      #app { min-height: 100vh; display: grid; justify-content: center; align-content: center; padding: 40px; }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module">
+      import "@fontsource-variable/inter/wght.css";
+      import "/src/styles.css";
+      import { mountWhatToFindPage } from "/src/scrub-what-to-find.ts";
+
+      const saves = [];
+      window.oslWhatToFindSaves = saves;
+      window.oslWhatToFindBacks = 0;
+
+      const handle = mountWhatToFindPage(document.querySelector("#app"), {
+        runId: "task-1413-run",
+        port: { save: (request) => { saves.push(request); return Promise.resolve({ ok: true }); } },
+        onBack: () => { window.oslWhatToFindBacks += 1; },
+        onContinue: (saved) => { window.oslWhatToFindContinued = saved; },
+      });
+      window.oslWhatToFindHandle = handle;
+      document.body.dataset.whatToFindFixture = "ready";
+    </script>
+  </body>
+</html>

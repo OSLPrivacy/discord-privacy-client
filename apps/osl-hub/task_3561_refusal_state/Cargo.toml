@@ -1,0 +1,11 @@
+[package]
+name = "task-3561-refusal-state"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[[test]]
+name = "refusal_state"
+path = "tests/refusal_state.rs"
+
+[workspace]

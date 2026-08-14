@@ -1,3 +1,5 @@
+import { OSL_KEY_CHANGES_CHANNEL_ID } from "./osl-enclaves-server-access";
+
 /**
  * Per-device attention state for OSL Enclaves.
  *
@@ -240,6 +242,9 @@ function include(ids: readonly string[], id: string): readonly string[] {
 export function hideSpaceChannel(filters: EnclaveLocalFilters, channelId: string): EnclaveLocalFilters {
   const state = stateOf(filters);
   const id = requireLocalId(channelId);
+  // The OSL-authored audit channel must remain discoverable even on a device
+  // that hides ordinary channels.
+  if (id === OSL_KEY_CHANGES_CHANNEL_ID) return filters;
   return filtersWith({ ...state, hiddenChannelIds: include(state.hiddenChannelIds, id) });
 }
 

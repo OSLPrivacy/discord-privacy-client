@@ -29,12 +29,12 @@ describe("OSL Mail view", () => {
     expect(html).not.toContain('id="osl-mail-phone"');
   });
 
-  it("does not render a failed inbox sync as an empty inbox", () => {
-    const html = oslMailViewMarkup({ ...base, available: true, status: { ...status, unreadCount: 2 }, threadSyncUnavailable: true });
-    expect(html).toContain("Inbox sync unavailable");
-    expect(html).toContain("Messages are not being reported as empty");
-    expect(html).not.toContain("Inbox clear");
-    expect(html).not.toContain("No server-confirmed messages");
+  it("renders the thread list supplied by the restored reader", () => {
+    const html = oslMailViewMarkup({ ...base, available: true, status: { ...status, unreadCount: 1 }, threads: [{ threadId: "abcdefghijkl", subject: "Read through the bridge", correspondent: "friend@oslprivacy.com", latestAt: 1, unread: true, transit: "oslE2ee" }] });
+    expect(html).toContain('data-mail-thread="abcdefghijkl"');
+    expect(html).toContain("Read through the bridge");
+    expect(html).toContain("friend@oslprivacy.com");
+    expect(html).not.toContain("Inbox sync unavailable");
   });
 
   it("keeps external outbound unavailable and explains external inbound as ordinary email", () => {

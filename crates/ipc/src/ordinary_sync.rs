@@ -2,7 +2,7 @@ use crate::wire_v2::{encrypt_v3, RecipientV3, V2Error, MSG_TYPE_CONTENT, WIRE_VE
 use crypto::x25519;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Server-visible message kinds added for ordinary cross-device sync.
 ///
@@ -192,7 +192,6 @@ impl FieldWiseState {
     pub fn get(&self, name: &str) -> Option<&Value> {
         self.fields.get(name).map(|field| &field.value)
     }
-
     pub fn field_count(&self) -> usize {
         self.fields.len()
     }
@@ -222,6 +221,75 @@ impl OrdinarySyncPayload {
             source_device_id: source_device_id.into(),
             target_device_id: target_device_id.into(),
             body,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SecurityMergeRuleKind {
+    SaferWins,
+}
+
+impl SecurityMergeRuleKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::SaferWins => "safer-wins",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SecurityMergeRule {
+    pub field_name: &'static str,
+    pub safer_value: &'static str,
+    pub more_access_value: &'static str,
+    pub kind: SecurityMergeRuleKind,
+}
+
+pub const SECURITY_MERGE_RULES: [SecurityMergeRule; 4] = [
+    SecurityMergeRule {
+        field_name: "permission_state",
+        safer_value: "revoked",
+        more_access_value: "allowed",
+        kind: SecurityMergeRuleKind::SaferWins,
+    },
+    SecurityMergeRule {
+        field_name: "identity_verification",
+        safer_value: "unverified",
+        more_access_value: "verified",
+        kind: SecurityMergeRuleKind::SaferWins,
+    },
+    SecurityMergeRule {
+        field_name: "person_block",
+        safer_value: "blocked",
+        more_access_value: "unblocked",
+        kind: SecurityMergeRuleKind::SaferWins,
+    },
+    SecurityMergeRule {
+        field_name: "request_disposition",
+        safer_value: "refused",
+        more_access_value: "permitted",
+        kind: SecurityMergeRuleKind::SaferWins,
+    },
+];
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SecurityFieldValue {
+    pub field_name: String,
+    pub value: String,
+    pub stamp: VersionStamp,
+}
+
+impl SecurityFieldValue {
+    pub fn new(
+        field_name: impl Into<String>,
+        value: impl Into<String>,
+        stamp: VersionStamp,
+    ) -> Self {
+        Self {
+            field_name: field_name.into(),
+            value: value.into(),
+            stamp,
         }
     }
 }
@@ -281,4 +349,143 @@ pub fn server_visible_v3_header(wire: &str) -> Result<ServerVisibleHeader, V2Err
         recipient_count,
         header_bytes: 35 + usize::from(recipient_count) * crate::wire_v2::SLOT_V3_BYTES,
     })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SecurityMergeDecision {
+    pub field_name: String,
+    pub rule: SecurityMergeRuleKind,
+    pub winner: String,
+}
+
+impl SecurityMergeDecision {
+    pub fn route_name(&self) -> &'static str {
+        self.rule.as_str()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SecurityMergeResult {
+    pub merged: BTreeMap<String, SecurityFieldValue>,
+    pub decisions: Vec<SecurityMergeDecision>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SecurityMergeError {
+    MissingRule { field_name: String },
+    UnknownValue { field_name: String, value: String },
+}
+
+impl std::fmt::Display for SecurityMergeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MissingRule { field_name } => {
+                write!(f, "missing security merge rule for field {field_name}")
+            }
+            Self::UnknownValue { field_name, value } => {
+                write!(f, "unknown security value {value} for field {field_name}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for SecurityMergeError {}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SecurityFieldCoverage {
+    pub field_name: String,
+    pub route: SecurityMergeRuleKind,
+}
+
+pub fn check_security_field_coverage(
+    field_names: impl IntoIterator<Item = impl Into<String>>,
+) -> Result<Vec<SecurityFieldCoverage>, SecurityMergeError> {
+    let mut fields: Vec<String> = field_names.into_iter().map(Into::into).collect();
+    fields.sort();
+    fields.dedup();
+
+    let rules: BTreeSet<&str> = SECURITY_MERGE_RULES
+        .iter()
+        .map(|rule| rule.field_name)
+        .collect();
+
+    let mut coverage = Vec::with_capacity(fields.len());
+    for field_name in fields {
+        if !rules.contains(field_name.as_str()) {
+            return Err(SecurityMergeError::MissingRule { field_name });
+        }
+        coverage.push(SecurityFieldCoverage {
+            field_name,
+            route: SecurityMergeRuleKind::SaferWins,
+        });
+    }
+    Ok(coverage)
+}
+
+pub fn merge_security_fields(
+    left: impl IntoIterator<Item = SecurityFieldValue>,
+    right: impl IntoIterator<Item = SecurityFieldValue>,
+) -> Result<SecurityMergeResult, SecurityMergeError> {
+    let mut by_field: BTreeMap<String, Vec<SecurityFieldValue>> = BTreeMap::new();
+    for field in left.into_iter().chain(right) {
+        by_field
+            .entry(field.field_name.clone())
+            .or_default()
+            .push(field);
+    }
+    check_security_field_coverage(by_field.keys().cloned())?;
+
+    let mut merged = BTreeMap::new();
+    let mut decisions = Vec::new();
+    for (field_name, values) in by_field {
+        let rule = SECURITY_MERGE_RULES
+            .iter()
+            .find(|rule| rule.field_name == field_name)
+            .expect("coverage checked");
+        let mut winning_value: Option<SecurityFieldValue> = None;
+        for value in values {
+            validate_security_value(rule, &value.value)?;
+            if winning_value
+                .as_ref()
+                .is_none_or(|winner| security_value_is_safer(rule, &value, winner))
+            {
+                winning_value = Some(value);
+            }
+        }
+        let winner = winning_value.expect("field has at least one value");
+        decisions.push(SecurityMergeDecision {
+            field_name: field_name.clone(),
+            rule: rule.kind,
+            winner: winner.value.clone(),
+        });
+        merged.insert(field_name, winner);
+    }
+    Ok(SecurityMergeResult { merged, decisions })
+}
+
+fn validate_security_value(
+    rule: &SecurityMergeRule,
+    value: &str,
+) -> Result<(), SecurityMergeError> {
+    if value == rule.safer_value || value == rule.more_access_value {
+        return Ok(());
+    }
+    Err(SecurityMergeError::UnknownValue {
+        field_name: rule.field_name.to_owned(),
+        value: value.to_owned(),
+    })
+}
+
+fn security_value_is_safer(
+    rule: &SecurityMergeRule,
+    candidate: &SecurityFieldValue,
+    current: &SecurityFieldValue,
+) -> bool {
+    if candidate.value == rule.safer_value && current.value != rule.safer_value {
+        return true;
+    }
+    if candidate.value != rule.safer_value && current.value == rule.safer_value {
+        return false;
+    }
+    candidate.stamp > current.stamp
 }

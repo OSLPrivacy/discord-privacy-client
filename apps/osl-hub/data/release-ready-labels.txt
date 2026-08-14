@@ -1,0 +1,19 @@
+# TASK 4265 - the Ready labels this release claims, one line per catalogue service.
+#
+#   <service id> | <claimed label> | <delivery proof, or "no proof">
+#
+# A proof reads:
+#   proof id=<protected message id> sender=<person id> recipient=<person id> received=<yes|no> real_other_person=<yes|no>
+#
+# The release check (examples/task_4265_release_ready_check.rs) recomputes every
+# label from src/release_ready_labels.rs and exits 1 on any claim this table
+# cannot earn. Writing "Ready" beside a service here does not make it Ready; it
+# makes the release check fail.
+discord | Ready | proof id=protected-4265-discord sender=person-alice recipient=person-bob received=yes real_other_person=yes
+telegram | Not ready | no proof
+whatsapp | Not ready | no proof
+email | Not ready | no proof
+signal | Not ready | no proof
+x | Not ready | no proof
+instagram | Not ready | no proof
+messenger | Not ready | no proof

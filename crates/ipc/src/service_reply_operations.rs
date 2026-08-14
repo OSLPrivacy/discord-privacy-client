@@ -7,7 +7,7 @@
 //! same call prevents a caller from accidentally changing a message or
 //! offering a file before checking the response.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt;
 
@@ -34,7 +34,7 @@ pub struct ServiceOperationRequest<'a> {
 /// detached success counter while leaving the actual item state unchanged.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ReplyGatedServiceItems {
-    messages: BTreeSet<String>,
+    messages: BTreeMap<String, String>,
     completed_files: BTreeMap<String, CompletedFile>,
 }
 
@@ -51,7 +51,28 @@ impl ReplyGatedServiceItems {
         S: Into<String>,
     {
         Self {
-            messages: messages.into_iter().map(Into::into).collect(),
+            messages: messages
+                .into_iter()
+                .map(|message| (message.into(), String::new()))
+                .collect(),
+            completed_files: BTreeMap::new(),
+        }
+    }
+
+    /// Seed named message records when a caller must observe exact text as
+    /// well as presence. Reply validation still happens before either the id
+    /// or its text can be removed.
+    pub fn with_message_records<I, Id, Text>(messages: I) -> Self
+    where
+        I: IntoIterator<Item = (Id, Text)>,
+        Id: Into<String>,
+        Text: Into<String>,
+    {
+        Self {
+            messages: messages
+                .into_iter()
+                .map(|(id, text)| (id.into(), text.into()))
+                .collect(),
             completed_files: BTreeMap::new(),
         }
     }
@@ -65,7 +86,11 @@ impl ReplyGatedServiceItems {
     }
 
     pub fn has_message(&self, item_id: &str) -> bool {
-        self.messages.contains(item_id)
+        self.messages.contains_key(item_id)
+    }
+
+    pub fn message_text(&self, item_id: &str) -> Option<&str> {
+        self.messages.get(item_id).map(String::as_str)
     }
 
     pub fn offers_completed_file(&self, item_id: &str) -> bool {
@@ -93,7 +118,7 @@ impl ReplyGatedServiceItems {
     ) -> Result<ServiceOperationReceipt, ReplyGatedOperationError> {
         validate_operation_reply(BURN_SERVICE_OPERATION, request, reply)?;
 
-        if !self.messages.remove(request.item_id) {
+        if self.messages.remove(request.item_id).is_none() {
             return Err(ReplyGatedOperationError::UnknownMessage {
                 item_id: request.item_id.to_owned(),
             });

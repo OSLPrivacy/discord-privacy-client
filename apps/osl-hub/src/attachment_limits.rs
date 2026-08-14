@@ -11,14 +11,12 @@ pub enum AttachmentAccountTier {
     Pro,
 }
 
-/// Every account tier that the shipping desktop can independently discover.
-/// Keep this closed inventory next to the admission limits so a new tier
-/// cannot silently inherit another tier's attachment path.
-pub const SHIPPING_ATTACHMENT_TIERS: [AttachmentAccountTier; 2] =
-    [AttachmentAccountTier::Free, AttachmentAccountTier::Pro];
-
 impl AttachmentAccountTier {
     pub const fn max_attachment_bytes(self) -> u64 {
+        self.max_bytes_per_file()
+    }
+
+    pub const fn max_bytes_per_file(self) -> u64 {
         match self {
             Self::Free => FREE_MAX_ATTACHMENT_BYTES,
             Self::Pro => PRO_MAX_ATTACHMENT_BYTES,
@@ -30,24 +28,6 @@ impl AttachmentAccountTier {
             Self::Free => "Free",
             Self::Pro => "Pro",
         }
-    }
-
-    pub const fn wire_label(self) -> &'static str {
-        match self {
-            Self::Free => "free",
-            Self::Pro => "pro",
-        }
-    }
-}
-
-/// Resolve the account tier from the same native license state used by the
-/// rest of the shipping application. `PaidOfflineGrace` remains Pro because
-/// the entitlement layer already treats it as paid-equivalent.
-pub fn shipping_account_tier(state: &ipc::AppState) -> AttachmentAccountTier {
-    if ipc::tier_gate::is_paid_equivalent(state) {
-        AttachmentAccountTier::Pro
-    } else {
-        AttachmentAccountTier::Free
     }
 }
 
@@ -95,12 +75,20 @@ pub fn check_attachment_request(
     check_attachment_count(count)
 }
 
+pub fn check_attachment_limits(
+    tier: AttachmentAccountTier,
+    bytes_per_file: u64,
+    file_count: usize,
+) -> Result<(), AttachmentLimitError> {
+    check_attachment_request(bytes_per_file, file_count, tier)
+}
+
 pub fn attachment_limit_command(
     tier: AttachmentAccountTier,
     bytes_per_file: u64,
     file_count: usize,
 ) -> &'static str {
-    match check_attachment_request(bytes_per_file, file_count, tier) {
+    match check_attachment_limits(tier, bytes_per_file, file_count) {
         Ok(()) => "accept",
         Err(_) => "reject",
     }
@@ -109,6 +97,8 @@ pub fn attachment_limit_command(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const MIB: u64 = 1024 * 1024;
 
     #[test]
     fn shared_attachment_size_check_uses_the_account_tier_window() {
@@ -158,20 +148,8 @@ mod tests {
                 1,
                 "reject",
             ),
-            (
-                "16 files",
-                AttachmentAccountTier::Free,
-                1 * MIB,
-                16,
-                "accept",
-            ),
-            (
-                "17 files",
-                AttachmentAccountTier::Free,
-                1 * MIB,
-                17,
-                "reject",
-            ),
+            ("16 files", AttachmentAccountTier::Free, MIB, 16, "accept"),
+            ("17 files", AttachmentAccountTier::Free, MIB, 17, "reject"),
         ];
 
         for (label, tier, bytes_per_file, file_count, expected) in cases {
@@ -179,5 +157,49 @@ mod tests {
             println!("TASK0051 attachment_limit case={label} result={actual}");
             assert_eq!(actual, expected, "{label} must be {expected}");
         }
+    }
+}
+
+pub fn free_too_large_attachment_message(size_bytes: u64) -> String {
+    format!(
+        "This file is {}. Free limit is 25 MB (25,000,000 bytes). Pro limit is 1 GB (1,000,000,000 bytes). Upgrade to Pro to send this file.",
+        size_with_exact_bytes(size_bytes)
+    )
+}
+
+fn grouped_decimal(value: u64) -> String {
+    let text = value.to_string();
+    let first_group = text.len() % 3;
+    let mut grouped = String::with_capacity(text.len() + text.len() / 3);
+    let mut index = 0;
+    if first_group != 0 {
+        grouped.push_str(&text[..first_group]);
+        index = first_group;
+    }
+    while index < text.len() {
+        if !grouped.is_empty() {
+            grouped.push(',');
+        }
+        grouped.push_str(&text[index..index + 3]);
+        index += 3;
+    }
+    grouped
+}
+
+fn size_with_exact_bytes(bytes: u64) -> String {
+    if bytes >= 1_000_000_000 && bytes % 1_000_000_000 == 0 {
+        format!(
+            "{} GB ({} bytes)",
+            bytes / 1_000_000_000,
+            grouped_decimal(bytes)
+        )
+    } else if bytes >= 1_000_000 && bytes % 1_000_000 == 0 {
+        format!(
+            "{} MB ({} bytes)",
+            bytes / 1_000_000,
+            grouped_decimal(bytes)
+        )
+    } else {
+        format!("{} bytes", grouped_decimal(bytes))
     }
 }

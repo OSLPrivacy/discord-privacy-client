@@ -1,0 +1,43 @@
+--- a/apps/osl-hub/src/shared_delete_action.rs
++++ b/apps/osl-hub/src/shared_delete_action.rs
+@@ -371,11 +371,17 @@
+                 "scrub mark names a target that is not well formed",
+             ));
+         }
+-        if mark.confirmed && mark.target == request.target {
+-            return Ok(DeleteApproval::ConfirmedScrubMark);
+-        }
+     }
+ 
++    // TASK 3338b BREAK 1: timed delete now requires a Scrub mark. A due record
++    // on its own approves nothing; it only approves when a confirmed mark names
++    // the same message. The record loop runs first so that a record that IS
++    // allowed through still reports itself as the reason.
++    let confirmed_mark_for_this_target = request
++        .scrub_mark
++        .as_ref()
++        .map_or(false, |mark| mark.confirmed && mark.target == request.target);
++
+     for record in &request.timed_delete_records {
+         let target = record.target();
+         if !target.is_well_formed() || record.delete_at <= record.sent_at || record.sent_at < 0 {
+@@ -384,11 +390,18 @@
+                 "timed-delete record is not well formed",
+             ));
+         }
+-        if target == request.target && record.is_due_at(request.now_unix_secs) {
++        if target == request.target
++            && record.is_due_at(request.now_unix_secs)
++            && confirmed_mark_for_this_target
++        {
+             return Ok(DeleteApproval::DueTimedDelete);
+         }
+     }
+ 
++    if confirmed_mark_for_this_target {
++        return Ok(DeleteApproval::ConfirmedScrubMark);
++    }
++
+     Err(DeleteRefusal::new(
+         REFUSAL_NOT_APPROVED,
+         format!(

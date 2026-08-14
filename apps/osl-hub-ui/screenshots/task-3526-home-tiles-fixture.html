@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>OSL Privacy - TASK 3526</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+    <style>
+      .task3526-home { min-height: 100vh; padding: 44px; background: #10141b; color: #f4f7fb; font-family: Inter, sans-serif; }
+      .task3526-home h1 { margin: 0; font-size: 32px; }
+      .task3526-home p { color: #b9c5d5; }
+      .task3526-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-top: 28px; }
+      .task3526-tile { min-height: 112px; padding: 16px; border: 1px solid #34445b; border-radius: 10px; background: #182231; }
+      .task3526-tile button { width: 100%; border: 0; background: transparent; color: inherit; text-align: left; cursor: pointer; }
+      .task3526-tile strong, .task3526-tile small { display: block; }
+      .task3526-tile strong { font-size: 17px; margin-bottom: 8px; }
+      .task3526-tile small { color: #79d8f5; font-size: 14px; }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module">
+      const tiles = [
+        ["OSL Chat", "Ready"], ["OSL Mail", "Not started"], ["OSL Notes", "Not started"], ["Scrub", "Opens the app"],
+        ["Discord", "Ready"], ["Telegram", "Opens the app"], ["Signal", "Ready"], ["WhatsApp", "Opens the app"],
+        ["Gmail", "Opens the app"], ["Outlook", "Opens the app"], ["Proton Mail", "Opens the app"], ["Yahoo Mail", "Opens the app"],
+        ["AOL Mail", "Opens the app"], ["GMX Mail", "Opens the app"], ["Mail.com", "Opens the app"], ["iCloud Mail", "Opens the app"], ["Tuta Mail", "Opens the app"],
+      ];
+      document.querySelector("#app").innerHTML = `<main id="home-navigation" class="task3526-home"><h1 id="route-heading" tabindex="-1">Home</h1><p>Home tiles and their current capability labels.</p><section class="task3526-grid" aria-label="Home tiles">${tiles.map(([name, label], index) => `<article class="task3526-tile" data-tile-id="task-3526-${index}"><button type="button" aria-label="${name}, ${label}"><strong>${name}</strong><small data-generated-capability-label>${label}</small></button></article>`).join("")}</section></main>`;
+      document.documentElement.dataset.task3526 = "ready";
+    </script>
+  </body>
+</html>

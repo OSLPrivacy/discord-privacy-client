@@ -82,10 +82,7 @@ impl<B: DiscordBackend> SurfaceAdapter for DiscordSurfaceAdapter<B> {
         carrier: &Carrier,
     ) -> PlacementReceipt {
         if !self.validates_binding(binding)
-            || !same_scope(
-                &binding.scope_binding_hash,
-                &authorization.scope_binding_hash,
-            )
+            || !same_scope_and_message_box(binding, authorization)
             || !self.supports(adapter_profile::Capability::PlaceProtectedPayload)
         {
             return PlacementReceipt {
@@ -164,12 +161,14 @@ mod tests {
 
     struct Backend {
         status: DestinationStatus,
+        places: AtomicUsize,
         commits: AtomicUsize,
     }
     impl Backend {
         fn new(status: DestinationStatus) -> Self {
             Self {
                 status,
+                places: AtomicUsize::new(0),
                 commits: AtomicUsize::new(0),
             }
         }
@@ -228,6 +227,7 @@ mod tests {
             })
         }
         fn place(&self, _: &SurfaceBinding, _: &Carrier) -> PlacementReceipt {
+            self.places.fetch_add(1, Ordering::SeqCst);
             PlacementReceipt {
                 status: PlacementStatus::Placed,
                 placed_sha256: Some("carrier".into()),
@@ -248,7 +248,7 @@ mod tests {
     fn receipt(adapter: &impl SurfaceAdapter, b: &SurfaceBinding) -> PlacementReceipt {
         adapter.place(
             b,
-            &PlacementAuthorization::for_scope("scope-a"),
+            &PlacementAuthorization::for_scope_and_provider("scope-a", "discord").unwrap(),
             &Carrier("cover".into()),
         )
     }
@@ -324,5 +324,58 @@ mod tests {
             SendOutcome::NotSent
         );
         assert_eq!(adapter.backend.commits.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn task_3631_direct_fingerprints_and_discord_preplacement_gate() {
+        let records = record_provider_message_box_fingerprints();
+        for (index, record) in records.iter().enumerate() {
+            println!(
+                "TASK3631_PROVIDER_MESSAGE_BOX_FINGERPRINT[{index:02}]={}:{}",
+                record.provider_id,
+                record.fingerprint.as_str()
+            );
+        }
+        println!("TASK3631_PROVIDER_FINGERPRINT_COUNT={}", records.len());
+
+        assert_eq!(records.len(), SUPPORTED_MESSAGE_BOX_PROVIDER_COUNT);
+        assert!(records
+            .iter()
+            .all(|record| record.fingerprint.as_str().len() == 64
+                && record
+                    .fingerprint
+                    .as_str()
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit())));
+
+        let backend = Backend::new(DestinationStatus::Attested);
+        let adapter = DiscordSurfaceAdapter::new(backend);
+        let b = binding(BindingEvidence::Accessibility {
+            tree: A11yTree::Both,
+        });
+        let matching = adapter.place(
+            &b,
+            &PlacementAuthorization::for_scope_and_provider("scope-a", "discord").unwrap(),
+            &Carrier("TASK3631-DISCORD-MATCH".into()),
+        );
+        println!("TASK3631_DISCORD_MATCHING_PLACEMENT={:?}", matching.status);
+
+        let refused = adapter.place(
+            &b,
+            &PlacementAuthorization::for_scope_and_provider("scope-a", "telegram").unwrap(),
+            &Carrier("TASK3631-SHOULD-NOT-BE-PLACED".into()),
+        );
+        let backend_place_count = adapter.backend.places.load(Ordering::SeqCst);
+        println!(
+            "TASK3631_CHANGED_FINGERPRINT_REFUSED_BEFORE_TEXT={} backend_place_count={backend_place_count}",
+            refused.status == PlacementStatus::NotPlaced && backend_place_count == 1
+        );
+
+        assert_eq!(matching.status, PlacementStatus::Placed);
+        assert_eq!(refused.status, PlacementStatus::NotPlaced);
+        assert_eq!(
+            backend_place_count, 1,
+            "the changed fingerprint must be refused before the backend can place text"
+        );
     }
 }

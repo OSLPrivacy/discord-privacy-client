@@ -30,11 +30,7 @@ fn one_message_box(fixture: &str) -> Vec<String> {
 #[test]
 fn task_1061_whatsapp_finder_refuses_search_focused_and_closed_states() {
     let good = one_message_box(BOX_ID);
-    assert_eq!(
-        good,
-        [MESSAGE_BOX],
-        "good box must yield exactly one WhatsApp message box"
-    );
+    assert_eq!(good, [MESSAGE_BOX], "good box must yield exactly one WhatsApp message box");
 
     for state in ["search-focused", "closed"] {
         let output = run(&format!("whatsapp-{state}"));
@@ -47,21 +43,16 @@ fn task_1061_whatsapp_finder_refuses_search_focused_and_closed_states() {
     }
 
     let restored = one_message_box(BOX_ID);
-    assert_eq!(
-        restored, good,
-        "restored box must return the same one message box"
-    );
+    assert_eq!(restored, good, "restored box must return the same one message box");
 
     println!(
         "TASK1061 box={BOX_ID} result_count={} result_name=WhatsApp message box ({})",
-        good.len(),
-        good[0]
+        good.len(), good[0]
     );
     println!("TASK1061 state=search-focused result=refused");
     println!("TASK1061 state=closed result=refused");
     println!(
         "TASK1061 restored_box={BOX_ID} result_count={} result_name=WhatsApp message box ({})",
-        restored.len(),
-        restored[0]
+        restored.len(), restored[0]
     );
 }

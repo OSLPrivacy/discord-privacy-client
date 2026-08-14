@@ -131,7 +131,9 @@ describe("TASK0345 Cover insertion controls", () => {
 
       continueCover.dispatch("click");
       await settle();
-      expect(__oslHubUiTest.snapshot().onboardingRoute).toBe("mullvad");
+      // The display-mode step sits between cover insertion and the Mullvad
+      // offer; what matters here is that the saved choice survives the reload.
+      expect(__oslHubUiTest.snapshot().onboardingRoute).toBe("silent-visible");
       expect(__oslHubUiTest.renderOnboardingRoute("mullvad")).toContain("Mullvad");
 
       vi.resetModules();
@@ -141,7 +143,7 @@ describe("TASK0345 Cover insertion controls", () => {
     }, MODULE_RELOAD_BUDGET_MS);
   }
 
-  it("refuses missing choice on Continue and lets Back return to Privacy and sending", async () => {
+  it("refuses missing choice on Continue and lets Back return to Sending behavior", async () => {
     const storage = memoryStorage();
     const continueCover = new FakeElement();
     const back = new FakeElement();
@@ -159,9 +161,9 @@ describe("TASK0345 Cover insertion controls", () => {
 
     back.dispatch("click");
     expect(__oslHubUiTest.snapshot()).toMatchObject({ onboardingRoute: "sending", coverInsertion: null });
-    expect(__oslHubUiTest.renderOnboardingRoute("sending")).toContain("Privacy and sending");
+    expect(__oslHubUiTest.renderOnboardingRoute("sending")).toContain("Sending behavior");
     expect(storage.getItem("osl-preview-cover-insertion")).toBeNull();
     console.info("TASK0345 missing_choice_continue route=cover cover=null saved_cover=null screen=Choose cover insertion");
-    console.info("TASK0345 missing_choice_back route=sending cover=null saved_cover=null screen=Privacy and sending");
+    console.info("TASK0345 missing_choice_back route=sending cover=null saved_cover=null screen=Sending behavior");
   }, MODULE_RELOAD_BUDGET_MS);
 });

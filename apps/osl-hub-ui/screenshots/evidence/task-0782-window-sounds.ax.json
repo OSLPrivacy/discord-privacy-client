@@ -1,0 +1,458 @@
+[
+  {
+    "role": "RootWebArea",
+    "name": "Window and sounds settings"
+  },
+  {
+    "role": "none",
+    "name": ""
+  },
+  {
+    "role": "none",
+    "name": ""
+  },
+  {
+    "role": "main",
+    "name": ""
+  },
+  {
+    "role": "generic",
+    "name": ""
+  },
+  {
+    "role": "region",
+    "name": "Window & sounds"
+  },
+  {
+    "role": "sectionheader",
+    "name": ""
+  },
+  {
+    "role": "group",
+    "name": "Open OSL"
+  },
+  {
+    "role": "generic",
+    "name": "Window behaviour"
+  },
+  {
+    "role": "heading",
+    "name": "Sound"
+  },
+  {
+    "role": "generic",
+    "name": "Sound behaviour"
+  },
+  {
+    "role": "sectionfooter",
+    "name": ""
+  },
+  {
+    "role": "paragraph",
+    "name": ""
+  },
+  {
+    "role": "heading",
+    "name": "Window & sounds"
+  },
+  {
+    "role": "paragraph",
+    "name": ""
+  },
+  {
+    "role": "Legend",
+    "name": ""
+  },
+  {
+    "role": "LabelText",
+    "name": ""
+  },
+  {
+    "role": "LabelText",
+    "name": ""
+  },
+  {
+    "role": "LabelText",
+    "name": ""
+  },
+  {
+    "role": "LabelText",
+    "name": ""
+  },
+  {
+    "role": "LabelText",
+    "name": ""
+  },
+  {
+    "role": "LabelText",
+    "name": ""
+  },
+  {
+    "role": "StaticText",
+    "name": "Sound"
+  },
+  {
+    "role": "LabelText",
+    "name": ""
+  },
+  {
+    "role": "LabelText",
+    "name": ""
+  },
+  {
+    "role": "LabelText",
+    "name": ""
+  },
+  {
+    "role": "generic",
+    "name": ""
+  },
+  {
+    "role": "button",
+    "name": "Reset controls"
+  },
+  {
+    "role": "StaticText",
+    "name": "THIS DEVICE"
+  },
+  {
+    "role": "StaticText",
+    "name": "Window & sounds"
+  },
+  {
+    "role": "StaticText",
+    "name": "These choices stay on this device. They do not change a message, account, or another person’s alerts."
+  },
+  {
+    "role": "StaticText",
+    "name": "Open OSL"
+  },
+  {
+    "role": "radio",
+    "name": "Centre of this screen Start in a predictable place."
+  },
+  {
+    "role": "none",
+    "name": ""
+  },
+  {
+    "role": "strong",
+    "name": ""
+  },
+  {
+    "role": "generic",
+    "name": ""
+  },
+  {
+    "role": "radio",
+    "name": "Last place Use the last saved location on this display."
+  },
+  {
+    "role": "none",
+    "name": ""
+  },
+  {
+    "role": "strong",
+    "name": ""
+  },
+  {
+    "role": "generic",
+    "name": ""
+  },
+  {
+    "role": "radio",
+    "name": "Top-left corner Keep the window tucked to a fixed edge."
+  },
+  {
+    "role": "none",
+    "name": ""
+  },
+  {
+    "role": "strong",
+    "name": ""
+  },
+  {
+    "role": "generic",
+    "name": ""
+  },
+  {
+    "role": "none",
+    "name": ""
+  },
+  {
+    "role": "strong",
+    "name": ""
+  },
+  {
+    "role": "generic",
+    "name": ""
+  },
+  {
+    "role": "checkbox",
+    "name": "Remember window place Save the location you choose when OSL closes."
+  },
+  {
+    "role": "none",
+    "name": ""
+  },
+  {
+    "role": "strong",
+    "name": ""
+  },
+  {
+    "role": "generic",
+    "name": ""
+  },
+  {
+    "role": "checkbox",
+    "name": "Allow window movement Let OSL move its own window when a protected view needs room."
+  },
+  {
+    "role": "none",
+    "name": ""
+  },
+  {
+    "role": "strong",
+    "name": ""
+  },
+  {
+    "role": "generic",
+    "name": ""
+  },
+  {
+    "role": "checkbox",
+    "name": "Show picture in tray Show the OSL mark beside local tray alerts."
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Sound"
+  },
+  {
+    "role": "none",
+    "name": ""
+  },
+  {
+    "role": "strong",
+    "name": ""
+  },
+  {
+    "role": "generic",
+    "name": ""
+  },
+  {
+    "role": "checkbox",
+    "name": "Play notification sounds Play a local sound for alerts that are allowed through."
+  },
+  {
+    "role": "none",
+    "name": ""
+  },
+  {
+    "role": "strong",
+    "name": ""
+  },
+  {
+    "role": "generic",
+    "name": ""
+  },
+  {
+    "role": "checkbox",
+    "name": "Mute all OSL sounds Keep alerts visible while silencing OSL on this device."
+  },
+  {
+    "role": "none",
+    "name": ""
+  },
+  {
+    "role": "strong",
+    "name": ""
+  },
+  {
+    "role": "generic",
+    "name": ""
+  },
+  {
+    "role": "checkbox",
+    "name": "Quiet hours · 22:00–07:00 Silence OSL sounds overnight; visual alerts remain available."
+  },
+  {
+    "role": "StaticText",
+    "name": "Saved · Position: Last place · Sounds: Muted · Quiet hours: Off"
+  },
+  {
+    "role": "StaticText",
+    "name": "Reset controls"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "THIS DEVICE"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Window & sounds"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "These choices stay on this device. They do not change a message, "
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "account, or another person’s alerts."
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Open OSL"
+  },
+  {
+    "role": "StaticText",
+    "name": "Centre of this screen"
+  },
+  {
+    "role": "StaticText",
+    "name": "Start in a predictable place."
+  },
+  {
+    "role": "StaticText",
+    "name": "Last place"
+  },
+  {
+    "role": "StaticText",
+    "name": "Use the last saved location on this display."
+  },
+  {
+    "role": "StaticText",
+    "name": "Top-left corner"
+  },
+  {
+    "role": "StaticText",
+    "name": "Keep the window tucked to a fixed edge."
+  },
+  {
+    "role": "StaticText",
+    "name": "Remember window place"
+  },
+  {
+    "role": "StaticText",
+    "name": "Save the location you choose when OSL closes."
+  },
+  {
+    "role": "StaticText",
+    "name": "Allow window movement"
+  },
+  {
+    "role": "StaticText",
+    "name": "Let OSL move its own window when a protected view needs room."
+  },
+  {
+    "role": "StaticText",
+    "name": "Show picture in tray"
+  },
+  {
+    "role": "StaticText",
+    "name": "Show the OSL mark beside local tray alerts."
+  },
+  {
+    "role": "StaticText",
+    "name": "Play notification sounds"
+  },
+  {
+    "role": "StaticText",
+    "name": "Play a local sound for alerts that are allowed through."
+  },
+  {
+    "role": "StaticText",
+    "name": "Mute all OSL sounds"
+  },
+  {
+    "role": "StaticText",
+    "name": "Keep alerts visible while silencing OSL on this device."
+  },
+  {
+    "role": "StaticText",
+    "name": "Quiet hours · 22:00–07:00"
+  },
+  {
+    "role": "StaticText",
+    "name": "Silence OSL sounds overnight; visual alerts remain available."
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Saved · Position: Last place · Sounds: Muted · Quiet hours: Off"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Reset controls"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Centre of this screen"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Start in a predictable place."
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Last place"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Use the last saved location on this display."
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Top-left corner"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Keep the window tucked to a fixed edge."
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Remember window place"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Save the location you choose when OSL closes."
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Allow window movement"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Let OSL move its own window when a protected view needs room."
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Show picture in tray"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Show the OSL mark beside local tray alerts."
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Play notification sounds"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Play a local sound for alerts that are allowed through."
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Mute all OSL sounds"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Keep alerts visible while silencing OSL on this device."
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Quiet hours · 22:00–07:00"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Silence OSL sounds overnight; visual alerts remain available."
+  }
+]

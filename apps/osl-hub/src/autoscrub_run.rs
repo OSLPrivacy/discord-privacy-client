@@ -1253,11 +1253,6 @@ fn find_owned_run_mut<'a>(
 
 const CONTRACT: &str = "autoscrubRunFleet.v1";
 const PRO_REQUIRED: &str = "AutoScrub requires an active Pro license";
-/// The owner-selected TASK 3693 outcome when Pro ends mid-run.  Keep this
-/// wording shared by the persisted run state and the next-run refusal: a
-/// caller must not have to guess whether work was paused or discarded.
-pub const AUTOSCRUB_PRO_ENDED_NOTICE: &str =
-    "Pro ended, so AutoScrub is paused. The work already done is kept — renew Pro to continue.";
 const MAX_OPEN_RUNS: usize = 2;
 const MAX_ACCOUNT_ID_BYTES: usize = 64;
 const MAX_REVIEW_TOKEN_BYTES: usize = 96;
@@ -1265,14 +1260,12 @@ const MAX_REVIEWED_ITEMS: u32 = 500;
 pub const AUTOSCRUB_RESULT_FINISHED: &str = "Finished";
 pub const AUTOSCRUB_RESULT_NOT_FINISHED: &str = "Not finished";
 pub const AUTOSCRUB_RESULT_NOT_STARTED: &str = "Not started";
-pub const AUTOSCRUB_RESULT_PAUSED: &str = "Paused";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum AutoScrubRunPhase {
     ReviewRequired,
     Running,
-    Paused,
     Stopping,
     Blocked,
     Complete,
@@ -1308,14 +1301,10 @@ pub struct AutoScrubRunSummary {
     pub service_id: ServiceKind,
     pub phase: AutoScrubRunPhase,
     pub reviewed_item_count: u32,
-    /// Progress is monotonically saved at each completed safe step.  A paused
-    /// run retains this number and its remaining reviewed items exactly.
-    pub scrubbed_item_count: u32,
     pub remaining_item_count: u32,
     pub stop_requested: bool,
     pub mutation_allowed: bool,
     pub last_outcome: AutoScrubRunOutcome,
-    pub pause_notice: Option<&'static str>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -1391,15 +1380,10 @@ fn reset_run_store_for_test() {
 }
 
 pub fn fleet_status(state: &AppState) -> Result<AutoScrubFleetStatus, String> {
-    let mut store = run_store()
+    require_pro(state)?;
+    let store = run_store()
         .lock()
         .map_err(|_| "AutoScrub run store is unavailable".to_owned())?;
-    if !ipc::tier_gate::is_paid_equivalent(state) {
-        store.pause_for_pro_expiry();
-        if !store.has_pro_expired_pause() {
-            return Err(PRO_REQUIRED.to_owned());
-        }
-    }
     Ok(store.fleet())
 }
 
@@ -1407,13 +1391,11 @@ pub fn start_reviewed_run(
     state: &AppState,
     request: AutoScrubReviewedRunRequest,
 ) -> Result<AutoScrubFleetStatus, String> {
+    require_pro(state)?;
     validate_reviewed_run_request(&request)?;
     let mut store = run_store()
         .lock()
         .map_err(|_| "AutoScrub run store is unavailable".to_owned())?;
-    if !ipc::tier_gate::is_paid_equivalent(state) {
-        return Err(store.pro_expiry_refusal());
-    }
     store.start_reviewed_run(request)
 }
 
@@ -1449,6 +1431,7 @@ pub fn run_reviewed_account_plan_until_stop<F>(
 where
     F: FnMut(&AutoScrubRunSummary) -> bool,
 {
+    require_pro(state)?;
     if requests.is_empty() || requests.len() > MAX_OPEN_RUNS {
         return Err("AutoScrub account plan must include one or two reviewed accounts".to_owned());
     }
@@ -1458,12 +1441,7 @@ where
     let mut store = run_store()
         .lock()
         .map_err(|_| "AutoScrub run store is unavailable".to_owned())?;
-    if !ipc::tier_gate::is_paid_equivalent(state) {
-        return Err(store.pro_expiry_refusal());
-    }
-    store.run_reviewed_account_plan_until_stop(requests, &mut stop_after_safe_step, || {
-        ipc::tier_gate::is_paid_equivalent(state)
-    })
+    store.run_reviewed_account_plan_until_stop(requests, &mut stop_after_safe_step)
 }
 
 fn require_pro(state: &AppState) -> Result<(), String> {
@@ -1488,58 +1466,12 @@ impl AutoScrubRunStore {
             service_id: request.service_id,
             phase: AutoScrubRunPhase::Running,
             reviewed_item_count: request.reviewed_item_count,
-            scrubbed_item_count: 0,
             remaining_item_count: request.reviewed_item_count,
             stop_requested: false,
             mutation_allowed: false,
             last_outcome: AutoScrubRunOutcome::Held,
-            pause_notice: None,
         });
         Ok(self.fleet())
-    }
-
-    /// Pause all active authority at the next safe boundary after entitlement
-    /// is lost.  The reviewed account list and the completed-item count are
-    /// deliberately untouched; this is a pause, never a rollback or a widened
-    /// replacement plan.
-    fn pause_for_pro_expiry(&mut self) -> bool {
-        let mut paused_any = false;
-        for run in &mut self.runs {
-            if matches!(
-                run.phase,
-                AutoScrubRunPhase::Running
-                    | AutoScrubRunPhase::ReviewRequired
-                    | AutoScrubRunPhase::Stopping
-                    | AutoScrubRunPhase::Blocked
-            ) {
-                run.phase = AutoScrubRunPhase::Paused;
-                run.stop_requested = true;
-                run.mutation_allowed = false;
-                run.last_outcome = AutoScrubRunOutcome::Held;
-                run.pause_notice = Some(AUTOSCRUB_PRO_ENDED_NOTICE);
-                paused_any = true;
-            }
-        }
-        if paused_any {
-            self.global_stop_requested = false;
-            self.stop_confirmation_required = false;
-        }
-        paused_any
-    }
-
-    fn pro_expiry_refusal(&mut self) -> String {
-        self.pause_for_pro_expiry();
-        if self.has_pro_expired_pause() {
-            AUTOSCRUB_PRO_ENDED_NOTICE.to_owned()
-        } else {
-            PRO_REQUIRED.to_owned()
-        }
-    }
-
-    fn has_pro_expired_pause(&self) -> bool {
-        self.runs
-            .iter()
-            .any(|run| run.pause_notice == Some(AUTOSCRUB_PRO_ENDED_NOTICE))
     }
 
     fn request_global_stop(&mut self) -> AutoScrubFleetStatus {
@@ -1606,22 +1538,12 @@ impl AutoScrubRunStore {
         &mut self,
         requests: Vec<AutoScrubReviewedRunRequest>,
         stop_after_safe_step: &mut F,
-        mut pro_is_active: impl FnMut() -> bool,
     ) -> Result<Vec<AutoScrubAccountRunResult>, String>
     where
         F: FnMut(&AutoScrubRunSummary) -> bool,
     {
         let mut results = Vec::with_capacity(requests.len());
         for index in 0..requests.len() {
-            if !pro_is_active() {
-                self.pause_for_pro_expiry();
-                results.extend(
-                    requests[index..]
-                        .iter()
-                        .map(|remaining| account_result(remaining, AUTOSCRUB_RESULT_NOT_STARTED)),
-                );
-                return Ok(results);
-            }
             let request = requests[index].clone();
             self.start_reviewed_run(request.clone())?;
             let started = self
@@ -1630,21 +1552,7 @@ impl AutoScrubRunStore {
                 .cloned()
                 .ok_or_else(|| "AutoScrub account plan did not start".to_owned())?;
 
-            let stop_requested = stop_after_safe_step(&started);
-            self.record_completed_safe_step(&started.run_id);
-
-            if !pro_is_active() {
-                self.pause_for_pro_expiry();
-                results.push(account_result(&request, AUTOSCRUB_RESULT_PAUSED));
-                results.extend(
-                    requests[index + 1..]
-                        .iter()
-                        .map(|remaining| account_result(remaining, AUTOSCRUB_RESULT_NOT_STARTED)),
-                );
-                return Ok(results);
-            }
-
-            if stop_requested {
+            if stop_after_safe_step(&started) {
                 if let Some(run) = self
                     .runs
                     .iter_mut()
@@ -1680,15 +1588,6 @@ impl AutoScrubRunStore {
             results.push(account_result(&request, AUTOSCRUB_RESULT_FINISHED));
         }
         Ok(results)
-    }
-
-    fn record_completed_safe_step(&mut self, run_id: &str) {
-        if let Some(run) = self.runs.iter_mut().find(|run| run.run_id == run_id) {
-            if run.remaining_item_count > 0 {
-                run.remaining_item_count -= 1;
-                run.scrubbed_item_count = run.scrubbed_item_count.saturating_add(1);
-            }
-        }
     }
 
     fn fleet(&self) -> AutoScrubFleetStatus {
@@ -1767,7 +1666,6 @@ fn is_open_fleet_phase(phase: AutoScrubRunPhase) -> bool {
         phase,
         AutoScrubRunPhase::ReviewRequired
             | AutoScrubRunPhase::Running
-            | AutoScrubRunPhase::Paused
             | AutoScrubRunPhase::Stopping
             | AutoScrubRunPhase::Blocked
     )
@@ -2794,77 +2692,6 @@ mod production_fleet_tests {
                 .runs
                 .iter()
                 .any(|run| run.service_id == ServiceKind::Telegram)
-        );
-    }
-
-    #[test]
-    fn task_3731_pro_ending_pauses_one_active_run_keeps_progress_and_refuses_a_new_run() {
-        let _guard = crate::global_keystore_test_lock();
-        reset_run_store_for_test();
-        let state = state_with_license(LicenseState::Paid, "ACTIVE");
-        let first = reviewed_request_for_account(ServiceKind::Discord, "acct-discord-3731", 3);
-        let second = reviewed_request_for_account(ServiceKind::Telegram, "acct-telegram-3731", 3);
-
-        let results = run_reviewed_account_plan_until_stop(
-            &state,
-            vec![first.clone(), second.clone()],
-            |_| {
-                *state.license_state.lock().expect("license state lock") = LicenseStateDto {
-                    state: LicenseState::Free,
-                    raw_status: "EXPIRED".to_owned(),
-                    current_period_end: None,
-                    last_validated_at: None,
-                };
-                false
-            },
-        )
-        .expect("expiry at a safe step returns the saved paused outcome");
-
-        assert_eq!(results.len(), 2);
-        assert_eq!(results[0].account_id, first.account_id);
-        assert_eq!(results[0].result, AUTOSCRUB_RESULT_PAUSED);
-        assert_eq!(results[1].account_id, second.account_id);
-        assert_eq!(results[1].result, AUTOSCRUB_RESULT_NOT_STARTED);
-
-        let paused = fleet_status(&state).expect("paused work remains readable for its notice");
-        assert_eq!(paused.open_run_count, 1);
-        assert_eq!(paused.runs.len(), 1);
-        let run = &paused.runs[0];
-        assert_eq!(run.service_id, ServiceKind::Discord);
-        assert_eq!(run.phase, AutoScrubRunPhase::Paused);
-        assert_eq!(run.reviewed_item_count, 3);
-        assert_eq!(run.scrubbed_item_count, 1);
-        assert_eq!(run.remaining_item_count, 2);
-        assert!(run.stop_requested);
-        assert!(!run.mutation_allowed);
-        assert_eq!(run.pause_notice, Some(AUTOSCRUB_PRO_ENDED_NOTICE));
-        assert!(
-            paused
-                .runs
-                .iter()
-                .all(|saved| saved.service_id != ServiceKind::Telegram),
-            "expiry must never start an account outside the already-reviewed active run"
-        );
-
-        let new_run_refusal = start_reviewed_run(
-            &state,
-            reviewed_request_for_account(ServiceKind::Signal, "acct-signal-3731", 3),
-        )
-        .expect_err("Pro expiry refuses a new AutoScrub run");
-        assert_eq!(new_run_refusal, AUTOSCRUB_PRO_ENDED_NOTICE);
-
-        let after_refusal = fleet_status(&state).expect("saved paused work remains intact");
-        assert_eq!(after_refusal.runs.len(), 1);
-        assert_eq!(after_refusal.runs[0].run_id, run.run_id);
-        assert_eq!(after_refusal.runs[0].scrubbed_item_count, 1);
-        assert_eq!(after_refusal.runs[0].remaining_item_count, 2);
-        println!(
-            "TASK3731 result={} saved_scrubbed={} saved_remaining={} approved_runs={} new_run_notice={}",
-            results[0].result,
-            after_refusal.runs[0].scrubbed_item_count,
-            after_refusal.runs[0].remaining_item_count,
-            after_refusal.runs.len(),
-            new_run_refusal,
         );
     }
 

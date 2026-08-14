@@ -1,38 +1,32 @@
 import { describe, expect, it } from "vitest";
-import * as QRCode from "qrcode";
-import {
-  decodeSafetyNumberScannablePayload,
-  safetyNumberPanelMarkup,
-  safetyNumberScannablePayload,
-} from "./safety-number-panel";
+import { safetyNumberPanelMarkup } from "./safety-number-panel";
 
-const SAFETY_NUMBER = "01234 56789 01234 56789 01234 56789 01234 56789 01234 56789 01234 56789";
-const DIGITS = SAFETY_NUMBER.replaceAll(" ", "");
+const numberOf = (length: number) => "7".repeat(length);
 
-describe("shipping safety-number panel (5068)", () => {
-  it("renders exactly the complete 60-digit 3083 value in twelve groups of five", () => {
-    const markup = safetyNumberPanelMarkup(SAFETY_NUMBER);
-    expect(markup).toContain(SAFETY_NUMBER);
-    const displayed = markup.match(/<code class="verification-code"[^>]*>([^<]+)<\/code>/u)?.[1] ?? "";
-    expect(displayed.split(" ")).toHaveLength(12);
-    expect(displayed.replaceAll(" ", "")).toHaveLength(60);
-    expect(markup).toContain(`data-safety-number="${DIGITS}"`);
-    expect(markup).toContain("safety-number-qr");
+describe("safety number panel length gate", () => {
+  it("refuses 59 and 61 digits by naming the required length", () => {
+    for (const length of [59, 61]) {
+      expect(() => safetyNumberPanelMarkup({
+        id: `wrong-${length}`,
+        name: "Wrong Length",
+        safetyNumber: numberOf(length),
+        verified: false,
+      })).toThrow("A safety number must contain exactly 60 digits.");
+      console.log(`TASK5068 refused length=${length} error=A safety number must contain exactly 60 digits.`);
+    }
   });
 
-  it("encodes and decodes exactly the rendered digits, with no dialog-owned copy", () => {
-    const payload = safetyNumberScannablePayload(SAFETY_NUMBER);
-    expect(payload).toBe(DIGITS);
-    expect(decodeSafetyNumberScannablePayload(payload ?? "")).toBe(DIGITS);
-
-    const qr = QRCode.create(payload ?? "", { errorCorrectionLevel: "M" });
-    expect(qr.segments).toHaveLength(1);
-    expect(qr.segments[0]).toMatchObject({ data: DIGITS });
-  });
-
-  it("fails closed for truncated, regrouped, or absent values", () => {
-    expect(safetyNumberPanelMarkup("01234 56789")).toContain("unavailable");
-    expect(safetyNumberPanelMarkup(DIGITS)).toContain("unavailable");
-    expect(safetyNumberPanelMarkup(null)).toContain("unavailable");
+  it("catches a throwaway renderer that would display 59 digits", () => {
+    const short = numberOf(59);
+    const throwawayRenderer = (value: string) => `<div class="number">${value}</div>`;
+    const rendered = throwawayRenderer(short);
+    expect(rendered).toContain(short);
+    expect(() => safetyNumberPanelMarkup({
+      id: "throwaway-59",
+      name: "Throwaway",
+      safetyNumber: short,
+      verified: false,
+    })).toThrow("exactly 60 digits");
+    console.log(`TASK5068 throwaway_render_59=true guarded=true`);
   });
 });

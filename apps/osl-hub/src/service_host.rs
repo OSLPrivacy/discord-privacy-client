@@ -27,7 +27,7 @@ const PROFILE_NAMESPACE: &str = "service-profiles-v2";
 // The desktop shell no longer reserves a separate titlebar row above the
 // trusted chrome: the drag region and window controls (minimize/maximize/
 // close) are docked directly into the existing TRUSTED_BAR_HEIGHT row
-// (osl-hub-ui/src/main.ts's ".desktop-top-row", inside the 54px workspace
+// (osl-hub-ui/src/main.ts's ".desktop-top-row", inside the 58px workspace
 // header) instead of a standalone 44px strip that read as an empty pale bar.
 // The constant stays (rather than being threaded out of host_rect()) so the
 // geometry contract documents that zero pixels are reserved for it, and so a
@@ -36,7 +36,7 @@ const PROFILE_NAMESPACE: &str = "service-profiles-v2";
 #[cfg(any(feature = "desktop", test))]
 const DESKTOP_TITLE_HEIGHT: u32 = 0;
 #[cfg(any(feature = "desktop", test))]
-const TRUSTED_BAR_HEIGHT: u32 = 54;
+const TRUSTED_BAR_HEIGHT: u32 = 58;
 #[cfg(any(feature = "desktop", test))]
 const LOCAL_PROTECTED_SHEET_WIDTH: u32 = 420;
 #[cfg(any(feature = "desktop", test))]
@@ -179,6 +179,13 @@ const SERVICES: &[ServiceManifest] = &[
         launch_active: false,
     },
     ServiceManifest {
+        id: "messenger",
+        display_name: "Facebook Messenger",
+        initial_url: "https://www.facebook.com/messages/",
+        allowed_hosts: &["www.facebook.com"],
+        launch_active: true,
+    },
+    ServiceManifest {
         id: "email",
         display_name: "Email",
         initial_url: "https://mail.google.com/",
@@ -201,6 +208,17 @@ const EMAIL_GMAIL: ServiceManifest = ServiceManifest {
     display_name: "Gmail",
     initial_url: "https://mail.google.com/",
     allowed_hosts: &["mail.google.com", "accounts.google.com"],
+    launch_active: true,
+};
+const EMAIL_OUTLOOK: ServiceManifest = ServiceManifest {
+    id: "email",
+    display_name: "Outlook on the web",
+    initial_url: "https://outlook.live.com/mail/",
+    allowed_hosts: &[
+        "outlook.live.com",
+        "login.live.com",
+        "login.microsoftonline.com",
+    ],
     launch_active: true,
 };
 const EMAIL_PROTON: ServiceManifest = ServiceManifest {
@@ -301,9 +319,7 @@ pub fn service_manifest_for_provider(
     }
     Ok(match provider.unwrap_or_default() {
         EmailProvider::Gmail => &EMAIL_GMAIL,
-        // Outlook is native-only. Keep its reviewed web manifest as inert
-        // navigation-policy metadata, but never create an embedded profile.
-        EmailProvider::Outlook => return Err(ServiceHostError::ServiceUnavailable),
+        EmailProvider::Outlook => &EMAIL_OUTLOOK,
         EmailProvider::Proton => &EMAIL_PROTON,
         EmailProvider::Tuta => &EMAIL_TUTA,
         EmailProvider::Yahoo => &EMAIL_YAHOO,
@@ -972,7 +988,7 @@ impl ServiceHostState {
         account_id: &str,
         page_url: &Url,
     ) -> Result<ActiveServiceHost, ServiceHostError> {
-        use crate::website_driver::{RealBrowserWebsiteDriver, WebsiteDriver};
+        use crate::website_driver::{RealBrowserWebsiteDriver, WebsiteDriver, WebsitePageRequest};
 
         if !local_test_page_supported(page_url) {
             return Err(ServiceHostError::NavigationDenied);
@@ -986,7 +1002,9 @@ impl ServiceHostState {
         let mut driver = RealBrowserWebsiteDriver::launch()
             .map_err(|error| ServiceHostError::Runtime(format!("{error:?}")))?;
         let page = driver
-            .find_page(page_url)
+            .find_page(WebsitePageRequest {
+                url: page_url.to_string(),
+            })
             .map_err(|error| ServiceHostError::Runtime(format!("{error:?}")))?;
         let snapshot = driver
             .read_page(&page)
@@ -996,7 +1014,7 @@ impl ServiceHostState {
             WebsiteDriverReport {
                 kind: driver.kind().as_str(),
                 fake: false,
-                page_url: snapshot.url,
+                page_url: snapshot.page.url,
                 page_title: snapshot.title,
             },
         )?;
@@ -1801,11 +1819,10 @@ mod tests {
     }
 
     #[test]
-    fn superseded_messenger_surface_is_cut_by_owner_ruling_2026_08_05() {
-        assert_eq!(
-            service_manifest("messenger"),
-            Err(ServiceHostError::UnknownService)
-        );
+    fn task_4257_messenger_surface_is_restored_to_the_service_host_catalogue() {
+        let manifest = service_manifest("messenger").unwrap();
+        assert_eq!(manifest.display_name, "Facebook Messenger");
+        assert_eq!(manifest.initial_url, "https://www.facebook.com/messages/");
     }
 
     #[test]
@@ -1872,7 +1889,7 @@ mod tests {
     fn native_layout_uses_the_area_below_and_right_of_trusted_chrome() {
         // The hub route's .app-frame is a single-row grid now (no more
         // separate 44px titlebar strip above the trusted chrome): the window
-        // controls dock into the existing 54px row instead. DESKTOP_TITLE_HEIGHT
+        // controls dock into the existing 58px row instead. DESKTOP_TITLE_HEIGHT
         // is 0 to match, so this reserves exactly TRUSTED_BAR_HEIGHT pixels,
         // not their sum. (Bare-shell screens with no other header to dock
         // into — onboarding, boot recovery, initial loading — still opt back
@@ -1883,9 +1900,9 @@ mod tests {
         assert!(bundled_styles.contains("grid-template-rows: minmax(0, 1fr);"));
         assert!(bundled_styles.contains(".app-frame.with-titlebar"));
         assert!(bundled_styles.contains(".desktop-top-row"));
-        assert!(bundled_styles.contains("height: 54px;"));
+        assert!(bundled_styles.contains("--chrome-row-height: 58px;"));
         assert_eq!(DESKTOP_TITLE_HEIGHT, 0);
-        assert_eq!(TRUSTED_BAR_HEIGHT, 54);
+        assert_eq!(TRUSTED_BAR_HEIGHT, 58);
         let rect = host_rect(1180, 780);
         let top_reserved = DESKTOP_TITLE_HEIGHT + TRUSTED_BAR_HEIGHT;
         assert_eq!(top_reserved, TRUSTED_BAR_HEIGHT);
@@ -1999,13 +2016,36 @@ mod tests {
                 );
             }
         }
-        for cut in ["instagram", "snapchat", "x", "messenger", "slack", "teams"] {
+        for cut in ["instagram", "snapchat", "x", "slack", "teams"] {
             assert_eq!(
                 service_manifest(cut),
                 Err(ServiceHostError::UnknownService),
                 "{cut}"
             );
         }
+    }
+
+    #[test]
+    fn task_4257_messenger_uses_metas_current_first_party_messages_surface() {
+        let manifest = service_manifest("messenger").unwrap();
+        assert_eq!(manifest.display_name, "Facebook Messenger");
+        assert_eq!(
+            validated_initial_url(manifest).unwrap().as_str(),
+            "https://www.facebook.com/messages/"
+        );
+        assert!(navigation_allowed(
+            manifest,
+            &Url::parse("https://www.facebook.com/login/").unwrap()
+        ));
+        assert!(!navigation_allowed(
+            manifest,
+            &Url::parse("https://messenger-plus.example/").unwrap()
+        ));
+        println!("TASK4257_MESSENGER_WEB_ADDRESS={}", manifest.initial_url);
+        println!(
+            "TASK4257_MESSENGER_SERVICE_HOST_ROW_NAME={}",
+            manifest.display_name
+        );
     }
 
     #[test]
@@ -2025,6 +2065,7 @@ mod tests {
     fn email_providers_use_only_fixed_exact_https_origins() {
         let cases = [
             (EmailProvider::Gmail, "mail.google.com"),
+            (EmailProvider::Outlook, "outlook.live.com"),
             (EmailProvider::Proton, "mail.proton.me"),
             (EmailProvider::Tuta, "app.tuta.com"),
             (EmailProvider::Yahoo, "mail.yahoo.com"),
@@ -2047,11 +2088,54 @@ mod tests {
     }
 
     #[test]
-    fn outlook_is_native_only_and_has_no_embedded_profile() {
-        assert_eq!(
-            service_manifest_for_provider("email", Some(EmailProvider::Outlook)),
-            Err(ServiceHostError::ServiceUnavailable)
+    fn task_4505_outlook_web_has_the_same_openable_manifest_shape_as_webmail() {
+        let provider_manifests = [
+            service_manifest_for_provider("email", Some(EmailProvider::Gmail)).unwrap(),
+            service_manifest_for_provider("email", Some(EmailProvider::Outlook)).unwrap(),
+            service_manifest_for_provider("email", Some(EmailProvider::Proton)).unwrap(),
+            service_manifest_for_provider("email", Some(EmailProvider::Tuta)).unwrap(),
+            service_manifest_for_provider("email", Some(EmailProvider::Yahoo)).unwrap(),
+            service_manifest_for_provider("email", Some(EmailProvider::Aol)).unwrap(),
+            service_manifest_for_provider("email", Some(EmailProvider::Gmx)).unwrap(),
+            service_manifest_for_provider("email", Some(EmailProvider::Maildotcom)).unwrap(),
+            service_manifest_for_provider("email", Some(EmailProvider::Icloud)).unwrap(),
+        ];
+        let outlook = provider_manifests[1];
+        let initial = validated_initial_url(outlook).unwrap();
+        println!("TASK4505_OUTLOOK_WEB_ADDRESS={}", outlook.initial_url);
+        println!(
+            "TASK4505_OUTLOOK_WEB_ALLOWED_PAGE_LIST={}",
+            outlook.allowed_hosts.join(",")
         );
+        println!(
+            "TASK4505_WEBMAIL_SHAPE_MATCH_COUNT={}",
+            provider_manifests
+                .iter()
+                .filter(|manifest| {
+                    manifest.id == "email"
+                        && manifest.launch_active
+                        && validated_initial_url(manifest).is_ok()
+                        && !manifest.allowed_hosts.is_empty()
+                })
+                .count()
+        );
+
+        assert_eq!(outlook.display_name, "Outlook on the web");
+        assert_eq!(outlook.initial_url, "https://outlook.live.com/mail/");
+        assert_eq!(initial.host_str(), Some("outlook.live.com"));
+        assert_eq!(
+            outlook.allowed_hosts,
+            &[
+                "outlook.live.com",
+                "login.live.com",
+                "login.microsoftonline.com"
+            ]
+        );
+        assert!(navigation_allowed(outlook, &initial));
+        assert!(!navigation_allowed(
+            outlook,
+            &Url::parse("https://outlook.live.com.evil.example/mail/").unwrap()
+        ));
     }
 
     #[test]

@@ -1,8 +1,14 @@
 import "@fontsource-variable/inter/wght.css";
 import { invoke } from "@tauri-apps/api/core";
 import "./whatsapp-overlay.css";
-import { boundedProtectedDraft, utf8Length } from "./overlay-state";
-import { parseWhatsAppPreparedCarrier } from "./whatsapp-overlay-prepare";
+import { reconcileWhatsAppPrivateBox } from "./whatsapp-private-box";
+import {
+  addDroppedWhatsAppAttachmentFiles,
+  addPickedWhatsAppAttachmentFiles,
+  type WhatsAppAttachmentFile,
+  type WhatsAppAttachmentTray,
+} from "./whatsapp-attachment-tray";
+import { parseWhatsAppCoverInsertionSetting, parseWhatsAppSendTrigger, prepareWhatsAppSelectedCover, whatsappPreparedSendReport } from "./whatsapp-send";
 
 function requireElement<T extends Element>(selector: string): T {
   const element = document.querySelector<T>(selector);
@@ -14,16 +20,39 @@ const draft = requireElement<HTMLTextAreaElement>("#protected-draft");
 const counter = requireElement<HTMLElement>("#draft-bytes");
 const status = requireElement<HTMLElement>("#overlay-status");
 const copy = requireElement<HTMLButtonElement>("#protected-send");
+const attachmentPicker = requireElement<HTMLButtonElement>("#whatsapp-attachment-picker");
+const attachmentInput = requireElement<HTMLInputElement>("#whatsapp-attachment-input");
+const attachmentTray = requireElement<HTMLElement>("#whatsapp-attachment-tray");
+const trigger = requireElement<HTMLSelectElement>("#prepared-cover-trigger");
+const coverInsertion = requireElement<HTMLSelectElement>("#cover-insertion-setting");
 
 let composing = false;
 let busy = false;
+let attachments: WhatsAppAttachmentTray = { cards: [], rejected: [] };
+
+function renderAttachmentTray(): void {
+  const cards = attachments.cards.map((card) => {
+    const item = document.createElement("div");
+    item.className = "wa-attachment-card";
+    item.textContent = `${card.name} · ${card.sizeLabel} · Unsent`;
+    return item;
+  });
+  attachmentTray.replaceChildren(...cards);
+  if (attachments.rejected.length) status.textContent = attachments.rejected.at(-1) ?? "Attachment was not added.";
+}
+
+function stageAttachments(files: Iterable<WhatsAppAttachmentFile>, source: "picker" | "drop"): void {
+  attachments = source === "picker"
+    ? addPickedWhatsAppAttachmentFiles(attachments, files)
+    : addDroppedWhatsAppAttachmentFiles(attachments, files);
+  renderAttachmentTray();
+}
 
 function reconcileDraft(): void {
-  const bounded = boundedProtectedDraft(draft.value);
-  if (bounded !== draft.value) draft.value = bounded;
-  const bytes = utf8Length(bounded);
-  counter.textContent = `${bytes} / 1000 bytes`;
-  copy.disabled = busy || bytes === 0;
+  const state = reconcileWhatsAppPrivateBox(draft.value);
+  if (state.privateDraft !== draft.value) draft.value = state.privateDraft;
+  counter.textContent = state.byteCountText;
+  copy.disabled = busy || state.privateDraft.length === 0;
 }
 
 draft.addEventListener("compositionstart", () => { composing = true; });
@@ -31,18 +60,21 @@ draft.addEventListener("compositionend", () => { composing = false; reconcileDra
 draft.addEventListener("input", () => { if (!composing) reconcileDraft(); });
 copy.addEventListener("click", async () => {
   if (busy) return;
-  const plaintext = boundedProtectedDraft(draft.value);
+  const plaintext = reconcileWhatsAppPrivateBox(draft.value).privateDraft;
   if (!plaintext) return;
   busy = true;
   reconcileDraft();
   status.textContent = "Revalidating and encrypting.";
   try {
-    const prepared = parseWhatsAppPreparedCarrier(
-      await invoke("prepare_whatsapp_qa_protected_text", { plaintext }),
+    const prepared = await prepareWhatsAppSelectedCover(
+      parseWhatsAppSendTrigger(trigger.value),
+      parseWhatsAppCoverInsertionSetting(coverInsertion.value),
+      { privateText: plaintext, foundBox: true },
+      () => invoke("prepare_whatsapp_qa_protected_text", { plaintext }),
     );
-    await navigator.clipboard.writeText(prepared.coverText);
+    await navigator.clipboard.writeText(prepared.carrier.coverText);
     draft.value = "";
-    status.textContent = "Protected carrier copied. Paste and send in this chat.";
+    status.textContent = whatsappPreparedSendReport(prepared);
   } catch {
     status.textContent = "Context changed or copy failed. Nothing was sent.";
   } finally {
@@ -51,4 +83,24 @@ copy.addEventListener("click", async () => {
   }
 });
 
+attachmentPicker.addEventListener("click", () => attachmentInput.click());
+attachmentInput.addEventListener("change", () => {
+  stageAttachments(attachmentInput.files ?? [], "picker");
+  attachmentInput.value = "";
+});
+for (const eventName of ["dragenter", "dragover"] as const) {
+  attachmentTray.addEventListener(eventName, (event) => {
+    event.preventDefault();
+    attachmentTray.classList.add("is-dragging");
+  });
+}
+for (const eventName of ["dragleave", "drop"] as const) {
+  attachmentTray.addEventListener(eventName, (event) => {
+    event.preventDefault();
+    attachmentTray.classList.remove("is-dragging");
+    if (eventName === "drop") stageAttachments(event.dataTransfer?.files ?? [], "drop");
+  });
+}
+
 reconcileDraft();
+renderAttachmentTray();

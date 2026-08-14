@@ -1,0 +1,52 @@
+<!doctype html>
+<!--
+  TASK 1349 capture fixture. Dev-server only, deliberately absent from
+  vite.config.ts's rollup inputs, same as verification-warning-screen.html.
+-->
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="color-scheme" content="dark" />
+    <title>View once player</title>
+    <style>
+      body { margin: 0; background: #0a0a0a; }
+      #app { min-height: 100vh; display: grid; justify-content: center; align-content: center; padding: 40px; }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module">
+      import "@fontsource-variable/inter/wght.css";
+      import "/src/styles.css";
+      import "/src/view-once-player-screen.css";
+      import {
+        EMPTY_VIEW_ONCE_PLAYER_SCREEN,
+        openViewOnceItem,
+        viewOncePlayerScreenMarkup,
+      } from "/src/view-once-player-screen.ts";
+
+      // TASK 3161: this fixture no longer has words of its own. It imports
+      // the SAME words file `cmd_osl_read_screen_words` serves in the app,
+      // so a capture here shows what the app actually renders.
+      const { default: enWords } = await import("../../../crates/ipc/src/screen_words/en.json");
+      const words = enWords.view_once_player;
+
+      const params = new URLSearchParams(location.search);
+      const fixture = params.get("fixture") === "empty" ? "empty" : "populated";
+      const app = document.querySelector("#app");
+
+      if (fixture === "empty") {
+        app.innerHTML = viewOncePlayerScreenMarkup(EMPTY_VIEW_ONCE_PLAYER_SCREEN, words);
+      } else {
+        // Fixed fixture clock: a 10 second view-once item opened at t=0 and
+        // observed at t=0, so the countdown reads a stable "10" for capture.
+        const open = openViewOnceItem("msg-open", 10_000, {
+          now: () => 0,
+          onClose: () => {},
+        });
+        app.innerHTML = viewOncePlayerScreenMarkup({ play: { id: "msg-play" }, open }, words);
+      }
+      document.body.dataset.viewOncePlayerFixture = fixture;
+    </script>
+  </body>
+</html>

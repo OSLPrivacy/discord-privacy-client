@@ -49,6 +49,61 @@ pub const TELEGRAM_COMPOSER_MEASURED_NAME: &str = "Write a message...";
 
 pub const TELEGRAM_LIVE_CARRIER_MAX_BYTES: usize = 4096;
 
+/// A Telegram Desktop window observed by the native window enumerator.
+///
+/// The conversation name is deliberately carried independently of the outer
+/// window title: Telegram's Qt title is normally just `Telegram`, while the
+/// active chat is exposed by the conversation-bearing accessibility record.
+/// Keeping the record explicit also makes the finder usable by the native
+/// enumerator and deterministic fixture tests alike.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TelegramConversationWindowRecord {
+    pub window_id: u64,
+    pub process_name: String,
+    pub conversation_name: String,
+    pub is_open: bool,
+    pub is_foreground: bool,
+}
+
+/// Why the active Telegram conversation could not be determined.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TelegramConversationWindowError {
+    NoActiveConversation,
+    AmbiguousActiveConversation,
+}
+
+fn is_telegram_process_name(value: &str) -> bool {
+    value
+        .trim()
+        .eq_ignore_ascii_case(TELEGRAM_DESKTOP_PROCESS_NAME)
+        || value.trim().eq_ignore_ascii_case("Telegram.exe")
+}
+
+/// Find the one foreground, open Telegram conversation window.
+///
+/// A stale chat-list row can retain an old conversation name, and an unfocused
+/// Telegram window can coexist with the user's current one.  Neither is the
+/// active conversation.  The exact accessible name is returned unchanged;
+/// callers must not normalise it into an identity that no longer matches what
+/// Telegram exposed.
+pub fn find_active_telegram_conversation_window<'a>(
+    records: &'a [TelegramConversationWindowRecord],
+) -> Result<&'a str, TelegramConversationWindowError> {
+    let mut matches = records.iter().filter(|record| {
+        is_telegram_process_name(&record.process_name)
+            && record.is_open
+            && record.is_foreground
+            && !record.conversation_name.trim().is_empty()
+    });
+    let Some(record) = matches.next() else {
+        return Err(TelegramConversationWindowError::NoActiveConversation);
+    };
+    if matches.next().is_some() {
+        return Err(TelegramConversationWindowError::AmbiguousActiveConversation);
+    }
+    Ok(record.conversation_name.as_str())
+}
+
 /// Telegram's measured UIA2 window shape.
 ///
 /// `DirectOuterWindow`, `Uia2WakePolicy::None`, `poll_until_populated: false`,
@@ -1159,6 +1214,56 @@ pub(crate) mod tests {
                 "{admitted:?} is Telegram's composer"
             );
         }
+    }
+
+    #[test]
+    fn telegram_box_1002_refuses_the_focused_search_field_and_keeps_one_message_box() {
+        // Telegram gives both the chat-list search and the composer the same
+        // writable/focusable UIA shape.  Model the focus change by leaving the
+        // search-field as the only focusable editable: identity must still come
+        // from its name, never from focus or position.
+        let good_box = writable(TELEGRAM_COMPOSER_MEASURED_NAME);
+        let good_matches = [good_box.clone()]
+            .iter()
+            .filter(|element| {
+                element.writable()
+                    && uia2_name_is_composer(TELEGRAM_COMPOSER_MATCHER, &element.name)
+            })
+            .count();
+        assert_eq!(good_matches, 1, "telegram-box-1002 must find one box");
+        assert_eq!(good_box.name, TELEGRAM_COMPOSER_MEASURED_NAME);
+        println!("TASK1002_GOOD_BOX_ID=telegram-box-1002");
+        println!("TASK1002_GOOD_BOX_COUNT={good_matches}");
+        println!("TASK1002_GOOD_BOX_NAME=Telegram message box");
+
+        let focused_search_field = writable("search-field");
+        assert!(focused_search_field.writable());
+        assert!(
+            !uia2_name_is_composer(TELEGRAM_COMPOSER_MATCHER, &focused_search_field.name),
+            "the focused search-field must be refused by name"
+        );
+        assert_eq!(
+            resolve_uia2_composer(TELEGRAM_COMPOSER_MATCHER, &[focused_search_field]),
+            Err(Uia2ComposerError::NoComposerName),
+            "a focused search-field is not a Telegram message box"
+        );
+        println!("TASK1002_CHANGED_FOCUSED_FIELD=search-field");
+        println!("TASK1002_CHANGED_REFUSED_BY_NAME=true");
+
+        let restored_matches = [good_box]
+            .iter()
+            .filter(|element| {
+                element.writable()
+                    && uia2_name_is_composer(TELEGRAM_COMPOSER_MATCHER, &element.name)
+            })
+            .count();
+        assert_eq!(
+            restored_matches, 1,
+            "telegram-box-1002 must retain the same sole message box"
+        );
+        println!("TASK1002_RESTORED_BOX_ID=telegram-box-1002");
+        println!("TASK1002_RESTORED_BOX_COUNT={restored_matches}");
+        println!("TASK1002_RESTORED_BOX_NAME=Telegram message box");
     }
 
     #[test]

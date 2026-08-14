@@ -1,0 +1,36 @@
+# Stand alone. `apps/osl-hub` is itself excluded from the root workspace and
+# built by manifest path, and this package must not be dragged into its build.
+[workspace]
+
+[package]
+name = "quiet-hours-midnight-check"
+version = "0.0.1"
+edition = "2021"
+publish = false
+
+# Why this package exists at all.
+#
+# TASK 0866's check belongs in `apps/osl-hub/tests/`, beside the 0865 gate it
+# exercises. It cannot live there today: `apps/osl-hub`'s library does not
+# compile on this lane. `lib.rs` declares eight modules twice, and ~26 source
+# files carry unresolved `rc/48h` merge damage - two lanes' edits concatenated
+# instead of merged (see `broker.rs:4394` and `security.rs:12622`). None of it
+# touches quiet hours, and repairing it means re-resolving other lanes' merges.
+#
+# So this package compiles the *real* gate sources by path - the same bytes
+# `apps/osl-hub` compiles, never a copy. Break the midnight branch in
+# `quiet_hours_notices.rs` and this check goes red. When the hub library builds
+# again, move `tests/task_0866_quiet_hours_across_midnight.rs` into
+# `apps/osl-hub/tests/`, drop the three `#[path]` module lines at its top, and
+# delete this package.
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[[test]]
+name = "task_0866_quiet_hours_across_midnight"
+path = "tests/task_0866_quiet_hours_across_midnight.rs"

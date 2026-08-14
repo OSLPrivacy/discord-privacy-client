@@ -1,0 +1,137 @@
+/* ---------------------------------------------------------------------------
+   Being seen as an OSL user.
+
+   Four choices, stacked in ruling A10's order, each with its own explanation
+   under the label. They are stacked rather than laid out as a row of pills
+   because the explanations are the point here -- the difference between "only
+   people I've allowed" and "anyone I've shared a chat with" is not readable
+   from the labels alone, and a pill row has no room for it.
+
+   The disclosure sentence sits directly under the list, in the same column as
+   the choices, so it is read on the way past rather than hunted for.
+   --------------------------------------------------------------------------- */
+
+.discovery-screen {
+  width: 100%;
+  padding: 26px 30px 34px;
+  overflow-y: auto;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.discovery-head { margin-bottom: 18px; }
+
+.discovery-head h1 {
+  margin: 0 0 6px;
+  font-size: 22px;
+}
+
+.discovery-intro {
+  max-width: 760px;
+  margin: 0;
+  color: var(--muted);
+}
+
+.discovery-choices h2,
+.discovery-pings h2 {
+  margin: 0 0 10px;
+  font-size: 13px;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.discovery-choice-list {
+  display: grid;
+  gap: 8px;
+}
+
+.discovery-choice {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  cursor: pointer;
+}
+
+.discovery-choice:hover { background: var(--panel-2); }
+
+.discovery-choice.selected {
+  border-color: var(--brand);
+  background: var(--panel-2);
+}
+
+.discovery-radio {
+  width: 14px;
+  height: 14px;
+  margin: 3px 0 0;
+  accent-color: var(--brand);
+}
+
+.discovery-choice-text strong { display: block; font-size: 15px; }
+.discovery-choice-text small { display: block; margin-top: 3px; color: var(--muted); }
+
+.discovery-disclosure {
+  max-width: 760px;
+  margin: 12px 0 0;
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  color: var(--text);
+  font-size: 14px;
+}
+
+.discovery-pings {
+  margin-top: 22px;
+  padding-top: 18px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.discovery-toggle {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  cursor: pointer;
+}
+
+.discovery-toggle input {
+  width: 14px;
+  height: 14px;
+  margin: 3px 0 0;
+  accent-color: var(--brand);
+}
+
+.discovery-toggle-text strong { display: block; font-size: 15px; }
+.discovery-toggle-text small { display: block; margin-top: 3px; color: var(--muted); }
+
+.discovery-pings-note {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+/* The Strip row. It is a read-out and a door, never a switch: the value is
+   plain text and the only control is the one that opens Settings. */
+.discovery-strip-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+}
+
+.discovery-strip-text { flex: 1 1 auto; }
+.discovery-strip-text strong { display: block; font-size: 15px; }
+.discovery-strip-text small { display: block; margin-top: 2px; color: var(--muted); }
+
+.discovery-strip-value {
+  color: var(--text);
+  font-size: 13px;
+  white-space: nowrap;
+}

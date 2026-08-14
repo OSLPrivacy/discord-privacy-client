@@ -1,0 +1,136 @@
+{
+  "url": "http://127.0.0.1:5173/screenshots/task-0272-complete-friend-page-fixture.html",
+  "fixedWindow": {
+    "width": 900,
+    "height": 700
+  },
+  "required": [
+    "picture",
+    "name",
+    "tick",
+    "Message",
+    "account reach",
+    "whitelist",
+    "warning",
+    "remove",
+    "block"
+  ],
+  "screen": {
+    "viewport": {
+      "width": 900,
+      "height": 700,
+      "scrollHeight": 700
+    },
+    "items": [
+      {
+        "name": "picture",
+        "text": "A",
+        "rect": {
+          "left": 167,
+          "top": 231.171875,
+          "right": 215,
+          "bottom": 279.171875,
+          "width": 48,
+          "height": 48
+        }
+      },
+      {
+        "name": "name",
+        "text": "Ada Lovelace",
+        "rect": {
+          "left": 227,
+          "top": 230.421875,
+          "right": 639.796875,
+          "bottom": 257.421875,
+          "width": 412.796875,
+          "height": 27
+        }
+      },
+      {
+        "name": "tick",
+        "text": "✓",
+        "rect": {
+          "left": 234,
+          "top": 259.421875,
+          "right": 246.578125,
+          "bottom": 277.421875,
+          "width": 12.578125,
+          "height": 18
+        }
+      },
+      {
+        "name": "Message",
+        "text": "Message",
+        "rect": {
+          "left": 651.796875,
+          "top": 233.171875,
+          "right": 733,
+          "bottom": 277.171875,
+          "width": 81.203125,
+          "height": 44
+        }
+      },
+      {
+        "name": "account reach",
+        "text": "Account reach",
+        "rect": {
+          "left": 167,
+          "top": 320.921875,
+          "right": 445,
+          "bottom": 364.921875,
+          "width": 278,
+          "height": 44
+        }
+      },
+      {
+        "name": "whitelist",
+        "text": "Whitelist everywhere",
+        "rect": {
+          "left": 455,
+          "top": 320.921875,
+          "right": 733,
+          "bottom": 364.921875,
+          "width": 278,
+          "height": 44
+        }
+      },
+      {
+        "name": "warning",
+        "text": "Warning\nChanges to friend access apply only on this device.",
+        "rect": {
+          "left": 167,
+          "top": 376.921875,
+          "right": 733,
+          "bottom": 451.859375,
+          "width": 566,
+          "height": 74.9375
+        }
+      },
+      {
+        "name": "remove",
+        "text": "Remove friend",
+        "rect": {
+          "left": 167,
+          "top": 463.859375,
+          "right": 445,
+          "bottom": 507.859375,
+          "width": 278,
+          "height": 44
+        }
+      },
+      {
+        "name": "block",
+        "text": "Block friend",
+        "rect": {
+          "left": 455,
+          "top": 463.859375,
+          "right": 733,
+          "bottom": 507.859375,
+          "width": 278,
+          "height": 44
+        }
+      }
+    ],
+    "overlaps": []
+  }
+}

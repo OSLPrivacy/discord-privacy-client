@@ -1,0 +1,138 @@
+/* Colour values are the canonical OSL design tokens duplicated from
+   src/osl-tokens.ts (CSS cannot import TypeScript). osl-tokens.ts is the
+   authority; token names are noted beside each hex. */
+/* TASK 1305 - plain chat composer. Layout only; every colour comes from the
+   palette in styles.css so the composer follows the theme. */
+
+.plain-chat-composer {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+  color: var(--text);
+}
+
+.plain-composer-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 6px 10px;
+  border-radius: var(--radius);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  font-size: 12px;
+}
+
+.plain-composer-banner span {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.plain-composer-banner svg {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  fill: none;
+  stroke: var(--muted);
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.plain-composer-banner strong {
+  font-weight: 600;
+}
+
+.plain-composer-banner small {
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 320px;
+}
+
+.plain-composer-banner-cancel {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 2px 4px;
+}
+
+.plain-composer-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.plain-composer-draft {
+  flex: 1;
+  min-height: 36px;
+  max-height: 160px;
+  resize: none;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 14px;
+}
+
+.plain-composer-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.plain-composer-control {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: none;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.plain-composer-control:hover,
+.plain-composer-control.is-active {
+  background: var(--line);
+  color: var(--text);
+}
+
+.plain-composer-control svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.plain-composer-edits span {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.plain-composer-send {
+  padding: 8px 16px;
+  border: none;
+  border-radius: var(--radius);
+  background: var(--accent, #2ac0f0 /* colour.accent */);
+  color: #071013; /* checkbox.onCheck — dark ink on the cyan fill */
+  font-weight: 600;
+  cursor: pointer;
+}

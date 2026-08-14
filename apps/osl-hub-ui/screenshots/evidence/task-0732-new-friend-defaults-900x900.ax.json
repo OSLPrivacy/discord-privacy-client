@@ -1,0 +1,378 @@
+[
+  {
+    "role": "RootWebArea",
+    "name": "Settings"
+  },
+  {
+    "role": "main",
+    "name": "Settings"
+  },
+  {
+    "role": "navigation",
+    "name": "Settings"
+  },
+  {
+    "role": "heading",
+    "name": "Settings"
+  },
+  {
+    "role": "button",
+    "name": "Account"
+  },
+  {
+    "role": "button",
+    "name": "Apps"
+  },
+  {
+    "role": "button",
+    "name": "Friends"
+  },
+  {
+    "role": "button",
+    "name": "Scrub"
+  },
+  {
+    "role": "button",
+    "name": "Cleanup"
+  },
+  {
+    "role": "button",
+    "name": "Notifications"
+  },
+  {
+    "role": "button",
+    "name": "Appearance"
+  },
+  {
+    "role": "button",
+    "name": "About"
+  },
+  {
+    "role": "region",
+    "name": "New friend defaults"
+  },
+  {
+    "role": "StaticText",
+    "name": "Settings"
+  },
+  {
+    "role": "StaticText",
+    "name": "Account"
+  },
+  {
+    "role": "StaticText",
+    "name": "Apps"
+  },
+  {
+    "role": "StaticText",
+    "name": "Friends"
+  },
+  {
+    "role": "StaticText",
+    "name": "Scrub"
+  },
+  {
+    "role": "StaticText",
+    "name": "Cleanup"
+  },
+  {
+    "role": "StaticText",
+    "name": "Notifications"
+  },
+  {
+    "role": "StaticText",
+    "name": "Appearance"
+  },
+  {
+    "role": "StaticText",
+    "name": "About"
+  },
+  {
+    "role": "heading",
+    "name": "New friend defaults"
+  },
+  {
+    "role": "group",
+    "name": "accounts"
+  },
+  {
+    "role": "group",
+    "name": "conversations"
+  },
+  {
+    "role": "group",
+    "name": "checkmark"
+  },
+  {
+    "role": "button",
+    "name": "Save default"
+  },
+  {
+    "role": "button",
+    "name": "Reset"
+  },
+  {
+    "role": "StaticText",
+    "name": "Saved on this device"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Settings"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Account"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Apps"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Friends"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Scrub"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Cleanup"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Notifications"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Appearance"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "About"
+  },
+  {
+    "role": "StaticText",
+    "name": "New friend defaults"
+  },
+  {
+    "role": "StaticText",
+    "name": "These choices apply to friends you add from now on. Friends you have already added do not change."
+  },
+  {
+    "role": "StaticText",
+    "name": "Save default"
+  },
+  {
+    "role": "StaticText",
+    "name": "Reset"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Saved on this device"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "New friend defaults"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "These choices apply to friends you add from now on. Friends you have "
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "already added do not change."
+  },
+  {
+    "role": "StaticText",
+    "name": "Which of your accounts a new friend can reach"
+  },
+  {
+    "role": "radio",
+    "name": "Approved chats only A new friend reaches you only in the chats you approve."
+  },
+  {
+    "role": "radio",
+    "name": "All shared chats A new friend reaches every account you already share with them."
+  },
+  {
+    "role": "StaticText",
+    "name": "Which conversations a new friend joins"
+  },
+  {
+    "role": "radio",
+    "name": "Never New conversations stay off the whitelist until you add them yourself."
+  },
+  {
+    "role": "radio",
+    "name": "Ask me OSL asks first, every time a new conversation appears."
+  },
+  {
+    "role": "radio",
+    "name": "Always Every new conversation with that friend joins the whitelist."
+  },
+  {
+    "role": "radio",
+    "name": "Only if a friend A new conversation joins only when everyone in it is already a friend."
+  },
+  {
+    "role": "StaticText",
+    "name": "The verified checkmark warning"
+  },
+  {
+    "role": "radio",
+    "name": "Always warn Keep warning until you have checked the new friend's checkmark."
+  },
+  {
+    "role": "radio",
+    "name": "Never warn Do not warn about an unchecked checkmark for friends added from now on."
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Save default"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Reset"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Which of your accounts a new friend can reach"
+  },
+  {
+    "role": "StaticText",
+    "name": "Approved chats only"
+  },
+  {
+    "role": "StaticText",
+    "name": "A new friend reaches you only in the chats you approve."
+  },
+  {
+    "role": "StaticText",
+    "name": "All shared chats"
+  },
+  {
+    "role": "StaticText",
+    "name": "A new friend reaches every account you already share with them."
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Which conversations a new friend joins"
+  },
+  {
+    "role": "StaticText",
+    "name": "Never"
+  },
+  {
+    "role": "StaticText",
+    "name": "New conversations stay off the whitelist until you add them yourself."
+  },
+  {
+    "role": "StaticText",
+    "name": "Ask me"
+  },
+  {
+    "role": "StaticText",
+    "name": "OSL asks first, every time a new conversation appears."
+  },
+  {
+    "role": "StaticText",
+    "name": "Always"
+  },
+  {
+    "role": "StaticText",
+    "name": "Every new conversation with that friend joins the whitelist."
+  },
+  {
+    "role": "StaticText",
+    "name": "Only if a friend"
+  },
+  {
+    "role": "StaticText",
+    "name": "A new conversation joins only when everyone in it is already a friend."
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "The verified checkmark warning"
+  },
+  {
+    "role": "StaticText",
+    "name": "Always warn"
+  },
+  {
+    "role": "StaticText",
+    "name": "Keep warning until you have checked the new friend's checkmark."
+  },
+  {
+    "role": "StaticText",
+    "name": "Never warn"
+  },
+  {
+    "role": "StaticText",
+    "name": "Do not warn about an unchecked checkmark for friends added from now on."
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Approved chats only"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "A new friend reaches you only in the chats you approve."
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "All shared chats"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "A new friend reaches every account you already share with them."
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Never"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "New conversations stay off the whitelist until you add them yourself."
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Ask me"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "OSL asks first, every time a new conversation appears."
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Always"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Every new conversation with that friend joins the whitelist."
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Only if a friend"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "A new conversation joins only when everyone in it is already a friend."
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Always warn"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Keep warning until you have checked the new friend's checkmark."
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Never warn"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Do not warn about an unchecked checkmark for friends added from now on."
+  }
+]

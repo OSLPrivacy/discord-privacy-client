@@ -195,10 +195,6 @@ pub struct AppState {
     /// directory is process-global, so two concurrent switch commands must
     /// never interleave validation, marker updates, and state reloads.
     pub account_switch_lock: Mutex<()>,
-    /// Linearizes discovery publish/reply/master-switch work in this client.
-    /// The key server provides the cross-request ordering; this lock prevents
-    /// the UI command path from releasing a publish in the middle of off.
-    pub discovery_transition_lock: Mutex<()>,
     pub identity: Mutex<Option<Identity>>,
     /// Live prekey lifecycle for the loaded identity. This is absent
     /// until an identity is explicitly installed; default AppState must
@@ -247,10 +243,13 @@ pub struct AppState {
     /// `crates/store` for the on-disk crypto + schema posture.
     pub message_store: Mutex<Option<MessageStore>>,
 
-    /// Bytes written under this device's at-rest key by explicit history-copy
-    /// actions in the current month.  Normal live delivery is not a history
-    /// copy and is therefore not charged to this counter.
+    /// Session-visible data allowance bytes charged this month for explicit
+    /// history copies onto this device.
     pub history_copy_data_allowance_this_month_bytes: AtomicU64,
+    /// Multipart attachment sends that may still be cancelled by burning the
+    /// exact message they belong to. This is deliberately process-local: a
+    /// restarted uploader must recover through its persisted upload record.
+    pub active_attachment_uploads: crate::attachment_uploads::ActiveAttachmentUploads,
 
     /// Sealed OSL-RN session and pin store for the active account. The sealer
     /// is process-local and selected with the same best-available policy as
@@ -450,7 +449,6 @@ impl Default for AppState {
     fn default() -> Self {
         Self {
             account_switch_lock: Mutex::new(()),
-            discovery_transition_lock: Mutex::new(()),
             identity: Mutex::new(None),
             prekey_state: Mutex::new(None),
             keyserver: Mutex::new(None),
@@ -461,7 +459,9 @@ impl Default for AppState {
             sender_pubkey_cache: SenderPubkeyCache::default(),
             peer_map: Mutex::new(PeerMap::default()),
             message_store: Mutex::new(None),
-            history_copy_data_allowance_this_month_bytes: AtomicU64::new(0),
+      history_copy_data_allowance_this_month_bytes: AtomicU64::new(0),
+      active_attachment_uploads: crate::attachment_uploads::ActiveAttachmentUploads::default(
+      ),
             rn_session_store: default_rn_session_store(),
             rn_session_sealer: keystore::select_best_sealer(),
             duress_engine: Mutex::new(default_production_duress_engine()),
@@ -506,6 +506,10 @@ impl Default for AppState {
 impl AppState {
     pub fn new() -> Self {
         AppState::default()
+    }
+
+    pub fn active_attachment_upload_count(&self) -> Result<usize, String> {
+        self.active_attachment_uploads.len()
     }
 
     pub fn new_with_production_duress_engine(config_dir: impl Into<PathBuf>) -> Arc<Self> {

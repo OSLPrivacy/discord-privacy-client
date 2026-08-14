@@ -762,4 +762,82 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
+
+    #[test]
+    fn task_0233_only_accepted_friend_query_returns_picture_bytes() {
+        let path = temporary_file("task-0233-picture").with_file_name(PROFILE_PICTURE_FILE);
+        let owner_id = "900000000000023300";
+        let accepted_friend_id = "900000000000023301";
+        let pending_person_id = "900000000000023302";
+        let stranger_id = "900000000000023399";
+        let image =
+            "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==".to_owned();
+        let expected_image_bytes = STANDARD
+            .decode(image.split_once(',').unwrap().1)
+            .expect("fixture image decodes")
+            .len();
+
+        set_profile_picture_with_key(&path, owner_id, image.clone(), &TEST_KEY)
+            .expect("owner picture is stored before reader queries");
+
+        let accepted_friend_ids = vec![accepted_friend_id.to_owned()];
+        let pending_person_ids = [pending_person_id.to_owned()];
+        println!(
+            "TASK0233 pending_person_known={}",
+            pending_person_ids.iter().any(|id| id == pending_person_id)
+        );
+
+        let queries = [
+            ("accepted_friend", accepted_friend_id),
+            ("pending_person", pending_person_id),
+            ("stranger", stranger_id),
+        ];
+        let mut returned_image_labels = Vec::new();
+
+        for (label, reader_id) in queries {
+            let read = read_profile_picture_for_reader_with_key(
+                &path,
+                owner_id,
+                reader_id,
+                &accepted_friend_ids,
+                &TEST_KEY,
+            )
+            .expect("reader query returns a redacted DTO or image DTO");
+            let image_bytes = read
+                .image
+                .as_deref()
+                .and_then(|value| value.split_once(','))
+                .and_then(|(_, body)| STANDARD.decode(body).ok())
+                .map_or(0, |bytes| bytes.len());
+
+            println!("TASK0233 {label}.status={}", read.status());
+            println!("TASK0233 {label}.image_bytes={image_bytes}");
+
+            if image_bytes > 0 {
+                returned_image_labels.push(label);
+            }
+
+            match label {
+                "accepted_friend" => {
+                    assert_eq!(read.status(), "image-present");
+                    assert_eq!(read.image.as_deref(), Some(image.as_str()));
+                    assert_eq!(image_bytes, expected_image_bytes);
+                }
+                "pending_person" | "stranger" => {
+                    assert_eq!(read.status(), "image-absent");
+                    assert!(read.image.is_none());
+                    assert_eq!(image_bytes, 0);
+                }
+                _ => unreachable!("all query labels are covered"),
+            }
+        }
+
+        println!(
+            "TASK0233 image_byte_returners={}",
+            returned_image_labels.join(",")
+        );
+        assert_eq!(returned_image_labels, vec!["accepted_friend"]);
+
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
 }

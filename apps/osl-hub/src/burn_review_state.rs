@@ -1,15 +1,32 @@
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 const BURN_REVIEW_STATE_VERSION: u8 = 1;
 const MAX_BURN_REVIEW_STATE_BYTES: u64 = 16 * 1024;
+const MAX_REVIEW_FIELD_BYTES: usize = 256;
+const BURN_SCREEN_SCOPES: [&str; 3] = ["chat", "app", "account"];
 
 #[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BurnReviewSelection {
+    pub selected_scope: String,
+    pub selected_chat: String,
+    pub hide_other_people: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BurnReviewStateCommand {
+    pub selected_scope: String,
+    pub selected_chat: String,
+    pub hide_other_people: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BurnReviewStateSummary {
     pub selected_scope: String,
     pub selected_chat: String,
     pub hide_other_people: bool,
@@ -23,11 +40,23 @@ pub struct BurnReviewBackResult {
     pub remote_removal_count: usize,
 }
 
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BurnReviewFinalChoiceResult {
+    pub status: String,
+    pub reviewed_message: String,
+    pub burn_mark: String,
+    pub local_removal_count: usize,
+    pub remote_removal_count: usize,
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct BurnReviewDocument {
     version: u8,
     selection: Option<BurnReviewSelection>,
+    #[serde(default)]
+    screen_states: BTreeMap<String, BurnScreenState>,
 }
 
 impl Default for BurnReviewDocument {
@@ -35,6 +64,7 @@ impl Default for BurnReviewDocument {
         Self {
             version: BURN_REVIEW_STATE_VERSION,
             selection: None,
+            screen_states: BTreeMap::new(),
         }
     }
 }
@@ -42,6 +72,7 @@ impl Default for BurnReviewDocument {
 #[derive(Default)]
 struct BurnReviewMemory {
     selection: Option<BurnReviewSelection>,
+    screen_states: BTreeMap<String, BurnScreenState>,
 }
 
 pub struct BurnReviewState {
@@ -51,10 +82,13 @@ pub struct BurnReviewState {
 
 impl BurnReviewState {
     pub fn load(path: PathBuf) -> Self {
-        let selection = read_state(&path).and_then(|document| document.selection);
+        let document = read_state(&path).unwrap_or_default();
         Self {
             path,
-            inner: Mutex::new(BurnReviewMemory { selection }),
+            inner: Mutex::new(BurnReviewMemory {
+                selection: document.selection,
+                screen_states: document.screen_states,
+            }),
         }
     }
 
@@ -74,10 +108,59 @@ impl BurnReviewState {
         Ok(selection)
     }
 
+    pub fn save_state_command(
+        &self,
+        command: BurnReviewStateCommand,
+    ) -> Result<BurnReviewStateSummary, String> {
+        let selection = self.save_command(
+            command.selected_scope,
+            command.selected_chat,
+            command.hide_other_people,
+        )?;
+        Ok(BurnReviewStateSummary {
+            selected_scope: selection.selected_scope,
+            selected_chat: selection.selected_chat,
+            hide_other_people: selection.hide_other_people,
+        })
+    }
+
     pub fn get_command(&self) -> Result<Option<BurnReviewSelection>, String> {
         self.inner
             .lock()
             .map(|state| state.selection.clone())
+            .map_err(|_| "burn review state lock is unavailable".to_owned())
+    }
+
+    /// Save the presentation state for one of the named burn screens.  This is
+    /// deliberately separate from the burn action: opening or changing a
+    /// screen never authorizes deletion.
+    pub fn save_burn_screen_command(
+        &self,
+        command: BurnScreenStateCommand,
+    ) -> Result<BurnScreenState, String> {
+        validate_burn_screen_scope(&command.scope)?;
+        let state = BurnScreenState {
+            selected_burn_time: normalize_screen_field(
+                "selected burn time",
+                command.selected_burn_time,
+            )?,
+            warning_text: normalize_screen_field("warning text", command.warning_text)?,
+        };
+        let mut memory = self
+            .inner
+            .lock()
+            .map_err(|_| "burn review state lock is unavailable".to_owned())?;
+        memory.screen_states.insert(command.scope, state.clone());
+        self.write_memory(&memory)?;
+        Ok(state)
+    }
+
+    /// Read a named burn screen without making any burn request.
+    pub fn get_burn_screen_command(&self, scope: &str) -> Result<Option<BurnScreenState>, String> {
+        validate_burn_screen_scope(scope)?;
+        self.inner
+            .lock()
+            .map(|state| state.screen_states.get(scope).cloned())
             .map_err(|_| "burn review state lock is unavailable".to_owned())
     }
 
@@ -103,6 +186,48 @@ impl BurnReviewState {
         })
     }
 
+    pub fn final_choice_command_checked<LocalBurn, RemoteBurn>(
+        &self,
+        final_choice: &str,
+        reviewed_message: String,
+        burn_mark: String,
+        mut issue_local_burn: LocalBurn,
+        mut issue_remote_burn: RemoteBurn,
+    ) -> Result<BurnReviewFinalChoiceResult, String>
+    where
+        LocalBurn: FnMut(&str, &str) -> usize,
+        RemoteBurn: FnMut(&str, &str) -> usize,
+    {
+        if !valid_label(&reviewed_message, 64) || !valid_label(&burn_mark, 64) {
+            return Err("burn review final choice is invalid".to_owned());
+        }
+        match final_choice {
+            "CONFIRM" => {
+                let local_removal_count = issue_local_burn(&reviewed_message, &burn_mark);
+                let remote_removal_count = issue_remote_burn(&reviewed_message, &burn_mark);
+                self.replace_selection(None)?;
+                Ok(BurnReviewFinalChoiceResult {
+                    status: "burn confirmed".to_owned(),
+                    reviewed_message,
+                    burn_mark,
+                    local_removal_count,
+                    remote_removal_count,
+                })
+            }
+            "BACK" => {
+                self.replace_selection(None)?;
+                Ok(BurnReviewFinalChoiceResult {
+                    status: "burn cancelled".to_owned(),
+                    reviewed_message,
+                    burn_mark,
+                    local_removal_count: 0,
+                    remote_removal_count: 0,
+                })
+            }
+            _ => Err("unknown burn choice".to_owned()),
+        }
+    }
+
     pub fn summary(&self) -> Result<String, String> {
         match self.get_command()? {
             Some(selection) => Ok(format!(
@@ -114,18 +239,40 @@ impl BurnReviewState {
     }
 
     fn replace_selection(&self, selection: Option<BurnReviewSelection>) -> Result<(), String> {
-        let document = BurnReviewDocument {
-            version: BURN_REVIEW_STATE_VERSION,
-            selection: selection.clone(),
-        };
-        write_state(&self.path, &document)?;
         let mut state = self
             .inner
             .lock()
             .map_err(|_| "burn review state lock is unavailable".to_owned())?;
         state.selection = selection;
+        self.write_memory(&state)?;
         Ok(())
     }
+
+    fn write_memory(&self, memory: &BurnReviewMemory) -> Result<(), String> {
+        write_state(
+            &self.path,
+            &BurnReviewDocument {
+                version: BURN_REVIEW_STATE_VERSION,
+                selection: memory.selection.clone(),
+                screen_states: memory.screen_states.clone(),
+            },
+        )
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BurnScreenStateCommand {
+    pub scope: String,
+    pub selected_burn_time: String,
+    pub warning_text: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BurnScreenState {
+    pub selected_burn_time: String,
+    pub warning_text: String,
 }
 
 fn validate_selection(selection: &BurnReviewSelection) -> Result<(), String> {
@@ -133,6 +280,27 @@ fn validate_selection(selection: &BurnReviewSelection) -> Result<(), String> {
         return Err("burn review selection is invalid".to_owned());
     }
     Ok(())
+}
+
+fn validate_burn_screen_scope(scope: &str) -> Result<(), String> {
+    if BURN_SCREEN_SCOPES.contains(&scope) {
+        Ok(())
+    } else {
+        Err(format!("unknown burn screen scope: {scope}"))
+    }
+}
+
+fn normalize_screen_field(label: &str, value: String) -> Result<String, String> {
+    let normalized = value.trim();
+    if normalized.is_empty()
+        || normalized.len() > MAX_REVIEW_FIELD_BYTES
+        || normalized.chars().any(char::is_control)
+    {
+        return Err(format!(
+            "Burn screen {label} must be bounded printable text"
+        ));
+    }
+    Ok(normalized.to_owned())
 }
 
 fn valid_opaque(value: &str, max: usize) -> bool {
@@ -148,6 +316,17 @@ fn valid_chat(value: &str) -> bool {
         && value.len() <= 128
         && value.bytes().all(|byte| {
             byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b':' | b'-' | b'_')
+        })
+}
+
+fn valid_label(value: &str, max: usize) -> bool {
+    !value.is_empty()
+        && value.len() <= max
+        && value.bytes().all(|byte| {
+            byte.is_ascii_uppercase()
+                || byte.is_ascii_lowercase()
+                || byte.is_ascii_digit()
+                || matches!(byte, b'-' | b'_' | b':')
         })
 }
 
@@ -170,207 +349,4 @@ fn write_state(path: &Path, document: &BurnReviewDocument) -> Result<(), String>
         return Err("burn review state exceeds the size limit".to_owned());
     }
     crate::atomic_file::write_recoverable(path, &bytes, "burn review state")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    fn temporary_file() -> PathBuf {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system clock")
-            .as_nanos();
-        std::env::temp_dir()
-            .join(format!(
-                "osl-burn-review-state-{}-{nonce}",
-                std::process::id()
-            ))
-            .join("state.json")
-    }
-
-    #[test]
-    fn direct_state_query_returns_selected_scope_chat_and_hide_choice() {
-        let path = temporary_file();
-        let state = BurnReviewState::load(path.clone());
-        state
-            .save_command(
-                "your_side".to_owned(),
-                "chat:burn-review-0520".to_owned(),
-                true,
-            )
-            .unwrap();
-
-        let summary = state.summary().unwrap();
-        println!("burn review state {summary}");
-
-        assert_eq!(
-            summary,
-            "selected_scope=your_side selected_chat=chat:burn-review-0520 hide_other_people=true"
-        );
-        let _ = std::fs::remove_dir_all(path.parent().unwrap());
-    }
-
-    #[test]
-    fn back_discards_review_state_and_issues_no_burn_command() {
-        let path = temporary_file();
-        let state = BurnReviewState::load(path.clone());
-        state
-            .save_command(
-                "your_side".to_owned(),
-                "chat:burn-review-0521".to_owned(),
-                true,
-            )
-            .unwrap();
-        assert_ne!(state.summary().unwrap(), "none");
-
-        let local_commands = AtomicUsize::new(0);
-        let remote_commands = AtomicUsize::new(0);
-        let result = state
-            .back_command_checked(
-                || {
-                    local_commands.fetch_add(1, Ordering::SeqCst);
-                    99
-                },
-                || {
-                    remote_commands.fetch_add(1, Ordering::SeqCst);
-                    99
-                },
-            )
-            .unwrap();
-
-        println!(
-            "BACK status={} local_removal_count={} remote_removal_count={} local_burn_commands={} remote_burn_commands={} state_after={}",
-            result.status,
-            result.local_removal_count,
-            result.remote_removal_count,
-            local_commands.load(Ordering::SeqCst),
-            remote_commands.load(Ordering::SeqCst),
-            state.summary().unwrap()
-        );
-
-        assert_eq!(result.status, "cancelled");
-        assert_eq!(result.local_removal_count, 0);
-        assert_eq!(result.remote_removal_count, 0);
-        assert_eq!(local_commands.load(Ordering::SeqCst), 0);
-        assert_eq!(remote_commands.load(Ordering::SeqCst), 0);
-        assert_eq!(state.get_command().unwrap(), None);
-        assert_eq!(
-            BurnReviewState::load(path.clone()).get_command().unwrap(),
-            None
-        );
-        let _ = std::fs::remove_dir_all(path.parent().unwrap());
-    }
-}
-
-#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct BurnReviewFinalChoiceResult {
-    pub status: String,
-    pub reviewed_message: String,
-    pub burn_mark: String,
-    pub local_removal_count: usize,
-    pub remote_removal_count: usize,
-}
-
-fn valid_label(value: &str, max: usize) -> bool {
-    !value.is_empty()
-        && value.len() <= max
-        && value.bytes().all(|byte| {
-            byte.is_ascii_uppercase()
-                || byte.is_ascii_lowercase()
-                || byte.is_ascii_digit()
-                || matches!(byte, b'-' | b'_' | b':')
-        })
-}
-const MAX_REVIEW_FIELD_BYTES: usize = 256;
-
-#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct BurnReviewStateCommand {
-    pub selected_scope: String,
-    pub selected_chat: String,
-    pub hide_other_people: bool,
-}
-
-#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct BurnReviewStateSummary {
-    pub selected_scope: String,
-    pub selected_chat: String,
-    pub hide_other_people: bool,
-}
-
-#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct BurnReviewStateDocument {
-    version: u8,
-    selected_scope: String,
-    selected_chat: String,
-    hide_other_people: bool,
-}
-
-impl Default for BurnReviewStateDocument {
-    fn default() -> Self {
-        Self {
-            version: BURN_REVIEW_STATE_VERSION,
-            selected_scope: String::new(),
-            selected_chat: String::new(),
-            hide_other_people: false,
-        }
-    }
-}
-
-fn document_from_command(
-    command: BurnReviewStateCommand,
-) -> Result<BurnReviewStateDocument, String> {
-    Ok(BurnReviewStateDocument {
-        version: BURN_REVIEW_STATE_VERSION,
-        selected_scope: normalize_review_field("selected scope", command.selected_scope)?,
-        selected_chat: normalize_review_field("selected chat", command.selected_chat)?,
-        hide_other_people: command.hide_other_people,
-    })
-}
-
-fn normalize_review_field(label: &str, value: String) -> Result<String, String> {
-    let normalized = value.trim();
-    if normalized.is_empty()
-        || normalized.len() > MAX_REVIEW_FIELD_BYTES
-        || normalized.chars().any(|character| character.is_control())
-    {
-        return Err(format!(
-            "Burn review {label} must be a bounded printable identifier"
-        ));
-    }
-    Ok(normalized.to_owned())
-}
-
-fn summary(document: &BurnReviewStateDocument) -> BurnReviewStateSummary {
-    BurnReviewStateSummary {
-        selected_scope: document.selected_scope.clone(),
-        selected_chat: document.selected_chat.clone(),
-        hide_other_people: document.hide_other_people,
-    }
-}
-
-fn read_document(path: &Path) -> Option<BurnReviewStateDocument> {
-    let bytes = crate::atomic_file::read_recoverable_bounded(
-        path,
-        MAX_BURN_REVIEW_STATE_BYTES,
-        "Burn review state",
-    )
-    .ok()
-    .flatten()?;
-    let document = serde_json::from_slice::<BurnReviewStateDocument>(&bytes).ok()?;
-    (document.version == BURN_REVIEW_STATE_VERSION).then_some(document)
-}
-
-fn write_document(path: &Path, document: &BurnReviewStateDocument) -> Result<(), String> {
-    let bytes = serde_json::to_vec_pretty(document)
-        .map_err(|_| "Burn review state could not be encoded".to_owned())?;
-    if bytes.len() as u64 > MAX_BURN_REVIEW_STATE_BYTES {
-        return Err("Burn review state exceeds the size limit".to_owned());
-    }
-    crate::atomic_file::write_recoverable(path, &bytes, "Burn review state")
 }

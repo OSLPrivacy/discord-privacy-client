@@ -34,14 +34,11 @@
 import type { Env } from "./env.js";
 import { handleAccountOwnershipChallenge } from "./endpoints/account-ownership-challenge.js";
 import { handleAccountOwnershipProof } from "./endpoints/account-ownership-proof.js";
-import { handleAiGenerate } from "./endpoints/ai-generate.js";
-import { handleCreditSpend } from "./endpoints/credits.js";
 import {
   handleDiscoveryCardsPost,
   handleDiscoveryCardsPublishPost,
   handleDiscoveryCardsRead,
   handleDiscoveryCardsTakeBackPost,
-  handleDiscoveryRepliesEnablePost,
 } from "./endpoints/discovery-cards.js";
 import { handleCheckout } from "./endpoints/checkout.js";
 import { handleStripeDonationSession } from "./endpoints/donation-stripe.js";
@@ -58,12 +55,6 @@ import { handleDevices } from "./endpoints/devices.js";
 import { handleLicenseRedeem } from "./endpoints/license-redeem.js";
 import { handleLicenseValidate } from "./endpoints/license.js";
 import { handleLinkGrant } from "./endpoints/link-grant.js";
-import {
-  handlePrivateContactLinkIssue,
-  handlePrivateContactLinkRedeem,
-  handlePrivateContactLinkRevoke,
-  handlePrivateContactLinkStatus,
-} from "./endpoints/private-contact-links.js";
 import { handleBillingPortal } from "./endpoints/portal.js";
 import {
   handlePrekeyBundleGet,
@@ -484,25 +475,10 @@ async function dispatch(
   }
 
   if (method === "POST") {
-    if (path === "/v1/private-contact-links/issue") {
-      return await handlePrivateContactLinkIssue(request, env);
-    }
-    if (path === "/v1/private-contact-links/redeem") {
-      return await handlePrivateContactLinkRedeem(request, env);
-    }
-    if (path === "/v1/private-contact-links/revoke") {
-      return await handlePrivateContactLinkRevoke(request, env);
-    }
-    if (path === "/v1/private-contact-links/status") {
-      return await handlePrivateContactLinkStatus(request, env);
-    }
-    if (path === "/v1/ai/generate") return await handleAiGenerate(request, env);
-    if (path === "/v1/credits/spend") return await handleCreditSpend(request, env);
     if (path === "/v1/discovery-cards") return await handleDiscoveryCardsPost(request, env);
     if (path === "/v1/discovery-cards/publish") return await handleDiscoveryCardsPublishPost(request, env);
     if (path === "/v1/discovery-cards/read") return await handleDiscoveryCardsRead(request, env);
     if (path === "/v1/discovery-cards/take-back") return await handleDiscoveryCardsTakeBackPost(request, env);
-    if (path === "/v1/discovery-cards/enable-replies") return await handleDiscoveryRepliesEnablePost(request, env);
     if (path === "/v1/update-attempts") {
       return withCors(await handleUpdateAttemptRecord(request, env), request);
     }

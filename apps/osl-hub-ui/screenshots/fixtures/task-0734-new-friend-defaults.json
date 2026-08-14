@@ -1,0 +1,17 @@
+{
+  "_comment": "TASK 0734 sample choices. Both the account choice and the conversation choice are deliberately NOT the NewFriendDefaults::default() starting point, so the capture photographs choices somebody made rather than the empty screen.",
+  "sample": {
+    "accountReach": "all_shared_chats",
+    "conversationRule": "only_if_a_friend",
+    "checkmarkWarning": "always"
+  },
+  "contrast": {
+    "accountReach": "approved_chats_only",
+    "conversationRule": "never",
+    "checkmarkWarning": "always"
+  },
+  "expected": {
+    "accountsLabel": "All shared chats",
+    "conversationsLabel": "Only if a friend"
+  }
+}

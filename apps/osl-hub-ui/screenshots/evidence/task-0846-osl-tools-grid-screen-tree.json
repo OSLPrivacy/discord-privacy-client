@@ -1,0 +1,30 @@
+{
+  "title": 4,
+  "tools": {
+    "OSL Chats": 1,
+    "Scrub": 2,
+    "Mail": 6,
+    "Notes": 1
+  },
+  "services": {
+    "Discord": 1,
+    "Telegram": 1,
+    "Signal": 1,
+    "WhatsApp": 1,
+    "Outlook": 1
+  },
+  "generatedLabels": {
+    "Not claimed": 2,
+    "Coming later": 4
+  },
+  "controls": {
+    "Open Scrub": 1,
+    "Open Mail": 1,
+    "Hidden tiles: Mail": 3
+  },
+  "routes": [
+    "privacy",
+    "osl-mail"
+  ],
+  "source": "Chrome --force-renderer-accessibility --dump-dom"
+}

@@ -1,0 +1,20 @@
+[package]
+name = "task-3046-mail-deleter-trash"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# A standalone per-task test crate, the pattern `task_3406_place_text/` and
+# `task_3045_shared_mail_deleter/` established. It does not copy the shared
+# mail deleter: `tests/task_3046_trash_copy_removed.rs` compiles
+# `../src/shared_mail_deleter.rs` and `../src/mail_owner_check.rs` straight out
+# of `apps/osl-hub/src/`, by path.
+#
+# It exists because the `osl-hub` lib cannot be built in this environment: a
+# transitive dependency (`llama-cpp-sys-2`) requires `libclang`, which is not
+# installed here, so `cargo check -p osl-hub --lib` never reaches this crate's
+# own source. This crate is what lets the shared deleter be exercised and
+# checked today, against the same bytes the lib compiles.
+[dependencies]
+
+[workspace]

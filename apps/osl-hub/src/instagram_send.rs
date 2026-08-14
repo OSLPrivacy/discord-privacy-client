@@ -1,13 +1,111 @@
-//! Preparation boundary for Instagram protected-send triggers.
+//! Preparation boundary for Instagram's protected send choices.
 //!
-//! A trigger describes how a prepared cover leaves OSL. Cover insertion is a
-//! separate preference describing how that cover reaches Instagram's composer.
-//! Neither choice grants this module authority to press Instagram's Send
-//! control.
+//! Preparing and posting are deliberately separate operations. These handlers
+//! bind an already-protected cover to the exact choice the person made; the
+//! website placement layer is responsible for placing it later, and no code in
+//! this module can press Instagram's Send control.
 
 use core::fmt;
 
-/// The complete, ruled set of Instagram send triggers.
+/// The five Instagram choices exposed by the protected composer.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum InstagramSendChoice {
+    Manual,
+    DoubleEnter,
+    SingleEnter,
+    Instant,
+    MatchTyping,
+}
+
+impl InstagramSendChoice {
+    pub const ALL: [Self; 5] = [
+        Self::Manual,
+        Self::DoubleEnter,
+        Self::SingleEnter,
+        Self::Instant,
+        Self::MatchTyping,
+    ];
+
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Manual => "Manual",
+            Self::DoubleEnter => "Double Enter",
+            Self::SingleEnter => "Single Enter",
+            Self::Instant => "Instant",
+            Self::MatchTyping => "Match typing",
+        }
+    }
+
+    /// Strictly parse the label emitted by the Instagram composer UI.
+    ///
+    /// Case folding or trimming here could silently turn malformed UI state
+    /// into send authority, so only the five exact labels are accepted.
+    pub fn from_name(name: &str) -> Result<Self, InstagramCoverPreparationError> {
+        match name {
+            "Manual" => Ok(Self::Manual),
+            "Double Enter" => Ok(Self::DoubleEnter),
+            "Single Enter" => Ok(Self::SingleEnter),
+            "Instant" => Ok(Self::Instant),
+            "Match typing" => Ok(Self::MatchTyping),
+            _ => Err(InstagramCoverPreparationError::UnknownChoice(
+                name.to_owned(),
+            )),
+        }
+    }
+}
+
+/// A cover that is ready for the shared website placement job.
+///
+/// There is intentionally no `sent` or `posted` state here. Preparation proves
+/// only that the exact cover and the exact choice are bound together.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PreparedInstagramCover {
+    pub choice: InstagramSendChoice,
+    pub cover_text: String,
+    pub cover_bytes: usize,
+}
+
+impl PreparedInstagramCover {
+    fn new(choice: InstagramSendChoice, cover_text: &str) -> Self {
+        Self {
+            choice,
+            cover_text: cover_text.to_owned(),
+            cover_bytes: cover_text.len(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum InstagramCoverPreparationError {
+    UnknownChoice(String),
+    UnknownTrigger(String),
+    UnknownCoverInsertion(String),
+    RefusedSendFieldValue(&'static str),
+}
+
+impl fmt::Display for InstagramCoverPreparationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnknownChoice(choice) => write!(
+                f,
+                "unknown Instagram send choice {choice:?}; expected Manual, Double Enter, Single Enter, Instant, or Match typing"
+            ),
+            Self::UnknownTrigger(trigger) => write!(
+                f,
+                "unknown Instagram send trigger {trigger:?}; expected Enter, Enter x2, or Clipboard"
+            ),
+            Self::UnknownCoverInsertion(insertion) => write!(
+                f,
+                "unknown Instagram cover insertion {insertion:?}; expected Insert on send or Type naturally"
+            ),
+            Self::RefusedSendFieldValue(value) => {
+                write!(f, "refused Instagram send field value {value}")
+            }
+        }
+    }
+}
+
+/// The ruled trigger set, kept separate from the protected composer's choice.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum InstagramSendTrigger {
     Enter,
@@ -31,14 +129,13 @@ impl InstagramSendTrigger {
             "Enter" => Ok(Self::Enter),
             "Enter x2" => Ok(Self::EnterX2),
             "Clipboard" => Ok(Self::Clipboard),
-            _ => Err(InstagramCoverPreparationError::UnknownTrigger(
-                name.to_owned(),
-            )),
+            _ => Err(InstagramCoverPreparationError::UnknownTrigger(name.to_owned())),
         }
     }
 }
 
-/// How a prepared cover is inserted, independently of its send trigger.
+/// How a prepared cover reaches Instagram's composer, independently of its
+/// send trigger.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum InstagramCoverInsertion {
     InsertOnSend,
@@ -66,118 +163,297 @@ impl InstagramCoverInsertion {
     }
 }
 
-/// A cover prepared for a trigger and an independently selected insertion.
+/// A cover prepared for a ruled trigger and an independently selected
+/// insertion mode.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PreparedInstagramCover {
+pub struct PreparedInstagramTriggeredCover {
     pub trigger: InstagramSendTrigger,
     pub cover_insertion: InstagramCoverInsertion,
     pub cover_text: String,
     pub cover_bytes: usize,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum InstagramCoverPreparationError {
-    UnknownTrigger(String),
-    UnknownCoverInsertion(String),
-}
-
-impl fmt::Display for InstagramCoverPreparationError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::UnknownTrigger(trigger) => write!(
-                f,
-                "unknown Instagram send trigger {trigger:?}; expected Enter, Enter x2, or Clipboard"
-            ),
-            Self::UnknownCoverInsertion(insertion) => write!(
-                f,
-                "unknown Instagram cover insertion {insertion:?}; expected Insert on send or Type naturally"
-            ),
-        }
-    }
-}
-
-impl std::error::Error for InstagramCoverPreparationError {}
-
-/// Prepare a cover without placing or sending it.
-pub fn prepare_instagram_cover(
+/// Prepare a ruled trigger/insertion pair without placing or sending it.
+pub fn prepare_instagram_triggered_cover(
     trigger_name: &str,
     cover_insertion_name: &str,
     cover_text: &str,
-) -> Result<PreparedInstagramCover, InstagramCoverPreparationError> {
-    let trigger = InstagramSendTrigger::from_name(trigger_name)?;
-    let cover_insertion = InstagramCoverInsertion::from_name(cover_insertion_name)?;
-    Ok(PreparedInstagramCover {
-        trigger,
-        cover_insertion,
+) -> Result<PreparedInstagramTriggeredCover, InstagramCoverPreparationError> {
+    Ok(PreparedInstagramTriggeredCover {
+        trigger: InstagramSendTrigger::from_name(trigger_name)?,
+        cover_insertion: InstagramCoverInsertion::from_name(cover_insertion_name)?,
         cover_text: cover_text.to_owned(),
         cover_bytes: cover_text.len(),
     })
 }
 
+impl std::error::Error for InstagramCoverPreparationError {}
+
+/// Direct backend command used by the Instagram UI to prepare one cover.
+pub fn prepare_instagram_cover(
+    choice_name: &str,
+    cover_text: &str,
+) -> Result<PreparedInstagramCover, InstagramCoverPreparationError> {
+    match InstagramSendChoice::from_name(choice_name)? {
+        InstagramSendChoice::Manual => prepare_manual_cover(cover_text),
+        InstagramSendChoice::DoubleEnter => prepare_double_enter_cover(cover_text),
+        InstagramSendChoice::SingleEnter => prepare_single_enter_cover(cover_text),
+        InstagramSendChoice::Instant => prepare_instant_cover(cover_text),
+        InstagramSendChoice::MatchTyping => prepare_match_typing_cover(cover_text),
+    }
+}
+
+/// UI-facing state for Instagram's send button.
+///
+/// Pressing this control only prepares the cover selected in the composer. It
+/// deliberately has no website-driver dependency and therefore cannot post to
+/// Instagram as a side effect. The separately reviewed placement flow is the
+/// only code allowed to put prepared text in a provider composer.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InstagramSendButton {
+    selected_choice: InstagramSendChoice,
+}
+
+/// Fields that must still be present when a selected cover is prepared.
+///
+/// The private text remains inside OSL. `composer_name` is only the accessible
+/// name discovered for the provider composer; this boundary does not write to
+/// that composer or press its Send control.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct InstagramSendFields<'a> {
+    pub private_text: &'a str,
+    pub composer_name: Option<&'a str>,
+    pub cover_text: &'a str,
+}
+
+impl InstagramSendButton {
+    /// Connect the button to one of the exact choices shown by the composer.
+    pub fn for_selected_choice(choice_name: &str) -> Result<Self, InstagramCoverPreparationError> {
+        Ok(Self {
+            selected_choice: InstagramSendChoice::from_name(choice_name)?,
+        })
+    }
+
+    /// Prepare the selected cover. This is intentionally not named `send`:
+    /// success means preparation only, never a provider post.
+    pub fn prepare_selected_cover(
+        &self,
+        fields: InstagramSendFields<'_>,
+    ) -> Result<PreparedInstagramCover, InstagramCoverPreparationError> {
+        if fields.private_text.trim().is_empty() {
+            return Err(InstagramCoverPreparationError::RefusedSendFieldValue(
+                "empty-text",
+            ));
+        }
+        if fields
+            .composer_name
+            .filter(|name| !name.trim().is_empty())
+            .is_none()
+        {
+            return Err(InstagramCoverPreparationError::RefusedSendFieldValue(
+                "missing-composer",
+            ));
+        }
+        prepare_instagram_cover(self.selected_choice.name(), fields.cover_text)
+    }
+}
+
+fn prepare_manual_cover(
+    cover_text: &str,
+) -> Result<PreparedInstagramCover, InstagramCoverPreparationError> {
+    Ok(PreparedInstagramCover::new(
+        InstagramSendChoice::Manual,
+        cover_text,
+    ))
+}
+
+fn prepare_double_enter_cover(
+    cover_text: &str,
+) -> Result<PreparedInstagramCover, InstagramCoverPreparationError> {
+    Ok(PreparedInstagramCover::new(
+        InstagramSendChoice::DoubleEnter,
+        cover_text,
+    ))
+}
+
+fn prepare_single_enter_cover(
+    cover_text: &str,
+) -> Result<PreparedInstagramCover, InstagramCoverPreparationError> {
+    Ok(PreparedInstagramCover::new(
+        InstagramSendChoice::SingleEnter,
+        cover_text,
+    ))
+}
+
+fn prepare_instant_cover(
+    cover_text: &str,
+) -> Result<PreparedInstagramCover, InstagramCoverPreparationError> {
+    Ok(PreparedInstagramCover::new(
+        InstagramSendChoice::Instant,
+        cover_text,
+    ))
+}
+
+fn prepare_match_typing_cover(
+    cover_text: &str,
+) -> Result<PreparedInstagramCover, InstagramCoverPreparationError> {
+    Ok(PreparedInstagramCover::new(
+        InstagramSendChoice::MatchTyping,
+        cover_text,
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        prepare_instagram_cover, InstagramCoverInsertion, InstagramCoverPreparationError,
-        InstagramSendTrigger,
+        prepare_instagram_cover, InstagramCoverPreparationError, InstagramSendButton,
+        InstagramSendChoice, InstagramSendFields, PreparedInstagramCover,
     };
 
     #[test]
-    fn task_1137_exact_three_triggers_prepare_and_retired_modes_are_refused_by_name() {
+    fn task_1137_all_five_instagram_choices_prepare_covers_and_unknown_fails() {
         const COVER: &str = "instagram-cover-1137";
-        let mut prepared_trigger_count = 0usize;
-        let mut prepared_combination_count = 0usize;
+        let mut prepared_count = 0usize;
 
-        for trigger in InstagramSendTrigger::ALL {
-            for insertion in InstagramCoverInsertion::ALL {
-                let prepared = prepare_instagram_cover(trigger.name(), insertion.name(), COVER)
-                    .expect("each ruled trigger prepares a cover with either insertion choice");
-                assert_eq!(prepared.trigger, trigger);
-                assert_eq!(prepared.cover_insertion, insertion);
-                assert_eq!(prepared.cover_text, COVER);
-                assert_eq!(prepared.cover_bytes, COVER.len());
-                prepared_combination_count += 1;
-            }
-            prepared_trigger_count += 1;
+        for expected_choice in InstagramSendChoice::ALL {
+            let prepared = prepare_instagram_cover(expected_choice.name(), COVER)
+                .expect("each named Instagram choice prepares a cover");
+            assert_eq!(prepared.choice, expected_choice);
+            assert_eq!(prepared.cover_text, COVER);
+            assert_eq!(prepared.cover_bytes, COVER.len());
+            prepared_count += 1;
             println!(
-                "TASK1137 trigger={:?} prepared_cover_bytes={} insertion_choices_prepared=2 exact_cover=true",
-                trigger.name(),
-                COVER.len()
+                "TASK1137 choice={:?} prepared_cover_bytes={} exact_cover=true",
+                expected_choice.name(),
+                prepared.cover_bytes
             );
         }
 
-        let mut refused_count = 0usize;
-        for retired in ["Manual", "Instant", "Match typing"] {
-            let error = prepare_instagram_cover(retired, "Insert on send", COVER)
-                .expect_err("retired Instagram mode must fail closed by exact name");
-            assert_eq!(
-                error,
-                InstagramCoverPreparationError::UnknownTrigger(retired.to_owned())
-            );
-            refused_count += 1;
-            println!("TASK1137 refused_trigger={retired:?}");
-        }
+        let unknown_name = "Unexpected sixth choice";
+        let unknown = prepare_instagram_cover(unknown_name, COVER)
+            .expect_err("an unknown Instagram choice must fail closed");
+        assert_eq!(
+            unknown,
+            InstagramCoverPreparationError::UnknownChoice(unknown_name.to_owned())
+        );
+        println!("TASK1137 prepared_cover_count={prepared_count}");
+        println!("TASK1137 unknown_choice_failures=1 error={unknown}");
 
-        assert_eq!(prepared_trigger_count, 3);
-        assert_eq!(prepared_combination_count, 6);
-        assert_eq!(refused_count, 3);
-        println!("TASK1137 prepared_trigger_count={prepared_trigger_count}");
-        println!("TASK1137 prepared_trigger_insertion_combinations={prepared_combination_count}");
-        println!("TASK1137 refused_retired_mode_count={refused_count}");
+        assert_eq!(prepared_count, 5);
     }
 
     #[test]
-    fn task_1137_cover_insertion_is_reported_separately_from_trigger() {
-        let trigger_names = InstagramSendTrigger::ALL.map(InstagramSendTrigger::name);
-        let insertion_names = InstagramCoverInsertion::ALL.map(InstagramCoverInsertion::name);
+    fn task_1138_each_instagram_send_button_choice_prepares_without_posting() {
+        const COVER: &str = "instagram-prepared-cover-1138";
+        let mut prepared_count = 0usize;
 
-        assert_eq!(trigger_names, ["Enter", "Enter x2", "Clipboard"]);
-        assert_eq!(insertion_names, ["Insert on send", "Type naturally"]);
-        assert!(trigger_names
-            .iter()
-            .all(|trigger| !insertion_names.contains(trigger)));
+        for choice in InstagramSendChoice::ALL {
+            let button = InstagramSendButton::for_selected_choice(choice.name())
+                .expect("every rendered choice connects to the send button");
+            let prepared = button
+                .prepare_selected_cover(InstagramSendFields {
+                    private_text: "private text stays in OSL",
+                    composer_name: Some("Message Maya"),
+                    cover_text: COVER,
+                })
+                .expect("pressing the button prepares the selected cover");
 
-        println!("TASK1137 trigger_names={trigger_names:?}");
-        println!("TASK1137 cover_insertion_names={insertion_names:?}");
-        println!("TASK1137 cover_insertion_reported_separately=true");
+            assert_eq!(prepared.choice, choice);
+            assert_eq!(prepared.cover_text, COVER);
+            assert_eq!(prepared.cover_bytes, COVER.len());
+            // PreparedInstagramCover has no sent/posted state and the button
+            // has no provider control or driver, so this path cannot post.
+            prepared_count += 1;
+            println!(
+                "TASK1138 choice={} prepared_cover_bytes={} posted=false",
+                choice.name(),
+                prepared.cover_bytes
+            );
+        }
+
+        assert_eq!(prepared_count, InstagramSendChoice::ALL.len());
+        println!("TASK1138 prepared_cover_count={prepared_count} posted_count=0");
+    }
+
+    #[test]
+    fn task_1139_empty_text_and_missing_composer_fail_closed_for_every_choice() {
+        const MARKER: &str = "instagram-send-1139";
+        const COMPOSER: &str = "Message Maya";
+
+        let good_button =
+            InstagramSendButton::for_selected_choice(InstagramSendChoice::Manual.name())
+                .expect("the good fixture uses a named choice");
+        let good_cover = good_button
+            .prepare_selected_cover(InstagramSendFields {
+                private_text: MARKER,
+                composer_name: Some(COMPOSER),
+                cover_text: MARKER,
+            })
+            .expect("good private text and a discovered composer prepare one cover");
+        let sent_covers: Vec<PreparedInstagramCover> = vec![good_cover];
+        let sent_covers_before_refusals = sent_covers.clone();
+
+        assert_eq!(sent_covers.len(), 1);
+        assert_eq!(sent_covers[0].cover_text, MARKER);
+        println!(
+            "TASK1139 good_text={MARKER} sent_cover_count={} sent_cover={}",
+            sent_covers.len(),
+            sent_covers[0].cover_text
+        );
+
+        let mut refusal_count = 0usize;
+        for choice in InstagramSendChoice::ALL {
+            let button = InstagramSendButton::for_selected_choice(choice.name())
+                .expect("every rendered choice connects to the send button");
+
+            let empty_text = button
+                .prepare_selected_cover(InstagramSendFields {
+                    private_text: "",
+                    composer_name: Some(COMPOSER),
+                    cover_text: MARKER,
+                })
+                .expect_err("empty private text must not prepare a cover");
+            assert_eq!(
+                empty_text,
+                InstagramCoverPreparationError::RefusedSendFieldValue("empty-text")
+            );
+            assert!(empty_text.to_string().contains("empty-text"));
+            refusal_count += 1;
+            println!(
+                "TASK1139 choice={} changed_send_field_value=empty-text refused_by_name=empty-text sent_cover_count={}",
+                choice.name(),
+                sent_covers.len()
+            );
+
+            let missing_composer = button
+                .prepare_selected_cover(InstagramSendFields {
+                    private_text: MARKER,
+                    composer_name: None,
+                    cover_text: MARKER,
+                })
+                .expect_err("a missing composer must not prepare a cover");
+            assert_eq!(
+                missing_composer,
+                InstagramCoverPreparationError::RefusedSendFieldValue("missing-composer")
+            );
+            assert!(missing_composer.to_string().contains("missing-composer"));
+            refusal_count += 1;
+            println!(
+                "TASK1139 choice={} changed_send_field_value=missing-composer refused_by_name=missing-composer sent_cover_count={}",
+                choice.name(),
+                sent_covers.len()
+            );
+        }
+
+        assert_eq!(refusal_count, 10);
+        assert_eq!(sent_covers, sent_covers_before_refusals);
+        assert_eq!(sent_covers.len(), 1);
+        assert_eq!(sent_covers[0].cover_text, MARKER);
+        println!("TASK1139 refusal_count={refusal_count}");
+        println!(
+            "TASK1139 final_sent_cover_count={} final_sent_cover={} unchanged=true",
+            sent_covers.len(),
+            sent_covers[0].cover_text
+        );
     }
 }

@@ -17,10 +17,15 @@ describe("T15-C1 onboarding sequence", () => {
   // asserted separately so re-adding it fails on its own name, not just as a
   // length mismatch.
   it("pins every setup step in its intended order", () => {
+    // 2026-08-08, owner's review (UI-FEEDBACK.txt): stealth and burn password
+    // steps sit IMMEDIATELY BEFORE the Pro code, not nine steps after it.
     expect(ONBOARDING_SEQUENCE).toEqual([
       "welcome",
       "recovery",
+      "recovery-check",
       "identity-choice",
+      "passwords",
+      "burnpass",
       "pro",
       "forward-secrecy",
       "privacy",
@@ -28,9 +33,8 @@ describe("T15-C1 onboarding sequence", () => {
       "defaults",
       "sending",
       "cover",
+      "silent-visible",
       "visibility",
-      "passwords",
-      "burnpass",
       "mullvad",
       "browser",
       "detected",

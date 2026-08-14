@@ -59,7 +59,7 @@ fn two_supporting_direct_chat_fixtures_agree_and_one_unsupported_fixture_is_refu
         );
         assert!(
             store
-                .load_pin(&peer_identity)
+                .load_pair_pin(own_public.as_bytes(), &peer_identity)
                 .expect("load direct-chat RN pin")
                 .is_pinned_to_rn(),
             "{label} must pin the direct chat to RN"
@@ -93,7 +93,7 @@ fn two_supporting_direct_chat_fixtures_agree_and_one_unsupported_fixture_is_refu
     assert!(matches!(refused, RnError::DirectChatAgreementUnsupported));
     assert_eq!(
         store
-            .load_pin(&peer_identity)
+            .load_pair_pin(own_public.as_bytes(), &peer_identity)
             .expect("load unsupported direct-chat pin"),
         RnPeerPin::UNKNOWN,
         "unsupported fixture must not pin the peer to RN"

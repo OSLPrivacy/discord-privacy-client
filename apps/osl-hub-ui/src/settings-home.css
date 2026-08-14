@@ -1,3 +1,6 @@
+/* Colour values are the canonical OSL design tokens duplicated from
+   src/osl-tokens.ts (CSS cannot import TypeScript). osl-tokens.ts is the
+   authority; token names are noted beside each hex. */
 /* TASK 0716 — Settings home: eight stacked choices, each a full-width button
    carrying its title and a one-line explanation. The explanation must actually
    fit one line at the fixed capture width, so it gets an explicit pixel
@@ -6,7 +9,7 @@
   max-width: 720px;
   margin: 0 auto;
   padding: 20px 24px 28px;
-  color: var(--text, #e8ecf1);
+  color: var(--text, #f4f7f8 /* colour.text */);
 }
 
 .settings-home h1 { margin: 0 0 14px; font-size: 22px; }
@@ -25,19 +28,19 @@
   width: 100%;
   padding: 10px 14px;
   text-align: left;
-  border: 1px solid var(--line, #2a2f36);
-  background: var(--panel, #14181d);
+  border: 1px solid var(--line, #2a343a /* colour.border */);
+  background: var(--panel, #0a0e10 /* colour.surface */);
   color: inherit;
   font: inherit;
   cursor: pointer;
 }
 
-.settings-home-choice:hover { border-color: var(--brand, #7aa2ff); }
+.settings-home-choice:hover { border-color: var(--brand, #2ac0f0 /* colour.accent */); }
 
 .settings-home-title { font-size: 15px; font-weight: 600; }
 
 .settings-home-explains {
-  color: var(--muted, #9aa4af);
+  color: var(--muted, #97a3a9 /* colour.muted1 */);
   font-size: 13px;
   line-height: 18px;
   white-space: nowrap;

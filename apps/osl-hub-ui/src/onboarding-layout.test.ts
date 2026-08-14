@@ -128,28 +128,34 @@ describe("clean onboarding sign in", () => {
   });
 
   // Protects the shape of the unlock screen: mark, ONE password field, ONE
-  // action. The heading was renamed "Enter your password" -> "Sign in" on
-  // 2026-08-06 and nothing else about the screen moved, so the old heading is
-  // pinned as an absence and the new one is pinned in the same anchored
-  // position under the mark. (The D80 rule this screen carries -- that no
+  // action. Rebuilt 2026-08-08 against the real export (Sign In Final.dc.html):
+  // the password step wears the sign-in entry skeleton -- sr-only heading,
+  // ghost mark, password row with the eye INSIDE it, one outline submit with
+  // the lock, quiet links. (The D80 rule this screen carries -- that no
   // alternate credential may be named in text, placeholder, sr-only label,
   // aria-label, title, autocomplete token or data- attribute -- is proven
   // against the RENDERED markup and the accessibility tree in
   // unlock-screen-single-credential.test.ts, which is where it belongs.)
   it("keeps password unlock to one field and one action", () => {
     expect(source).toContain('class="password-form unlock-form"');
-    expect(source).toContain('class="unlock-logo-stage"');
-    expect(source).toMatch(/class="unlock-logo-stage"[\s\S]*?src="\$\{oslVectorLogoUrl\}"[\s\S]*?>Sign in<\/h1>/);
+    expect(source).toContain('class="signin-card signin-lock-screen signin-password-screen"');
     expect(source).not.toContain(">Enter your password</h1>");
+    // The invented-spec chrome stays gone: no filled button, no boxed back
+    // bar, no circular logo treatment on this screen -- and the heading is
+    // for screen readers only, because canon shows no heading text at all.
+    expect(source).not.toContain('<section class="unlock-card"');
     // Still exactly one credential row and one submit in the unlock branch.
-    const unlock = source.slice(source.indexOf('<section class="unlock-card"'), source.indexOf("</section>`;", source.indexOf('<section class="unlock-card"')));
+    const start = source.indexOf('<section class="signin-card signin-lock-screen signin-password-screen"');
+    const unlock = source.slice(start, source.indexOf("</section>`;", start));
     expect(unlock).not.toBe("");
+    expect(unlock).toContain('<h1 id="route-heading" class="sr-only" tabindex="-1">Sign in</h1>');
     expect(unlock.match(/type="password"/gu) ?? []).toHaveLength(1);
     expect(unlock.match(/type="submit"/gu) ?? []).toHaveLength(1);
-    expect(source).toContain('id="identity-password-submit" type="submit" disabled>Unlock</button>');
+    expect(unlock).toContain('id="identity-password-submit" type="submit" disabled><span class="signin-unlock-label">Sign in</span>');
     expect(styles).toMatch(/\.unlock-form\s*\{\s*gap:\s*12px;/);
     expect(styles).toMatch(/\.unlock-form \.unlock-error:empty\s*\{\s*display:\s*none;/);
-    expect(styles).toMatch(/\.onboarding-unlock \.unlock-card > \.text-back\s*\{\s*margin-top:\s*0;/);
+    // The eye is positioned inside the field's row, never floating beside it.
+    expect(styles).toMatch(/\.signin-password-row \.password-eye\s*\{[\s\S]*?position:\s*absolute/);
   });
 
   it("uses a crisp accessible password visibility control", () => {
@@ -203,7 +209,7 @@ describe("clean onboarding sign in", () => {
     expect(controls).toContain('aria-label="Close"');
     expect(controls.match(/<button id="window-/g) ?? []).toHaveLength(3);
     const renderWorkspace = functionSource("renderWorkspace", "appLauncherStrip");
-    expect(renderWorkspace).toContain('<div class="desktop-top-row" data-tauri-drag-region="deep">${trustedHeader()}${desktopWindowControlsMarkup()}</div>');
+    expect(renderWorkspace).toContain('<div class="desktop-top-row shared-launcher-header-row" data-shared-launcher-header data-tauri-drag-region="deep">${trustedHeader()}${desktopWindowControlsMarkup()}</div>');
     expect(renderWorkspace).toContain('root.innerHTML = `<div class="app-frame"><div id="workspace-render-surface"></div></div>`;');
     expect(styles).toMatch(/\.app-frame\s*\{[^}]*grid-template-rows:\s*minmax\(0, 1fr\);/s);
     expect(styles).toMatch(/\.app-frame\.with-titlebar\s*\{[^}]*grid-template-rows:\s*44px minmax\(0, 1fr\);/s);
@@ -222,7 +228,7 @@ describe("clean onboarding sign in", () => {
     expect(styles).toMatch(
       /\.desktop-top-row\s*>\s*\.window-controls\s*\{[^}]*min-height:\s*var\(--chrome-row-height\);/s,
     );
-    expect(styles).toMatch(/:root\s*\{[^}]*--chrome-row-height:\s*54px;/s);
+    expect(styles).toMatch(/:root\s*\{[^}]*--chrome-row-height:\s*58px;/s);
     expect(styles).toMatch(/\.discord-qa-shell\s*\{\s*--chrome-row-height:\s*48px;/s);
   });
 
@@ -387,7 +393,7 @@ describe("fresh-account continuation", () => {
     // join it as a first-class resumable step. Assert the policy itself, not
     // the inlined comparisons it replaced.
     expect(pending).toContain("resumeOnboardingRoute(localStorage, onboardingResumeStorageKey)");
-    for (const route of ["pro", "privacy", "defaults", "tor", "sending", "cover", "passwords", "burnpass", "mullvad", "browser", "tutorial"] as const) {
+    for (const route of ["pro", "privacy", "defaults", "tor", "sending", "cover", "silent-visible", "visibility", "passwords", "burnpass", "mullvad", "browser", "tutorial"] as const) {
       expect(RESUMABLE_ONBOARDING_ROUTES).toContain(route);
       expect(resumeOnboardingRoute(fakeResumeStorage({ [RESUME_STORAGE_KEY]: route }), RESUME_STORAGE_KEY)).toBe(route);
     }
@@ -404,7 +410,7 @@ describe("fresh-account continuation", () => {
     expect(source).not.toContain('pendingOnboardingRoute() ?? "mullvad"');
     // The QA shell build swaps the default first-setup-step target ("pro" -> "sending")
     // via onboardingRouteForBuild, but the resumed-route precedence is unchanged.
-    expect(bootstrap).toContain('pendingOnboardingRoute() ?? onboardingRouteForBuild("pro")');
+    expect(bootstrap).toContain('pendingOnboardingRoute() ?? onboardingRouteForBuild("passwords")');
   });
 
   it("combines connected, browser-history, and remaining apps in one chooser", () => {
@@ -555,7 +561,7 @@ describe("fresh-account continuation", () => {
     expect(browser).not.toContain("Manual export");
     expect(browser).not.toContain("Prepare export in");
     expect(browser).not.toContain("How it works");
-    expect(browser).toContain('selectionReady ? "Check selected areas" : "Choose areas"');
+    expect(browser).toContain('selectionReady ? "Check selected" : "Choose areas"');
     expect(browser).not.toContain("Import selected · pending");
     expect(browser).toContain("OSL never reads browser databases before consent.");
     expect(browser).toContain("The encrypted account hints were saved and verified.");
@@ -686,15 +692,14 @@ describe("fresh-account continuation", () => {
   it("returns from each service to the remaining app queue before completion", () => {
     const continuation = functionSource("continueOnboardingFromService", "currentHomeTileIds");
     const workspace = functionSource("bindWorkspace", "ttlSeconds");
-    const skipStart = workspace.indexOf('querySelector("#service-guide-skip")');
+    const finishStart = workspace.indexOf('querySelector("#service-guide-finish")');
     const exitStart = workspace.indexOf('querySelector("#service-guide-exit")');
     const nativeBackStart = workspace.indexOf('querySelector("#native-app-back")');
-    expect(skipStart).toBeGreaterThanOrEqual(0);
-    expect(exitStart).toBeGreaterThan(skipStart);
+    expect(finishStart).toBeGreaterThanOrEqual(0);
+    expect(exitStart).toBeGreaterThan(finishStart);
     expect(nativeBackStart).toBeGreaterThan(exitStart);
     expect(continuation).toContain("advanceOnboardingConnection(completedAppId)");
-    expect(workspace.slice(skipStart, exitStart)).toContain("advanceOnboardingConnection(activeHomeAppId)");
-    expect(workspace).not.toContain('querySelector("#service-guide-finish")');
+    expect(workspace.slice(finishStart, exitStart)).toContain("advanceOnboardingConnection(activeHomeAppId)");
     expect(workspace.slice(exitStart, nativeBackStart)).toContain("clearServiceOnboardingResume()");
     expect(functionSource("completeSixStepOnboarding", "completeOnboarding")).toContain("clearServiceOnboardingResume()");
   });
@@ -713,7 +718,7 @@ describe("fresh-account continuation", () => {
     expect(recovery).toContain('class="onboarding-centered-step recovery-empty"');
     expect(recovery).toContain('id="recovery-no-secret-continue"');
     expect(recovery).not.toContain('data-onboarding="pro"');
-    expect(binding).toMatch(/#recovery-no-secret-continue[\s\S]*?applyRecoveryKitAction\(\{ kind: "continue" \}\)[\s\S]*?onboardingRoute = onboardingRouteForBuild\("pro"\)/);
+    expect(binding).toMatch(/#recovery-no-secret-continue[\s\S]*?applyRecoveryKitAction\(\{ kind: "continue" \}\)[\s\S]*?onboardingRoute = onboardingRouteForBuild\("passwords"\)/);
     expect(styles).toMatch(/\.onboarding-centered-step\s*\{[^}]*width:\s*min\(440px,\s*100%\);[^}]*margin:\s*auto;[^}]*text-align:\s*center;/s);
   });
 
@@ -733,15 +738,15 @@ describe("fresh-account continuation", () => {
     expect(binding).toMatch(/recoverySaved\?\.addEventListener\("change"[\s\S]*?applyRecoveryKitAction\(\{ kind: "set-saved-acknowledged", acknowledged: recoverySaved\.checked \}\)[\s\S]*?recoveryContinue\.disabled = !recoverySavedAcknowledged/);
     expect(binding).toMatch(/#recovery-continue[\s\S]*?recoverySavedAcknowledged[\s\S]*?onboardingRoute = "recovery-check"/);
     // The saved acknowledgement is committed only after the native word check
-    // passes, and the QA-shell-aware default still follows that final gate.
-    expect(source).toMatch(/#recovery-word-check-continue[\s\S]*?recoveryWordCheckContinueDisabled\(recoveryWordCheckState\)[\s\S]*?applyRecoveryKitAction\(\{ kind: "continue" \}\)[\s\S]*?onboardingRoute = pendingOnboardingRoute\(\) \?\? onboardingRouteForBuild\("pro"\)/);
+    // passes, and the owner-reviewed password ordering still follows that gate.
+    expect(source).toMatch(/#recovery-word-check-continue[\s\S]*?recoveryWordCheckContinueDisabled\(recoveryWordCheckState\)[\s\S]*?applyRecoveryKitAction\(\{ kind: "continue" \}\)[\s\S]*?onboardingRoute = pendingOnboardingRoute\(\) \?\? onboardingRouteForBuild\("passwords"\)/);
   });
 
   it("starts every recovery screen unacknowledged and clears recovery state on full cleanup", () => {
     const password = functionSource("bindPasswordForm", "bindImportForm");
     const imported = functionSource("bindImportForm", "continueOnboardingFromService");
     const burn = functionSource("executeBurn", "ttlSeconds");
-    expect(password).toMatch(/recoveryBundle = noRecoverySecret \? null : \{[\s\S]*?recoverySavedAcknowledged = false;[\s\S]*?onboardingRoute = "recovery"/);
+    expect(password).toMatch(/recoveryBundle = \{[\s\S]*?recoverySavedAcknowledged = false;[\s\S]*?onboardingRoute = "recovery"/);
     expect(imported).toMatch(/recoveryBundle = \{[\s\S]*?recoverySavedAcknowledged = false;[\s\S]*?onboardingRoute = "recovery"/);
     expect(burn).toMatch(/localStorage\.clear\(\);[\s\S]*?recoveryBundle = null;[\s\S]*?recoverySavedAcknowledged = false;/);
   });
@@ -772,7 +777,8 @@ describe("fresh-account continuation", () => {
     expect(onboardingRender).toContain('id="onboarding-back"');
     expect(onboardingRender).not.toContain('id="skip-onboarding"');
     expect(onboardingRender).not.toContain("Skip · manual setup");
-    expect(onboardingRender).toContain('["pro", "forward-secrecy", "privacy", "defaults", "tor", "sending", "cover", "passwords", "burnpass", "browser", "detected", "install", "apps", "mullvad"]');
+    expect(onboardingRender).toContain('["pro", "forward-secrecy", "privacy", "defaults", "tor", "sending", "cover", "silent-visible", "passwords", "burnpass", "browser", "detected", "install", "apps", "mullvad"]');
+    expect(onboardingRender).toContain('["pro", "forward-secrecy", "privacy", "defaults", "tor", "sending", "cover", "visibility", "passwords", "burnpass", "browser", "detected", "install", "apps", "mullvad"]');
     expect(onboardingRender).not.toContain('"tutorial"');
     expect(onboardingRender).not.toContain('"scrub"].includes(onboardingRoute)');
     expect(binding).not.toContain('document.querySelector("#skip-onboarding")');
@@ -801,13 +807,17 @@ describe("fresh-account continuation", () => {
 
     // These are the durable dependencies of the setup spine. New, independent
     // setup screens may be inserted without making this test a refactor tripwire.
-    expect(indexOf("privacy")).toBeLessThan(indexOf("defaults"));
-    expect(indexOf("defaults")).toBeLessThan(indexOf("tor"));
+    expect(indexOf("privacy")).toBeLessThan(indexOf("tor"));
+    expect(indexOf("tor")).toBeLessThan(indexOf("defaults"));
     expect(indexOf("tor")).toBeLessThan(indexOf("sending"));
     expect(indexOf("defaults")).toBeLessThan(indexOf("sending"));
     expect(indexOf("sending")).toBeLessThan(indexOf("cover"));
-    expect(indexOf("cover")).toBeLessThan(indexOf("passwords"));
+    expect(indexOf("cover")).toBeLessThan(indexOf("silent-visible"));
+    // 2026-08-08, owner's review (UI-FEEDBACK.txt): the stealth and burn
+    // password steps come IMMEDIATELY BEFORE the Pro code.
     expect(indexOf("passwords")).toBeLessThan(indexOf("burnpass"));
+    expect(indexOf("burnpass")).toBeLessThan(indexOf("pro"));
+    expect(indexOf("burnpass")).toBe(indexOf("pro") - 1);
     expect(indexOf("browser")).toBeLessThan(indexOf("detected"));
     // 2026-08-06: the tour left the first-run spine on the owner's instruction.
     // The route and its steps still exist for Settings -> About to replay; what
@@ -828,7 +838,8 @@ describe("fresh-account continuation", () => {
     expect(normalizer).toContain("needsRiskAcceptance(sendMode) && state.acceptedRisk && state.acceptedRiskForMode === sendMode");
     expect(completion).toContain("if (!canCompleteSetup(completedSetup)) throw new Error");
     expect(completion).toContain("setup = completedSetup");
-    expect(completion).toContain("saveOnboardingPreferences({ onboardingComplete: true, setup, showPlaintextPreview: true, windowCaptureEnabled, forwardSecrecyMode })");
+    expect(completion).toContain("saveOnboardingPreferences({ onboardingComplete: true, setup, coverInsertion, showPlaintextPreview: true, windowCaptureEnabled, forwardSecrecyMode })");
+    expect(completion).toContain("saveOnboardingPreferences({ onboardingComplete: true, setup, showPlaintextPreview: true, windowCaptureEnabled, rnWirePolicyRequested, forwardSecrecyMode })");
     expect(completion).toContain("onboardingComplete = true");
     expect(completion).toContain("clearServiceOnboardingResume()");
     expect(completion).toContain("resetOnboardingBranch()");
@@ -847,9 +858,13 @@ describe("fresh-account continuation", () => {
     const bootstrap = source.slice(source.indexOf("async function bootstrap"));
     expect(content).toContain("Enter Pro code");
     expect(content).toContain('id="activation-form"');
-    expect(content).toContain('data-onboarding="sending"');
+    expect(content).toContain('id="continue-pro-ready"');
+    // One ready screen, not two: its Continue goes through the pro-onboarding
+    // seam (continueFromProOnboarding -> forward-secrecy), never a hard link.
+    expect(content).not.toContain('data-onboarding="sending"');
     expect(binding).toContain('"#activation-form"');
     expect(activation).toContain("validateHubActivationCode(activationCode)");
+    expect(activation).toContain("proOnboardingReadyResult = true");
     expect(activation).toContain('onboardingRoute === "pro"');
     expect(content).not.toMatch(/localStorage|sessionStorage/);
     expect(bootstrap).toContain('onboardingRoute = "welcome"');
@@ -866,15 +881,18 @@ describe("fresh-account continuation", () => {
   // HANDS OFF to Mullvad and reports only what is installed. It may not imply
   // it has tunnel access, carries traffic, or controls the VPN. The screen was
   // rebuilt on 2026-08-06 into one status card whose dot carries the state, so
-  // the wording moved ("Optional network privacy", "Use my session") while
+  // the wording moved ("Optional network privacy", "found session") while
   // every id and every forbidden claim stayed exactly where they were.
   it("offers an optional fixed Mullvad handoff without claiming tunnel access", () => {
     const content = functionSource("mullvadSetupContent", "scrubCategoryChooserMarkup");
     const binding = functionSource("bindOnboarding", "completeOnboarding");
     expect(content).toContain("Optional network privacy");
     expect(content).toContain('id="install-mullvad"');
-    expect(content).toContain('id="open-mullvad"');
-    expect(content).toContain("Use my session");
+    expect(content).toContain('id="found-session-mullvad"');
+    expect(content).toContain("Found session");
+    expect(content).toContain("install");
+    // Canon Mullvad.dc.html names the quiet way out "Skip", not "Not now".
+    expect(content).toContain("Skip");
     expect(content).toContain('id="continue-mullvad"');
     expect(content).toContain('id="skip-mullvad"');
     expect(content).not.toMatch(/mullvad-connected|mullvad-autostart|refresh-mullvad|Mullvad pixels|does not copy or read/);
@@ -897,9 +915,10 @@ describe("fresh-account continuation", () => {
     ]) {
       expect(content, `the Mullvad screen must not claim ${claim.source}`).not.toMatch(claim);
     }
-    expect(binding).toContain('runMullvadSetupAction("install")');
-    expect(binding).toContain('runMullvadSetupAction("open")');
-    expect(binding).toMatch(/#continue-mullvad[\s\S]*?onboardingRoute = "browser"[\s\S]*?refreshBrowserImportReadiness\(\)/);
+    expect(binding).toContain("openMullvadInstallPage()");
+    expect(binding).toContain("confirmMullvadFoundSession()");
+    expect(binding).toMatch(/#continue-mullvad[\s\S]*?continueMullvadSetup\(\)/);
+    expect(binding).toMatch(/#skip-mullvad[\s\S]*?skipMullvadSetup\(\)/);
   });
 
   it("keeps Mullvad installation and hosting behind one setup action", () => {

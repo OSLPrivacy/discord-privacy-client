@@ -9,20 +9,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::account_identity_authority::AccountServiceIdentityAuthority;
 use crate::core_bridge::HubCoreState;
+use crate::messenger_place_reader::{MessengerBrowserConversation, MessengerPlaceKind};
 use crate::models::{
     DemoConnectionState, EmailProvider, LinkedAccountDemo, LinkedServiceDemo, ServiceCategory,
     ServiceKind, ServiceLaunchState,
 };
 use crate::shared_conversation_scroll::{SharedConversationScrollablePlace, SharedPlaceMessage};
-
-// Kept in a leaf so an independently landed X receive lane does not make this
-// already-crowded service registry another declaration conflict hotspot.
-#[path = "services_x_compat.rs"]
-mod x_compat;
-pub use x_compat::{
-    read_x_shared_messages, read_x_shared_places, XBrowserMachine, XBrowserMessage,
-    XBrowserPlace, XBrowserPlaceKind,
-};
 
 const REGISTRY_VERSION: u8 = 3;
 const MAX_REGISTRY_BYTES: u64 = 64 * 1024;
@@ -86,15 +78,18 @@ pub struct MessagingRiskAgreement {
 pub enum ConversationPlaceKind {
     DirectMessage,
     Group,
-    /// A group direct-message conversation.  This is distinct from the
-    /// generic `Group` shape so provider readers can preserve the service's
-    /// reviewed kind rather than silently broadening it.
+    /// A provider's group direct-message conversation. This stays separate
+    /// from a generic group so the reviewed browser reader does not erase the
+    /// service-specific destination shape.
     GroupChat,
+    NoteToSelf,
+    Community,
+    BroadcastList,
     Channel,
     Thread,
-    /// A public post owned by the signed-in account.
+    /// A public place authored by the signed-in account (a post or reply).
     PublicPost,
-    /// A comment owned by the signed-in account.
+    /// A comment authored by the signed-in account.
     Comment,
 }
 
@@ -103,7 +98,10 @@ impl ConversationPlaceKind {
         match self {
             Self::DirectMessage => "direct_message",
             Self::Group => "group",
-            Self::GroupChat => "group_chat",
+      Self::GroupChat => "group_chat",
+            Self::NoteToSelf => "note_to_self",
+      Self::Community => "community",
+      Self::BroadcastList => "broadcast_list",
             Self::Channel => "channel",
             Self::Thread => "thread",
             Self::PublicPost => "public_post",
@@ -161,11 +159,34 @@ impl ConversationPlaceCandidate {
         }
     }
 
-    pub fn group_chat(id: impl Into<String>, label: impl Into<String>) -> Self {
+  pub fn group_chat(id: impl Into<String>, label: impl Into<String>) -> Self {
         Self {
             place_id: id.into(),
             label: label.into(),
             place_kind: ConversationPlaceKind::GroupChat,
+            server: None,
+            channel: None,
+      }
+  }
+
+  /// Messenger communities are a first-class conversation surface, not a
+    /// channel with an invented server parent.  Keeping the kind distinct
+  /// lets the scrub picker faithfully tell users what the browser showed.
+  pub fn community(id: impl Into<String>, label: impl Into<String>) -> Self {
+        Self {
+            place_id: id.into(),
+            label: label.into(),
+            place_kind: ConversationPlaceKind::Community,
+            server: None,
+            channel: None,
+        }
+    }
+
+  pub fn broadcast_list(id: impl Into<String>, label: impl Into<String>) -> Self {
+        Self {
+            place_id: id.into(),
+            label: label.into(),
+            place_kind: ConversationPlaceKind::BroadcastList,
             server: None,
             channel: None,
         }
@@ -188,10 +209,10 @@ impl ConversationPlaceCandidate {
             place_kind: ConversationPlaceKind::Comment,
             server: None,
             channel: None,
-        }
-    }
+      }
+  }
 
-    pub fn channel(
+  pub fn channel(
         id: impl Into<String>,
         label: impl Into<String>,
         server: ConversationPlaceParent,
@@ -235,195 +256,52 @@ pub struct SharedConversationPlace {
     pub channel: Option<ConversationPlaceParent>,
 }
 
-/// The three official Discord releases are separate applications with separate
-/// persistent stores.  This is intentionally not a Chromium-profile concept:
-/// Discord ignores `--user-data-dir` for the account store that matters here.
-#[derive(Debug, Clone, Copy, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+/// A place observed by the read-only X browser accessibility reader. X public
+/// places are limited to posts and replies owned by the signed-in account;
+/// other people's public text is never promoted to a Scrub destination.
+#[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum DiscordReleaseChannel {
-    Stable,
-    Ptb,
-    Canary,
+pub enum XBrowserPlaceKind {
+    DirectMessage,
+    GroupDirectMessage,
+    OwnPostOrReply,
 }
 
-impl DiscordReleaseChannel {
-    pub const ALL: [Self; 3] = [Self::Stable, Self::Ptb, Self::Canary];
-
+impl XBrowserPlaceKind {
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::Stable => "stable",
-            Self::Ptb => "ptb",
-            Self::Canary => "canary",
-        }
-    }
-
-    pub const fn executable_name(self) -> &'static str {
-        match self {
-            Self::Stable => "Discord.exe",
-            Self::Ptb => "DiscordPTB.exe",
-            Self::Canary => "DiscordCanary.exe",
+            Self::DirectMessage => "direct_message",
+            Self::GroupDirectMessage => "group_chat",
+            Self::OwnPostOrReply => "public_post",
         }
     }
 }
 
-/// The exact launch observed for one official Discord release.  Launches are
-/// carried into the reader so a caller cannot hide profile switching behind a
-/// lower-level process helper.
 #[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct DiscordReleaseLaunch {
-    pub executable_name: String,
-    pub arguments: Vec<String>,
+pub struct XBrowserPlace {
+    pub place_id: String,
+    pub label: String,
+    pub kind: XBrowserPlaceKind,
 }
 
-impl DiscordReleaseLaunch {
-    pub fn official(channel: DiscordReleaseChannel) -> Self {
-        Self {
-            executable_name: channel.executable_name().to_owned(),
-            arguments: Vec::new(),
-        }
-    }
-}
-
-/// Read-only places observed in exactly one official Discord release store.
-/// `store_id` is an opaque store identity supplied by the Windows/UIA adapter,
-/// not a profile path and never a credential-bearing database handle.
-#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct DiscordReleaseStore {
-    pub channel: DiscordReleaseChannel,
-    pub store_id: String,
-    pub launch: DiscordReleaseLaunch,
-    pub places: Vec<ConversationPlaceCandidate>,
-}
-
-impl DiscordReleaseStore {
-    pub fn official(
-        channel: DiscordReleaseChannel,
-        store_id: impl Into<String>,
-        places: impl IntoIterator<Item = ConversationPlaceCandidate>,
+impl XBrowserPlace {
+    pub fn new(
+        place_id: impl Into<String>,
+        label: impl Into<String>,
+        kind: XBrowserPlaceKind,
     ) -> Self {
         Self {
-            channel,
-            store_id: store_id.into(),
-            launch: DiscordReleaseLaunch::official(channel),
-            places: places.into_iter().collect(),
+            place_id: place_id.into(),
+            label: label.into(),
+            kind,
         }
     }
 }
 
-/// The complete independent-store topology required to read Discord places.
-/// A struct, rather than a vector, makes omission of Stable, PTB, or Canary
-/// unrepresentable at this shared-reader boundary.
-#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct DiscordReleaseStores {
-    pub stable: DiscordReleaseStore,
-    pub ptb: DiscordReleaseStore,
-    pub canary: DiscordReleaseStore,
-}
-
-impl DiscordReleaseStores {
-    pub fn new(
-        stable: DiscordReleaseStore,
-        ptb: DiscordReleaseStore,
-        canary: DiscordReleaseStore,
-    ) -> Result<Self, String> {
-        let stores = Self {
-            stable,
-            ptb,
-            canary,
-        };
-        stores.validate()?;
-        Ok(stores)
-    }
-
-    pub fn stores(&self) -> [&DiscordReleaseStore; 3] {
-        [&self.stable, &self.ptb, &self.canary]
-    }
-
-    pub fn validate(&self) -> Result<(), String> {
-        let stores = self.stores();
-        for (expected, store) in DiscordReleaseChannel::ALL.into_iter().zip(stores) {
-            if store.channel != expected {
-                return Err(format!(
-                    "Discord {} release store was supplied for the {} slot",
-                    store.channel.as_str(),
-                    expected.as_str()
-                ));
-            }
-            validate_discord_release_store(store)?;
-        }
-
-        for (index, store) in stores.iter().enumerate() {
-            if let Some(previous) = stores[..index]
-                .iter()
-                .find(|previous| previous.store_id == store.store_id)
-            {
-                return Err(format!(
-                    "Discord release stores must be independent; {} and {} resolve to store {}",
-                    previous.channel.as_str(),
-                    store.channel.as_str(),
-                    store.store_id
-                ));
-            }
-        }
-        Ok(())
-    }
-}
-
-fn validate_discord_release_store(store: &DiscordReleaseStore) -> Result<(), String> {
-    validate_conversation_place_text(&store.store_id, "Discord release store id")?;
-    if !store
-        .launch
-        .executable_name
-        .eq_ignore_ascii_case(store.channel.executable_name())
-    {
-        return Err(format!(
-            "Discord {} release must launch {}",
-            store.channel.as_str(),
-            store.channel.executable_name()
-        ));
-    }
-    if store.launch.arguments.iter().any(|argument| {
-        argument
-            .trim_start()
-            .to_ascii_lowercase()
-            .starts_with("--user-data-dir")
-    }) {
-        return Err(format!(
-            "Discord {} release launch must not use --user-data-dir",
-            store.channel.as_str()
-        ));
-    }
-    Ok(())
-}
-
-/// Read every conversation place the approved Discord account can open across
-/// Stable, PTB, and Canary.  Topology is verified before the consent check: an
-/// unsafe launch or aliased store is a configuration failure, never a silent
-/// empty result.
-pub fn read_discord_shared_places(
-    owner_osl_user_id: &str,
-    account_id: &str,
-    release_stores: &DiscordReleaseStores,
-) -> Result<Vec<SharedConversationPlace>, String> {
-    release_stores.validate()?;
-    read_shared_conversation_places(
-        owner_osl_user_id,
-        "discord",
-        account_id,
-        release_stores
-            .stores()
-            .into_iter()
-            .flat_map(|store| store.places.iter().cloned()),
-    )
-}
-
-/// A place the Instagram browser accessibility reader observed.  The public
-/// kinds deliberately say `Own`: the reader is scoped to things the signed-in
-/// account can later review for Scrub, and never treats another person's post
-/// or comment as a place of its own.
+/// A place observed by the read-only Instagram browser accessibility reader.
+/// Public kinds are deliberately owner-scoped so another person's content is
+/// never promoted to a Scrub destination.
 #[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum InstagramBrowserPlaceKind {
@@ -466,16 +344,121 @@ impl InstagramBrowserPlace {
     }
 }
 
-/// The read-only, accessibility-derived list exposed by the Instagram browser
-/// machine.  It contains no credentials or browser session material.
+/// Read-only, accessibility-derived Instagram places; no credentials or
+/// browser session material are retained here.
 #[derive(Debug, Clone, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct InstagramBrowserMachine {
     pub places: Vec<InstagramBrowserPlace>,
-    /// Read-only rows observed on the reviewed browser surface.  Rows retain
-    /// the provider's timestamp and authorship signal so Scrub does not infer
-    /// ownership from message text or from the order returned by the page.
     pub messages: Vec<InstagramBrowserMessage>,
+}
+
+/// The kinds of conversation Telegram Desktop exposes to an account.  Telegram
+/// channels deliberately remain channels: treating a broadcast channel as a
+/// group would make a later Scrub action target the wrong surface.
+#[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TelegramDesktopPlaceKind {
+    DirectChat,
+    Group,
+    Channel,
+}
+
+impl TelegramDesktopPlaceKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::DirectChat => "direct_chat",
+            Self::Group => "group",
+            Self::Channel => "channel",
+        }
+    }
+}
+
+/// One conversation row observed in the signed-in Telegram Desktop account.
+/// This deliberately carries only the stable conversation id, visible label,
+/// and Telegram's own kind; session material and message text never cross the
+/// place-reader boundary.
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TelegramDesktopPlace {
+    pub place_id: String,
+    pub label: String,
+    pub kind: TelegramDesktopPlaceKind,
+}
+
+impl TelegramDesktopPlace {
+    pub fn new(
+        place_id: impl Into<String>,
+        label: impl Into<String>,
+        kind: TelegramDesktopPlaceKind,
+    ) -> Self {
+        Self {
+            place_id: place_id.into(),
+            label: label.into(),
+            kind,
+        }
+    }
+}
+
+/// The read-only Telegram Desktop observations for the currently signed-in
+/// account. The desktop adapter is responsible for excluding rows it cannot
+/// open before constructing this narrow boundary object.
+#[derive(Debug, Clone, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TelegramDesktopMachine {
+    pub places: Vec<TelegramDesktopPlace>,
+    /// Rows retain Telegram's displayed timestamp and provider-observed
+    /// authorship bit. Scrub uses that bit directly and never guesses who
+    /// wrote a message from its text or position in the conversation.
+    pub messages: Vec<TelegramDesktopMessage>,
+}
+
+impl TelegramDesktopMachine {
+    pub fn new(places: impl IntoIterator<Item = TelegramDesktopPlace>) -> Self {
+        Self {
+            places: places.into_iter().collect(),
+            messages: Vec::new(),
+        }
+    }
+
+    pub fn with_messages(
+        mut self,
+        messages: impl IntoIterator<Item = TelegramDesktopMessage>,
+    ) -> Self {
+        self.messages = messages.into_iter().collect();
+        self
+    }
+}
+
+/// One message Telegram Desktop displayed in an openable conversation.
+/// The message is read-only: this boundary contains neither credentials nor
+/// any operation capable of changing the Telegram account.
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TelegramDesktopMessage {
+    pub place_id: String,
+    pub message_id: String,
+    pub text: String,
+    pub time: i64,
+    pub yours: bool,
+}
+
+impl TelegramDesktopMessage {
+    pub fn new(
+        place_id: impl Into<String>,
+        message_id: impl Into<String>,
+        text: impl Into<String>,
+        time: i64,
+        yours: bool,
+    ) -> Self {
+        Self {
+            place_id: place_id.into(),
+            message_id: message_id.into(),
+            text: text.into(),
+            time,
+            yours,
+        }
+    }
 }
 
 impl InstagramBrowserMachine {
@@ -627,6 +610,115 @@ impl SharedConversationScrollablePlace for InstagramDirectMessagePagePlace {
     }
 }
 
+/// Create a consent-gated, one-screen-at-a-time Telegram Scrub viewport.
+pub fn telegram_desktop_chat_page_place_for_scrub(
+    owner_osl_user_id: &str,
+    account_id: &str,
+    place_id: &str,
+    desktop_machine: &TelegramDesktopMachine,
+    page_size: usize,
+) -> Result<TelegramDesktopChatPagePlace, String> {
+    validate_conversation_message_place_id(place_id)?;
+    if page_size == 0 {
+        return Err("Telegram message page size must be at least one".to_owned());
+    }
+    let place = desktop_machine
+        .places
+        .iter()
+        .find(|place| place.place_id == place_id)
+        .cloned()
+        .ok_or_else(|| "Telegram conversation place not found".to_owned())?;
+    let messages = read_telegram_desktop_shared_messages(
+        owner_osl_user_id,
+        account_id,
+        place_id,
+        desktop_machine,
+    )?;
+    Ok(TelegramDesktopChatPagePlace {
+        place,
+        messages,
+        current_page: 0,
+        page_size,
+        one_screen_scrolls: 0,
+        stop_when_reading_page: None,
+        stop_request_callback: None,
+    })
+}
+
+/// A bounded, read-only Telegram conversation viewport for the shared reader.
+pub struct TelegramDesktopChatPagePlace {
+    place: TelegramDesktopPlace,
+    messages: Vec<SharedConversationMessage>,
+    current_page: usize,
+    page_size: usize,
+    one_screen_scrolls: usize,
+    stop_when_reading_page: Option<usize>,
+    stop_request_callback: Option<Box<dyn Fn() -> Result<(), String>>>,
+}
+
+impl std::fmt::Debug for TelegramDesktopChatPagePlace {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TelegramDesktopChatPagePlace")
+            .field("place", &self.place)
+            .field("message_count", &self.messages.len())
+            .field("current_page", &self.current_page)
+            .field("page_size", &self.page_size)
+            .field("one_screen_scrolls", &self.one_screen_scrolls)
+            .finish()
+    }
+}
+
+impl TelegramDesktopChatPagePlace {
+    pub fn message_count(&self) -> usize {
+        self.messages.len()
+    }
+
+    pub fn one_screen_scroll_count(&self) -> usize {
+        self.one_screen_scrolls
+    }
+
+    fn current_page_number(&self) -> usize {
+        self.current_page.saturating_add(1)
+    }
+
+    pub fn request_stop_when_reading_page(
+        &mut self,
+        page_number: usize,
+        callback: impl Fn() -> Result<(), String> + 'static,
+    ) {
+        self.stop_when_reading_page = Some(page_number);
+        self.stop_request_callback = Some(Box::new(callback));
+    }
+}
+
+impl SharedConversationScrollablePlace for TelegramDesktopChatPagePlace {
+    fn read_current_screen(&self) -> Result<Vec<SharedPlaceMessage>, String> {
+        if self.stop_when_reading_page == Some(self.current_page_number()) {
+            if let Some(callback) = &self.stop_request_callback {
+                callback()?;
+            }
+        }
+        let start = self.current_page.saturating_mul(self.page_size);
+        let end = start
+            .saturating_add(self.page_size)
+            .min(self.messages.len());
+        Ok(self.messages[start..end]
+            .iter()
+            .map(|message| SharedPlaceMessage::new(&message.message_id, &message.text))
+            .collect())
+    }
+
+    fn scroll_one_screen(&mut self) -> Result<bool, String> {
+        let next_start = (self.current_page + 1).saturating_mul(self.page_size);
+        if next_start >= self.messages.len() {
+            return Ok(false);
+        }
+        self.current_page += 1;
+        self.one_screen_scrolls += 1;
+        Ok(true)
+    }
+}
+
 /// One message observed by the Instagram browser accessibility reader.
 #[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -656,8 +748,63 @@ impl InstagramBrowserMessage {
     }
 }
 
+/// The narrow, read-only record returned by the X browser machine. It holds
+/// observed place metadata and message rows, never browser session material.
+#[derive(Debug, Clone, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct XBrowserMachine {
+    pub places: Vec<XBrowserPlace>,
+    /// Read-only rows retain the provider's timestamp and authorship signal so
+    /// Scrub never infers ownership from text or provider return order.
+    pub messages: Vec<XBrowserMessage>,
+}
+
+impl XBrowserMachine {
+    pub fn new(places: impl IntoIterator<Item = XBrowserPlace>) -> Self {
+        Self {
+            places: places.into_iter().collect(),
+            messages: Vec::new(),
+        }
+    }
+
+    pub fn with_messages(mut self, messages: impl IntoIterator<Item = XBrowserMessage>) -> Self {
+        self.messages = messages.into_iter().collect();
+        self
+    }
+}
+
+/// One direct-message or own-public-post row observed by the X browser reader.
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct XBrowserMessage {
+    pub place_id: String,
+    pub message_id: String,
+    pub text: String,
+    pub time: i64,
+    pub yours: bool,
+}
+
+impl XBrowserMessage {
+    pub fn new(
+        place_id: impl Into<String>,
+        message_id: impl Into<String>,
+        text: impl Into<String>,
+        time: i64,
+        yours: bool,
+    ) -> Self {
+        Self {
+            place_id: place_id.into(),
+            message_id: message_id.into(),
+            text: text.into(),
+            time,
+            yours,
+        }
+    }
+}
+
 /// A normalized message returned by a consent-gated shared conversation
-/// reader.  `yours` is only the provider-observed authorship signal.
+/// reader. `yours` is the provider-observed authorship signal, never an
+/// inference from the message text or display position.
 #[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SharedConversationMessage {
@@ -819,6 +966,53 @@ pub struct ServiceRegistryState {
     next_id: AtomicU64,
 }
 
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScrubAccountDescriptor {
+    pub service_id: ServiceKind,
+    pub account_id: String,
+    pub account_label: String,
+    pub app_or_browser_label: String,
+}
+
+#[derive(Debug, Clone, Copy, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum DetectedAccountOpenChoiceKind {
+    WindowsApp,
+    Browser,
+}
+
+#[derive(Debug, Clone, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DetectedAccountOpenChoice {
+    pub kind: DetectedAccountOpenChoiceKind,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DetectedAccountDescriptor {
+    pub service_id: ServiceKind,
+    pub account_id: String,
+    pub account_label: String,
+    pub open_choices: Vec<DetectedAccountOpenChoice>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct DetectedAccountStoreRecord {
+    pub service_id: ServiceKind,
+    pub account_id: String,
+    pub account_label: String,
+    pub app_label: Option<String>,
+    pub browser_label: Option<String>,
+}
+
+pub trait DetectedAccountStore {
+    fn detected_accounts_for_owner(
+        &self,
+        owner_osl_user_id: &str,
+    ) -> Result<Vec<DetectedAccountStoreRecord>, String>;
+}
 #[derive(Default)]
 struct RegistryCache {
     loaded: bool,
@@ -858,6 +1052,21 @@ impl ServiceRegistryState {
         Ok(service_registry(&cache.accounts, owner_osl_user_id))
     }
 
+    pub fn list_scrub_accounts_for_owner(
+        &self,
+        owner_osl_user_id: &str,
+    ) -> Result<Vec<ScrubAccountDescriptor>, String> {
+        validate_owner_osl_user_id(owner_osl_user_id)?;
+        let cache = self.locked_cache()?;
+        Ok(scrub_accounts(&cache.accounts, owner_osl_user_id))
+    }
+
+    pub fn list_detected_accounts_with_open_choices(
+        &self,
+        owner_osl_user_id: &str,
+    ) -> Result<Vec<DetectedAccountDescriptor>, String> {
+        list_detected_accounts_with_open_choices(self, owner_osl_user_id)
+    }
     pub fn create_for_owner(
         &self,
         owner_osl_user_id: &str,
@@ -1029,11 +1238,48 @@ impl ServiceRegistryState {
     }
 }
 
+impl DetectedAccountStore for ServiceRegistryState {
+    fn detected_accounts_for_owner(
+        &self,
+        owner_osl_user_id: &str,
+    ) -> Result<Vec<DetectedAccountStoreRecord>, String> {
+        validate_owner_osl_user_id(owner_osl_user_id)?;
+        let cache = self.locked_cache()?;
+        Ok(cache
+            .accounts
+            .iter()
+            .filter(|account| account.owner_osl_user_id.as_deref() == Some(owner_osl_user_id))
+            .map(detected_account_store_record)
+            .collect())
+    }
+}
+
+pub fn list_detected_accounts_with_open_choices<S: DetectedAccountStore>(
+    store: &S,
+    owner_osl_user_id: &str,
+) -> Result<Vec<DetectedAccountDescriptor>, String> {
+    validate_owner_osl_user_id(owner_osl_user_id)?;
+    let mut accounts = store
+        .detected_accounts_for_owner(owner_osl_user_id)?
+        .into_iter()
+        .map(detected_account_descriptor)
+        .collect::<Vec<_>>();
+    accounts.sort_by(|left, right| {
+        left.account_label
+            .cmp(&right.account_label)
+            .then_with(|| left.account_id.cmp(&right.account_id))
+    });
+    Ok(accounts)
+}
+
 pub fn service_kind_from_id(service_id: &str) -> Option<ServiceKind> {
     Some(match service_id {
         "discord" => ServiceKind::Discord,
         "telegram" => ServiceKind::Telegram,
         "whatsapp" => ServiceKind::WhatsApp,
+        "instagram" => ServiceKind::Instagram,
+        "x" => ServiceKind::X,
+        "messenger" => ServiceKind::Messenger,
         "email" => ServiceKind::Email,
         "signal" => ServiceKind::Signal,
         _ => return None,
@@ -1049,6 +1295,35 @@ pub struct ServiceCapabilityFacts {
     pub opening: bool,
     pub real_two_person_protected_messaging: bool,
 }
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProtectedDeliveryProof {
+    pub service_id: ServiceKind,
+    pub protected_message_id: String,
+    pub sender_person_id: String,
+    pub recipient_person_id: String,
+    pub protected_message_received: bool,
+    pub received_by_real_other_person: bool,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ServiceReadyLabel {
+    Ready,
+}
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ServiceReadyDecision {
+    pub service_id: ServiceKind,
+    pub label: Option<ServiceReadyLabel>,
+    pub refusal: Option<String>,
+}
+
+pub const READY_REQUIRES_REAL_TWO_PERSON_CAPABILITY: &str =
+    "ready_requires_real_two_person_protected_messaging_capability";
+pub const READY_REQUIRES_MATCHING_DELIVERY_PROOF: &str = "ready_requires_matching_delivery_proof";
 
 #[derive(Debug, Clone, Copy, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1115,6 +1390,59 @@ pub fn service_capability_facts(service_id: &str) -> Option<ServiceCapabilityFac
     service_capability_facts_for_kind(service_id)
 }
 
+pub fn direct_service_ready_label(
+    service_id: &str,
+    delivery_proof: Option<&ProtectedDeliveryProof>,
+) -> Result<ServiceReadyLabel, &'static str> {
+    let facts =
+        service_capability_facts(service_id).ok_or(READY_REQUIRES_REAL_TWO_PERSON_CAPABILITY)?;
+    direct_service_ready_label_for_facts(facts, delivery_proof)
+}
+
+pub fn direct_service_ready_label_for_facts(
+    facts: ServiceCapabilityFacts,
+    delivery_proof: Option<&ProtectedDeliveryProof>,
+) -> Result<ServiceReadyLabel, &'static str> {
+    if !facts.real_two_person_protected_messaging {
+        return Err(READY_REQUIRES_REAL_TWO_PERSON_CAPABILITY);
+    }
+    let Some(delivery_proof) = delivery_proof else {
+        return Err(READY_REQUIRES_MATCHING_DELIVERY_PROOF);
+    };
+    if !delivery_proof_matches_ready_rule(facts.service_id, delivery_proof) {
+        return Err(READY_REQUIRES_MATCHING_DELIVERY_PROOF);
+    }
+    Ok(ServiceReadyLabel::Ready)
+}
+
+pub fn ready_decisions_from_service_proof_records(
+    proof_records: &[ProtectedDeliveryProof],
+) -> Vec<ServiceReadyDecision> {
+    service_descriptors()
+        .into_iter()
+        .filter(|descriptor| descriptor.launch_state == ServiceLaunchState::Available)
+        .filter_map(|descriptor| {
+            let facts = service_capability_facts_for_kind(descriptor.id)?;
+            let matching_proof = proof_records
+                .iter()
+                .find(|proof| delivery_proof_matches_ready_rule(descriptor.id, proof));
+            let decision = direct_service_ready_label_for_facts(facts, matching_proof);
+            Some(match decision {
+                Ok(label) => ServiceReadyDecision {
+                    service_id: descriptor.id,
+                    label: Some(label),
+                    refusal: None,
+                },
+                Err(refusal) => ServiceReadyDecision {
+                    service_id: descriptor.id,
+                    label: None,
+                    refusal: Some(refusal.to_owned()),
+                },
+            })
+        })
+        .collect()
+}
+
 pub fn installed_service_screen_trees() -> Vec<ServiceScreenTree> {
     installed_service_capability_facts()
         .into_iter()
@@ -1157,9 +1485,14 @@ pub fn drawn_controls_without_capability_record(
         .count()
 }
 
-pub fn generated_tile_label(facts: ServiceCapabilityFacts) -> &'static str {
-    if facts.real_two_person_protected_messaging || (facts.placing && facts.reading) {
+pub fn generated_tile_label(
+    facts: ServiceCapabilityFacts,
+    delivery_proof: Option<&ProtectedDeliveryProof>,
+) -> &'static str {
+    if direct_service_ready_label_for_facts(facts, delivery_proof).is_ok() {
         "Ready"
+    } else if facts.placing && facts.reading {
+        "Placing and reading"
     } else if facts.placing {
         "Placing only"
     } else if facts.reading {
@@ -1320,10 +1653,30 @@ pub fn read_shared_conversation_places(
         .collect()
 }
 
-/// Read the Scrub places presently exposed by the reviewed Instagram browser
-/// surface.  The shared reader performs the account-specific risk-agreement
-/// check before it maps any provider data, so an unticked account observes no
-/// places at all.
+/// Map currently observed X browser places through the shared account-specific
+/// reader. The risk-agreement check happens before any browser place is
+/// released, so an unticked account sees no provider data.
+pub fn read_x_shared_places(
+    owner_osl_user_id: &str,
+    account_id: &str,
+    browser_machine: &XBrowserMachine,
+) -> Result<Vec<SharedConversationPlace>, String> {
+    let places = browser_machine.places.iter().map(|place| match place.kind {
+        XBrowserPlaceKind::DirectMessage => {
+            ConversationPlaceCandidate::direct_message(&place.place_id, &place.label)
+        }
+        XBrowserPlaceKind::GroupDirectMessage => {
+            ConversationPlaceCandidate::group_chat(&place.place_id, &place.label)
+        }
+        XBrowserPlaceKind::OwnPostOrReply => {
+            ConversationPlaceCandidate::public_post(&place.place_id, &place.label)
+        }
+    });
+    read_shared_conversation_places(owner_osl_user_id, "x", account_id, places)
+}
+
+/// Map currently observed Instagram browser places through the shared,
+/// account-specific risk-agreement gate.
 pub fn read_instagram_shared_places(
     owner_osl_user_id: &str,
     account_id: &str,
@@ -1346,11 +1699,124 @@ pub fn read_instagram_shared_places(
     read_shared_conversation_places(owner_osl_user_id, "instagram", account_id, places)
 }
 
-/// Read messages from one Instagram place already selected by the owner.
+/// Read messages from one owner-selected X direct-message or own-public-post
+/// place. The account-level risk agreement is checked before filtering or
+/// releasing rows, so an unticked account remains silent.
+pub fn read_x_shared_messages(
+    owner_osl_user_id: &str,
+    account_id: &str,
+    place_id: &str,
+    browser_machine: &XBrowserMachine,
+) -> Result<Vec<SharedConversationMessage>, String> {
+    validate_owner_osl_user_id(owner_osl_user_id)?;
+    validate_messaging_risk_account_id(account_id)?;
+    validate_conversation_message_place_id(place_id)?;
+    if read_messaging_risk_agreement(owner_osl_user_id, "x", account_id)?.is_none() {
+        return Ok(Vec::new());
+    }
+
+    let mut messages = browser_machine
+        .messages
+        .iter()
+        .filter(|message| message.place_id == place_id)
+        .map(|message| {
+            validate_x_browser_message(message)?;
+            Ok(SharedConversationMessage {
+                service_id: "x".to_owned(),
+                account_id: account_id.to_owned(),
+                place_id: message.place_id.clone(),
+                message_id: message.message_id.clone(),
+                text: message.text.clone(),
+                time: message.time,
+                yours: message.yours,
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    messages.sort_by(|left, right| {
+        left.time
+            .cmp(&right.time)
+            .then_with(|| left.message_id.cmp(&right.message_id))
+    });
+    Ok(messages)
+}
+
+/// Read the direct chats, groups, and channels presently openable in the
+/// signed-in Telegram Desktop account.  The shared reader checks the selected
+/// account's messaging-risk agreement before mapping desktop observations, so
+/// an unticked account cannot learn even place labels or ids.
 ///
-/// The account-level risk agreement is checked before filtering or returning
-/// browser rows.  This keeps an unticked account silent, including when the
-/// caller knows a valid stable place id.
+/// Telegram broadcast channels have no Discord-like server parent.  They are
+/// therefore returned as `channel` with no `server` metadata rather than with
+/// invented hierarchy data.
+pub fn read_telegram_desktop_shared_places(
+    owner_osl_user_id: &str,
+    account_id: &str,
+    desktop_machine: &TelegramDesktopMachine,
+) -> Result<Vec<SharedConversationPlace>, String> {
+    let places = desktop_machine.places.iter().map(|place| match place.kind {
+        TelegramDesktopPlaceKind::DirectChat => {
+            ConversationPlaceCandidate::direct_message(&place.place_id, &place.label)
+        }
+        TelegramDesktopPlaceKind::Group => {
+            ConversationPlaceCandidate::group(&place.place_id, &place.label)
+        }
+        TelegramDesktopPlaceKind::Channel => ConversationPlaceCandidate {
+            place_id: place.place_id.clone(),
+            label: place.label.clone(),
+            place_kind: ConversationPlaceKind::Channel,
+            server: None,
+            channel: None,
+        },
+    });
+    read_shared_conversation_places(owner_osl_user_id, "telegram", account_id, places)
+}
+
+/// Read messages from one owner-selected Telegram Desktop conversation.
+///
+/// The account-level risk agreement is checked before any provider rows are
+/// filtered or returned. A place that is not present in the observed desktop
+/// rows therefore remains silent, while returned rows are chronologically
+/// ordered using Telegram's timestamp and stable message id as the tie-break.
+pub fn read_telegram_desktop_shared_messages(
+    owner_osl_user_id: &str,
+    account_id: &str,
+    place_id: &str,
+    desktop_machine: &TelegramDesktopMachine,
+) -> Result<Vec<SharedConversationMessage>, String> {
+    validate_owner_osl_user_id(owner_osl_user_id)?;
+    validate_messaging_risk_account_id(account_id)?;
+    validate_conversation_message_place_id(place_id)?;
+    if read_messaging_risk_agreement(owner_osl_user_id, "telegram", account_id)?.is_none() {
+        return Ok(Vec::new());
+    }
+
+    let mut messages = desktop_machine
+        .messages
+        .iter()
+        .filter(|message| message.place_id == place_id)
+        .map(|message| {
+            validate_telegram_desktop_message(message)?;
+            Ok(SharedConversationMessage {
+                service_id: "telegram".to_owned(),
+                account_id: account_id.to_owned(),
+                place_id: message.place_id.clone(),
+                message_id: message.message_id.clone(),
+                text: message.text.clone(),
+                time: message.time,
+                yours: message.yours,
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    messages.sort_by(|left, right| {
+        left.time
+            .cmp(&right.time)
+            .then_with(|| left.message_id.cmp(&right.message_id))
+    });
+    Ok(messages)
+}
+
+/// Read messages from one Instagram place already selected by the owner.
+/// The account-level risk agreement is checked before browser rows are read.
 pub fn read_instagram_shared_messages(
     owner_osl_user_id: &str,
     account_id: &str,
@@ -1386,7 +1852,34 @@ pub fn read_instagram_shared_messages(
             .cmp(&right.time)
             .then_with(|| left.message_id.cmp(&right.message_id))
     });
-    Ok(messages)
+  Ok(messages)
+}
+
+/// Fill the shared conversation reader with the reviewed rows observed on a
+/// Messenger browser surface.  The acknowledgement gate stays in
+/// [`read_shared_conversation_places`], so an unticked Messenger account
+/// returns no places before its browser observations are disclosed.
+pub fn read_messenger_conversation_places(
+    owner_osl_user_id: &str,
+    account_id: &str,
+    browser_rows: impl IntoIterator<Item = MessengerBrowserConversation>,
+) -> Result<Vec<SharedConversationPlace>, String> {
+    read_shared_conversation_places(
+        owner_osl_user_id,
+        "messenger",
+        account_id,
+        browser_rows.into_iter().map(|row| match row.kind {
+            MessengerPlaceKind::DirectChat => {
+                ConversationPlaceCandidate::direct_message(row.conversation_id, row.label)
+            }
+            MessengerPlaceKind::GroupChat => {
+                ConversationPlaceCandidate::group(row.conversation_id, row.label)
+            }
+            MessengerPlaceKind::Community => {
+                ConversationPlaceCandidate::community(row.conversation_id, row.label)
+            }
+        }),
+  )
 }
 
 pub fn read_shared_mailbox_folders(
@@ -1480,6 +1973,19 @@ pub fn open_shared_mailbox_message(
         ownership,
         body: message.body.clone(),
     })
+}
+
+fn delivery_proof_matches_ready_rule(
+    service_id: ServiceKind,
+    proof: &ProtectedDeliveryProof,
+) -> bool {
+    proof.service_id == service_id
+        && proof.protected_message_received
+        && proof.received_by_real_other_person
+        && !proof.protected_message_id.trim().is_empty()
+        && !proof.sender_person_id.trim().is_empty()
+        && !proof.recipient_person_id.trim().is_empty()
+        && proof.sender_person_id != proof.recipient_person_id
 }
 
 fn service_capability_facts_for_kind(service_id: ServiceKind) -> Option<ServiceCapabilityFacts> {
@@ -1669,16 +2175,15 @@ fn validate_conversation_place(place: &ConversationPlaceCandidate) -> Result<(),
     match place.place_kind {
         ConversationPlaceKind::DirectMessage
         | ConversationPlaceKind::Group
-        | ConversationPlaceKind::GroupChat
+      | ConversationPlaceKind::GroupChat
+        | ConversationPlaceKind::NoteToSelf
+        | ConversationPlaceKind::Community
+        | ConversationPlaceKind::BroadcastList
         | ConversationPlaceKind::PublicPost
         | ConversationPlaceKind::Comment => Ok(()),
-        ConversationPlaceKind::Channel => {
-            if place.server.is_some() {
-                Ok(())
-            } else {
-                Err("conversation channel place is missing its server".to_owned())
-            }
-        }
+        // A server parent is present for Discord-like channels, but Telegram
+      // broadcast channels are first-class places without that hierarchy.
+      ConversationPlaceKind::Channel => Ok(()),
         ConversationPlaceKind::Thread => {
             if place.channel.is_some() {
                 Ok(())
@@ -1713,6 +2218,21 @@ fn validate_conversation_message_place_id(value: &str) -> Result<(), String> {
     validate_conversation_place_text(value, "conversation message place id")
 }
 
+fn validate_x_browser_message(message: &XBrowserMessage) -> Result<(), String> {
+    validate_conversation_message_place_id(&message.place_id)?;
+    validate_conversation_place_text(&message.message_id, "X message id")?;
+    if message.text.trim() != message.text
+        || message.text.len() > 8_192
+        || message
+            .text
+            .chars()
+            .any(|character| character.is_control() && character != '\n')
+    {
+        return Err("X message text is invalid".to_owned());
+    }
+    Ok(())
+}
+
 fn validate_instagram_browser_message(message: &InstagramBrowserMessage) -> Result<(), String> {
     validate_conversation_message_place_id(&message.place_id)?;
     validate_conversation_place_text(&message.message_id, "Instagram message id")?;
@@ -1724,6 +2244,21 @@ fn validate_instagram_browser_message(message: &InstagramBrowserMessage) -> Resu
             .any(|character| character.is_control() && character != '\n')
     {
         return Err("Instagram message text is invalid".to_owned());
+    }
+    Ok(())
+}
+
+fn validate_telegram_desktop_message(message: &TelegramDesktopMessage) -> Result<(), String> {
+    validate_conversation_message_place_id(&message.place_id)?;
+    validate_conversation_place_text(&message.message_id, "Telegram message id")?;
+    if message.text.trim() != message.text
+        || message.text.len() > 8_192
+        || message
+            .text
+            .chars()
+            .any(|character| character.is_control() && character != '\n')
+    {
+        return Err("Telegram message text is invalid".to_owned());
     }
     Ok(())
 }
@@ -1795,65 +2330,6 @@ fn mailbox_message_ownership(
         Ok(SharedMailboxOwnership::Yours)
     } else {
         Ok(SharedMailboxOwnership::NotYours)
-    }
-}
-
-/// Produce the conversation name from the two participants and the logical
-/// subject. Address order is canonical, and mail reply prefixes are discarded,
-/// so either participant computes the same name for `subject` and `Re:
-/// subject`. A changed reply subject without a stable provider thread id cannot
-/// be safely joined; this boundary intentionally does not guess one.
-///
-/// Ported verbatim from TASK 4120 (`11f5444b9`). `shipping_icloud_mailbox_receive.rs`
-/// (TASK 4344, already on this lane) imports it, but TASK 4120 landed on a
-/// different lane, so this crate did not compile here at all. The body is
-/// unchanged so the two lanes cannot compute different thread names for the
-/// same conversation.
-pub fn shared_mailbox_thread_name(
-    first_address: &str,
-    second_address: &str,
-    subject: &str,
-) -> Result<String, String> {
-    use sha2::{Digest, Sha256};
-
-    validate_mailbox_text(first_address, "mailbox first address", 254)?;
-    validate_mailbox_text(second_address, "mailbox second address", 254)?;
-    let normalized_subject = normalize_shared_mailbox_thread_subject(subject)?;
-
-    let mut addresses = [
-        first_address.to_ascii_lowercase(),
-        second_address.to_ascii_lowercase(),
-    ];
-    addresses.sort();
-    let mut hasher = Sha256::new();
-    hasher.update(b"osl.shared-mailbox.thread-name.v1\0");
-    for value in [
-        addresses[0].as_str(),
-        addresses[1].as_str(),
-        normalized_subject.as_str(),
-    ] {
-        hasher.update((value.len() as u64).to_be_bytes());
-        hasher.update(value.as_bytes());
-    }
-    Ok(format!("shared-mail-{:x}", hasher.finalize()))
-}
-
-fn normalize_shared_mailbox_thread_subject(subject: &str) -> Result<String, String> {
-    validate_mailbox_text(subject, "mailbox message subject", 512)?;
-    let mut normalized = subject.trim();
-    while normalized
-        .get(..3)
-        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("re:"))
-    {
-        normalized = normalized
-            .get(3..)
-            .expect("the checked ASCII reply prefix ends on a character boundary")
-            .trim_start();
-    }
-    if normalized.is_empty() {
-        Err("mailbox message subject is invalid".to_owned())
-    } else {
-        Ok(normalized.to_ascii_lowercase())
     }
 }
 
@@ -2064,26 +2540,118 @@ fn account_dto(account: &AccountRecord) -> LinkedAccountDemo {
     }
 }
 
+fn scrub_account_dto(account: &AccountRecord) -> ScrubAccountDescriptor {
+    ScrubAccountDescriptor {
+        service_id: account.service_id,
+        account_id: account.id.clone(),
+        account_label: account.label.clone(),
+        app_or_browser_label: scrub_app_or_browser_label(account).to_owned(),
+    }
+}
+
+fn scrub_app_or_browser_label(account: &AccountRecord) -> &'static str {
+    match (account.service_id, account.provider) {
+        (ServiceKind::Email, Some(EmailProvider::Gmail)) => "Gmail",
+        (ServiceKind::Email, Some(EmailProvider::Outlook)) => "Outlook",
+        (ServiceKind::Email, Some(EmailProvider::Proton)) => "Proton Mail",
+        (ServiceKind::Email, Some(EmailProvider::Tuta)) => "Tuta Mail",
+        (ServiceKind::Email, Some(EmailProvider::Yahoo)) => "Yahoo Mail",
+        (ServiceKind::Email, Some(EmailProvider::Aol)) => "AOL Mail",
+        (ServiceKind::Email, Some(EmailProvider::Gmx)) => "GMX Mail",
+        (ServiceKind::Email, Some(EmailProvider::Maildotcom)) => "mail.com",
+        (ServiceKind::Email, Some(EmailProvider::Icloud)) => "iCloud Mail",
+        _ => service_descriptor(account.service_id).display_name,
+    }
+}
+
+fn scrub_accounts(
+    accounts: &[AccountRecord],
+    owner_osl_user_id: &str,
+) -> Vec<ScrubAccountDescriptor> {
+    let mut scrub_accounts = accounts
+        .iter()
+        .filter(|account| account.owner_osl_user_id.as_deref() == Some(owner_osl_user_id))
+        .map(scrub_account_dto)
+        .collect::<Vec<_>>();
+    scrub_accounts.sort_by(|left, right| {
+        left.app_or_browser_label
+            .cmp(&right.app_or_browser_label)
+            .then_with(|| left.account_label.cmp(&right.account_label))
+            .then_with(|| left.account_id.cmp(&right.account_id))
+    });
+    scrub_accounts
+}
+
+fn detected_account_store_record(account: &AccountRecord) -> DetectedAccountStoreRecord {
+    let app_label = match account.service_id {
+        ServiceKind::Email => None,
+        _ => Some(
+            service_descriptor(account.service_id)
+                .display_name
+                .to_owned(),
+        ),
+    };
+    let browser_label = match account.service_id {
+        ServiceKind::Email => Some(scrub_app_or_browser_label(account).to_owned()),
+        _ => None,
+    };
+    DetectedAccountStoreRecord {
+        service_id: account.service_id,
+        account_id: account.id.clone(),
+        account_label: account.label.clone(),
+        app_label,
+        browser_label,
+    }
+}
+
+fn detected_account_descriptor(record: DetectedAccountStoreRecord) -> DetectedAccountDescriptor {
+    let mut open_choices = Vec::new();
+    if let Some(label) = record.app_label {
+        open_choices.push(DetectedAccountOpenChoice {
+            kind: DetectedAccountOpenChoiceKind::WindowsApp,
+            label,
+        });
+    }
+    if let Some(label) = record.browser_label {
+        open_choices.push(DetectedAccountOpenChoice {
+            kind: DetectedAccountOpenChoiceKind::Browser,
+            label,
+        });
+    }
+    open_choices.sort();
+    DetectedAccountDescriptor {
+        service_id: record.service_id,
+        account_id: record.account_id,
+        account_label: record.account_label,
+        open_choices,
+    }
+}
 fn service_registry(accounts: &[AccountRecord], owner_osl_user_id: &str) -> Vec<LinkedServiceDemo> {
     service_descriptors()
         .into_iter()
-        .map(|descriptor| LinkedServiceDemo {
-            id: descriptor.id,
-            display_name: descriptor.display_name.to_string(),
-            sidebar_glyph: descriptor.sidebar_glyph.to_string(),
-            sidebar_order: descriptor.sidebar_order,
-            category: descriptor.category,
-            launch_state: descriptor.launch_state,
-            supports_native_preview: descriptor.launch_state == ServiceLaunchState::Available,
-            supports_protected_preview: descriptor.launch_state == ServiceLaunchState::Available,
-            accounts: accounts
-                .iter()
-                .filter(|account| {
-                    account.service_id == descriptor.id
-                        && account.owner_osl_user_id.as_deref() == Some(owner_osl_user_id)
-                })
-                .map(account_dto)
-                .collect(),
+        .map(|descriptor| {
+            let capability_facts = service_capability_facts_for_kind(descriptor.id)
+                .expect("every linked-service descriptor has capability facts");
+            LinkedServiceDemo {
+                id: descriptor.id,
+                display_name: descriptor.display_name.to_string(),
+                sidebar_glyph: descriptor.sidebar_glyph.to_string(),
+                sidebar_order: descriptor.sidebar_order,
+                category: descriptor.category,
+                launch_state: descriptor.launch_state,
+                generated_label: generated_tile_label(capability_facts, None).to_owned(),
+                supports_native_preview: descriptor.launch_state == ServiceLaunchState::Available,
+                supports_protected_preview: descriptor.launch_state
+                    == ServiceLaunchState::Available,
+                accounts: accounts
+                    .iter()
+                    .filter(|account| {
+                        account.service_id == descriptor.id
+                            && account.owner_osl_user_id.as_deref() == Some(owner_osl_user_id)
+                    })
+                    .map(account_dto)
+                    .collect(),
+            }
         })
         .collect()
 }
@@ -2105,9 +2673,9 @@ pub fn service_descriptor(id: ServiceKind) -> ServiceDescriptor {
         .expect("every ServiceKind has a descriptor")
 }
 
-fn service_descriptors() -> [ServiceDescriptor; 5] {
+fn service_descriptors() -> [ServiceDescriptor; 8] {
     use ServiceCategory::Consumer;
-    use ServiceLaunchState::Available;
+    use ServiceLaunchState::{Available, ComingSoon};
     [
         descriptor(
             ServiceKind::Discord,
@@ -2132,6 +2700,23 @@ fn service_descriptors() -> [ServiceDescriptor; 5] {
             25,
             Consumer,
             Available,
+        ),
+        descriptor(
+            ServiceKind::Instagram,
+            "Instagram",
+            "IG",
+            50,
+            Consumer,
+            ComingSoon,
+        ),
+        descriptor(ServiceKind::X, "X", "X", 60, Consumer, ComingSoon),
+        descriptor(
+            ServiceKind::Messenger,
+            "Facebook Messenger",
+            "MS",
+            65,
+            Consumer,
+            ComingSoon,
         ),
         descriptor(ServiceKind::Email, "Email", "EM", 70, Consumer, Available),
         // Signal has no first-party web messenger. The service is available
@@ -2177,6 +2762,188 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ))
+    }
+
+    struct FakeDetectedAccountStore {
+        records_by_owner: Vec<(&'static str, Vec<DetectedAccountStoreRecord>)>,
+    }
+
+    impl DetectedAccountStore for FakeDetectedAccountStore {
+        fn detected_accounts_for_owner(
+            &self,
+            owner_osl_user_id: &str,
+        ) -> Result<Vec<DetectedAccountStoreRecord>, String> {
+            Ok(self
+                .records_by_owner
+                .iter()
+                .find_map(|(owner, records)| (*owner == owner_osl_user_id).then(|| records.clone()))
+                .unwrap_or_default())
+        }
+    }
+
+    fn choice_kind_label(kind: DetectedAccountOpenChoiceKind) -> &'static str {
+        match kind {
+            DetectedAccountOpenChoiceKind::WindowsApp => "Windows app",
+            DetectedAccountOpenChoiceKind::Browser => "browser",
+        }
+    }
+
+    #[test]
+    fn detected_account_reader_returns_each_fake_account_and_browser_versus_app_choices() {
+        let store = FakeDetectedAccountStore {
+            records_by_owner: vec![(
+                OWNER_A,
+                vec![
+                    DetectedAccountStoreRecord {
+                        service_id: ServiceKind::Email,
+                        account_id: "browser-gmail-0314".to_owned(),
+                        account_label: "Work Gmail".to_owned(),
+                        app_label: None,
+                        browser_label: Some("Chrome".to_owned()),
+                    },
+                    DetectedAccountStoreRecord {
+                        service_id: ServiceKind::Email,
+                        account_id: "hybrid-outlook-0314".to_owned(),
+                        account_label: "Work Outlook".to_owned(),
+                        app_label: Some("Outlook app".to_owned()),
+                        browser_label: Some("Edge".to_owned()),
+                    },
+                    DetectedAccountStoreRecord {
+                        service_id: ServiceKind::Discord,
+                        account_id: "windows-discord-0314".to_owned(),
+                        account_label: "Personal Discord".to_owned(),
+                        app_label: Some("Discord app".to_owned()),
+                        browser_label: None,
+                    },
+                ],
+            )],
+        };
+
+        let accounts = list_detected_accounts_with_open_choices(&store, OWNER_A).unwrap();
+        let missing_owner_accounts =
+            list_detected_accounts_with_open_choices(&store, OWNER_B).unwrap();
+        let produced_choices = accounts
+            .iter()
+            .flat_map(|account| {
+                account.open_choices.iter().map(move |choice| {
+                    format!(
+                        "{}:{}={}",
+                        account.account_label,
+                        choice_kind_label(choice.kind),
+                        choice.label
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+        let row_open_labels = accounts
+            .iter()
+            .map(|account| {
+                let choices = account
+                    .open_choices
+                    .iter()
+                    .map(|choice| match choice.kind {
+                        DetectedAccountOpenChoiceKind::WindowsApp => "Windows app".to_owned(),
+                        DetectedAccountOpenChoiceKind::Browser => choice.label.clone(),
+                    })
+                    .collect::<Vec<_>>()
+                    .join("+");
+                format!("{}:{}", account.account_label, choices)
+            })
+            .collect::<Vec<_>>();
+        let no_windows_app = accounts
+            .iter()
+            .find(|account| account.account_id == "browser-gmail-0314")
+            .expect("fake browser-only account should be present");
+
+        println!(
+            "detected_account_reader rows={} choices={} browser_versus_app_choices={}",
+            accounts.len(),
+            produced_choices.len(),
+            produced_choices.join("|")
+        );
+        println!(
+            "detected_account_reader_row_labels={}",
+            row_open_labels.join("|")
+        );
+        println!(
+            "detected_account_reader_no_windows_app_choices={}",
+            no_windows_app
+                .open_choices
+                .iter()
+                .map(|choice| format!("{}={}", choice_kind_label(choice.kind), choice.label))
+                .collect::<Vec<_>>()
+                .join("|")
+        );
+        println!(
+            "detected_account_reader_missing_owner_rows={}",
+            missing_owner_accounts.len()
+        );
+        println!(
+            "detected_account_reader_json={}",
+            serde_json::to_string(&accounts).unwrap()
+        );
+
+        assert_eq!(
+            accounts,
+            vec![
+                DetectedAccountDescriptor {
+                    service_id: ServiceKind::Discord,
+                    account_id: "windows-discord-0314".to_owned(),
+                    account_label: "Personal Discord".to_owned(),
+                    open_choices: vec![DetectedAccountOpenChoice {
+                        kind: DetectedAccountOpenChoiceKind::WindowsApp,
+                        label: "Discord app".to_owned(),
+                    }],
+                },
+                DetectedAccountDescriptor {
+                    service_id: ServiceKind::Email,
+                    account_id: "browser-gmail-0314".to_owned(),
+                    account_label: "Work Gmail".to_owned(),
+                    open_choices: vec![DetectedAccountOpenChoice {
+                        kind: DetectedAccountOpenChoiceKind::Browser,
+                        label: "Chrome".to_owned(),
+                    }],
+                },
+                DetectedAccountDescriptor {
+                    service_id: ServiceKind::Email,
+                    account_id: "hybrid-outlook-0314".to_owned(),
+                    account_label: "Work Outlook".to_owned(),
+                    open_choices: vec![
+                        DetectedAccountOpenChoice {
+                            kind: DetectedAccountOpenChoiceKind::WindowsApp,
+                            label: "Outlook app".to_owned(),
+                        },
+                        DetectedAccountOpenChoice {
+                            kind: DetectedAccountOpenChoiceKind::Browser,
+                            label: "Edge".to_owned(),
+                        },
+                    ],
+                },
+            ],
+            "the detected-account reader must return every fake-store account with its browser-versus-app open choices"
+        );
+        assert_eq!(
+            row_open_labels,
+            vec![
+                "Personal Discord:Windows app".to_owned(),
+                "Work Gmail:Chrome".to_owned(),
+                "Work Outlook:Windows app+Edge".to_owned(),
+            ],
+            "each row must name either the Windows app choice or a named browser choice"
+        );
+        assert_eq!(
+            no_windows_app.open_choices,
+            vec![DetectedAccountOpenChoice {
+                kind: DetectedAccountOpenChoiceKind::Browser,
+                label: "Chrome".to_owned(),
+            }],
+            "an account with no Windows app must offer the browser choice only"
+        );
+        assert_eq!(
+            missing_owner_accounts,
+            Vec::<DetectedAccountDescriptor>::new(),
+            "an account owner the fake store does not hold must return nothing"
+        );
     }
 
     #[test]

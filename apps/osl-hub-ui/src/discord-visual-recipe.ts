@@ -93,6 +93,9 @@ interface DiscordVisualThemeTokens {
   colorScheme: "dark" | "light";
 }
 
+// DELIBERATELY NOT OSL design tokens (osl-tokens.ts): these are Discord's own
+// theme-pack colours, reproduced so OSL's protected surfaces match the carrier
+// exactly. Repointing them to the OSL palette would defeat the recipe.
 const themeTokens: Readonly<Record<DiscordVisualThemePack, DiscordVisualThemeTokens>> = {
   dark: {
     background: "#313338",

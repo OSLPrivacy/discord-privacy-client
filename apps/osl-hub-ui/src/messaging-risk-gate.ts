@@ -1,0 +1,240 @@
+import {
+  MESSAGING_RISK_BACK_STEP,
+  MESSAGING_RISK_STEP,
+  continueFromMessagingRisk,
+  initialMessagingRiskState,
+  messagingRiskPageMarkup,
+  toggleMessagingRiskAgreement,
+  type MessagingRiskState,
+} from "./messaging-risk-page";
+
+/**
+ * TASK 3113 -- the risk page (TASK 3112) in front of the first thing OSL is
+ * asked to do in a service.
+ *
+ * The native send path already refuses an unagreed service (TASK 3110), and
+ * the agreement is stored against the service *and* the signed-in service
+ * account (TASK 3111). This gate is the renderer half: before OSL is asked to
+ * act, it reads that stored agreement for the account the action is for, and
+ * opens the risk page only when the account has not agreed. Agreeing writes
+ * through the real `agree_messaging_service_risk` command, so the answer
+ * outlives the window: a second action for the same account -- in this gate or
+ * in a gate built after a restart -- opens nothing, while a different account
+ * in the same service is asked again.
+ */
+
+/** The two real hub commands this gate is allowed to call. */
+export const READ_MESSAGING_RISK_AGREEMENT_COMMAND = "read_messaging_service_risk_agreement";
+export const AGREE_MESSAGING_RISK_COMMAND = "agree_messaging_service_risk";
+
+export type MessagingRiskCommand =
+  | typeof READ_MESSAGING_RISK_AGREEMENT_COMMAND
+  | typeof AGREE_MESSAGING_RISK_COMMAND;
+
+/** What `read_messaging_service_risk_agreement` returns for one account. */
+export interface MessagingRiskAgreementRead {
+  readonly serviceId: string;
+  readonly accountId: string;
+  readonly agreed: boolean;
+  readonly agreedAt: number | null;
+  readonly wording: readonly string[];
+}
+
+export type MessagingRiskGateInvoke = (
+  command: MessagingRiskCommand,
+  payload: { serviceId: string; accountId: string },
+) => Promise<unknown>;
+
+export interface MessagingRiskBackend {
+  readAgreement(serviceId: string, accountId: string): Promise<MessagingRiskAgreementRead>;
+  agree(serviceId: string, accountId: string): Promise<void>;
+}
+
+/** Binds the gate to the two registered hub commands and nothing else. */
+export function messagingRiskBackend(invoke: MessagingRiskGateInvoke): MessagingRiskBackend {
+  return {
+    async readAgreement(serviceId, accountId) {
+      const read = (await invoke(READ_MESSAGING_RISK_AGREEMENT_COMMAND, {
+        serviceId,
+        accountId,
+      })) as MessagingRiskAgreementRead;
+      return read;
+    },
+    async agree(serviceId, accountId) {
+      await invoke(AGREE_MESSAGING_RISK_COMMAND, { serviceId, accountId });
+    },
+  };
+}
+
+/** One thing OSL has been asked to do inside a service, for one account. */
+export interface ServiceActionRequest {
+  readonly serviceId: string;
+  readonly serviceName: string;
+  readonly accountId: string;
+  /** What was asked for: "send", "connect", "scan"... Every kind is gated. */
+  readonly action: string;
+}
+
+export type ServiceActionResult =
+  | { readonly outcome: "acted"; readonly serviceId: string; readonly accountId: string; readonly action: string }
+  | {
+      readonly outcome: "risk-page-opened";
+      readonly step: typeof MESSAGING_RISK_STEP;
+      readonly serviceId: string;
+      readonly accountId: string;
+      readonly action: string;
+    }
+  | {
+      readonly outcome: "risk-page-already-open";
+      readonly step: typeof MESSAGING_RISK_STEP;
+      readonly serviceId: string;
+      readonly accountId: string;
+      readonly action: string;
+    }
+  | {
+      readonly outcome: "refused";
+      readonly step: typeof MESSAGING_RISK_STEP;
+      readonly reason: "risk-not-agreed" | "no-action-held";
+    };
+
+export interface MessagingRiskGate {
+  /** Ask OSL to act. Opens the risk page first if this account has not agreed. */
+  requestServiceAction(request: ServiceActionRequest): Promise<ServiceActionResult>;
+  /** The open risk page's markup, or null when no page is open. */
+  openRiskPageMarkup(): string | null;
+  /** The action being held behind an open risk page, if any. */
+  heldAction(): ServiceActionRequest | null;
+  /** The tick box on the open page. */
+  toggleRiskAgreement(): void;
+  /** Continue: saves the agreement for that account, then does what was asked. */
+  continueFromRiskPage(): Promise<ServiceActionResult>;
+  /** Back: closes the page, does nothing, agrees to nothing. */
+  backFromRiskPage(): typeof MESSAGING_RISK_BACK_STEP;
+  /** How many times the page has been opened for this service account. */
+  riskPageOpenCount(serviceId: string, accountId: string): number;
+  /** How many times the page has been opened at all. */
+  totalRiskPageOpens(): number;
+}
+
+interface OpenRiskPage {
+  readonly request: ServiceActionRequest;
+  state: MessagingRiskState;
+}
+
+function accountKey(serviceId: string, accountId: string): string {
+  return `${serviceId}\u0000${accountId}`;
+}
+
+export function createMessagingRiskGate(options: {
+  backend: MessagingRiskBackend;
+  /** What OSL was asked to do; only ever called for an agreed account. */
+  act: (request: ServiceActionRequest) => Promise<void>;
+}): MessagingRiskGate {
+  const { backend, act } = options;
+  const opens = new Map<string, number>();
+  const agreedThisSession = new Set<string>();
+  let open: OpenRiskPage | null = null;
+
+  function countOpen(request: ServiceActionRequest): void {
+    const key = accountKey(request.serviceId, request.accountId);
+    opens.set(key, (opens.get(key) ?? 0) + 1);
+  }
+
+  async function hasAgreed(request: ServiceActionRequest): Promise<boolean> {
+    const key = accountKey(request.serviceId, request.accountId);
+    if (agreedThisSession.has(key)) return true;
+    const read = await backend.readAgreement(request.serviceId, request.accountId);
+    const agreed = read.agreed === true
+      && read.serviceId === request.serviceId
+      && read.accountId === request.accountId;
+    if (agreed) agreedThisSession.add(key);
+    return agreed;
+  }
+
+  async function performAction(request: ServiceActionRequest): Promise<ServiceActionResult> {
+    await act(request);
+    return {
+      outcome: "acted",
+      serviceId: request.serviceId,
+      accountId: request.accountId,
+      action: request.action,
+    };
+  }
+
+  return {
+    async requestServiceAction(request) {
+      if (await hasAgreed(request)) {
+        return performAction(request);
+      }
+      if (
+        open !== null
+        && open.request.serviceId === request.serviceId
+        && open.request.accountId === request.accountId
+      ) {
+        // The page is already in front of this account; showing it twice for
+        // the same unanswered question is not a second asking.
+        open = { request, state: open.state };
+        return {
+          outcome: "risk-page-already-open",
+          step: MESSAGING_RISK_STEP,
+          serviceId: request.serviceId,
+          accountId: request.accountId,
+          action: request.action,
+        };
+      }
+      open = { request, state: initialMessagingRiskState() };
+      countOpen(request);
+      return {
+        outcome: "risk-page-opened",
+        step: MESSAGING_RISK_STEP,
+        serviceId: request.serviceId,
+        accountId: request.accountId,
+        action: request.action,
+      };
+    },
+
+    openRiskPageMarkup() {
+      if (open === null) return null;
+      return messagingRiskPageMarkup(open.request.serviceId, open.request.serviceName, open.state);
+    },
+
+    heldAction() {
+      return open === null ? null : open.request;
+    },
+
+    toggleRiskAgreement() {
+      if (open === null) return;
+      open.state = toggleMessagingRiskAgreement(open.state);
+    },
+
+    async continueFromRiskPage() {
+      if (open === null) {
+        return { outcome: "refused", step: MESSAGING_RISK_STEP, reason: "no-action-held" };
+      }
+      const decision = continueFromMessagingRisk(open.state);
+      if (decision.outcome === "refused") {
+        return { outcome: "refused", step: MESSAGING_RISK_STEP, reason: decision.reason };
+      }
+      const request = open.request;
+      await backend.agree(request.serviceId, request.accountId);
+      agreedThisSession.add(accountKey(request.serviceId, request.accountId));
+      open = null;
+      return performAction(request);
+    },
+
+    backFromRiskPage() {
+      open = null;
+      return MESSAGING_RISK_BACK_STEP;
+    },
+
+    riskPageOpenCount(serviceId, accountId) {
+      return opens.get(accountKey(serviceId, accountId)) ?? 0;
+    },
+
+    totalRiskPageOpens() {
+      let total = 0;
+      for (const count of opens.values()) total += count;
+      return total;
+    },
+  };
+}

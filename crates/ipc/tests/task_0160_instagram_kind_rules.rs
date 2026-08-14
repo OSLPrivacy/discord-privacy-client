@@ -8,8 +8,8 @@ fn instagram_kind_rule_lookups_return_independently_saved_choices_for_the_full_l
         ("instagram:direct_message", "always"),
         ("instagram:group_chat", "ask me"),
         ("instagram:public_post", "only if a friend"),
-        ("instagram:story", "always"),
-        ("instagram:reel", "ask me"),
+        ("instagram:comment", "always"),
+        ("instagram:story", "ask me"),
     ];
 
     for (rule_key, choice) in saved {
@@ -71,23 +71,23 @@ fn instagram_kind_rule_lookups_return_independently_saved_choices_for_the_full_l
             .map(|place| (place.app.as_str(), place.kind.as_str())),
         Some(("instagram", "public_post"))
     );
-    assert_eq!(lookups[3].app_kind, "instagram:story");
+    assert_eq!(lookups[3].app_kind, "instagram:comment");
     assert_eq!(lookups[3].choice, "always");
     assert_eq!(
         lookups[3]
             .allowed_place
             .as_ref()
             .map(|place| (place.app.as_str(), place.kind.as_str())),
-        Some(("instagram", "story"))
+        Some(("instagram", "comment"))
     );
-    assert_eq!(lookups[4].app_kind, "instagram:reel");
+    assert_eq!(lookups[4].app_kind, "instagram:story");
     assert_eq!(lookups[4].choice, "ask me");
     assert_eq!(
         lookups[4]
             .allowed_place
             .as_ref()
             .map(|place| (place.app.as_str(), place.kind.as_str())),
-        Some(("instagram", "reel"))
+        Some(("instagram", "story"))
     );
     assert_ne!(lookups[0].choice, lookups[1].choice);
     assert_ne!(lookups[1].choice, lookups[2].choice);

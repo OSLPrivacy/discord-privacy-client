@@ -21,6 +21,8 @@ local-model = ["dep:llama_cpp_2", "dep:llama_cpp_sys_2"]
 
 [dev-dependencies]
 trybuild = "1"
+sha2.workspace = true
+tempfile = "=3.13"
 # tests/coupling_is_deterministic.rs imports stego; without this the test target
 # failed to compile and took the whole `cargo test --workspace` run down with it.
 stego = { path = "../stego" }

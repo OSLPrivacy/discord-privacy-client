@@ -1,0 +1,44 @@
+{
+  "welcome": {
+    "title": "Welcome to OSL",
+    "body": "Private chat starts here.",
+    "primary_button": "Create account"
+  },
+  "verification_warning": {
+    "heading": "Verification warning",
+    "intro": "Choose when OSL reminds you to check that a person is really who they say they are.",
+    "option_every_time_label": "Every time",
+    "option_every_time_effect": "OSL reminds you to check this person every time you open the chat.",
+    "option_once_label": "Once",
+    "option_once_effect": "OSL reminds you the first time you open the chat, then stays quiet.",
+    "option_before_sending_label": "Before sending",
+    "option_before_sending_effect": "OSL reminds you just before you send, not when you open the chat.",
+    "option_never_label": "Never",
+    "option_never_effect": "OSL never reminds you. You can still check a person yourself at any time.",
+    "what_this_does_label": "What this does",
+    "legend_label": "When to remind me",
+    "reset_button": "Reset",
+    "save_button": "Save",
+    "state_unsaved_template": "Not saved yet. Reset puts this back to {choice}.",
+    "state_saved_template": "Saved. OSL warns you {choice}."
+  },
+  "view_once_player": {
+    "play_aria_label": "Play view once message",
+    "tap_to_view_once": "Tap to view once",
+    "closes_in_template": "Closes in {seconds} seconds",
+    "close_aria_label": "Close view once message",
+    "empty_copy": "No view-once messages to show."
+  },
+  "view_once_overlay": {
+    "play_aria_label": "Play view once",
+    "close_aria_label": "Close view once overlay",
+    "duration_label": "View duration",
+    "duration_option_seconds_template": "{seconds} seconds",
+    "protected_text_placeholder": "Protected message",
+    "protected_image_alt": "Protected image",
+    "empty_copy": "No view-once item to display."
+  },
+  "settings": {
+    "heading": "Settings"
+  }
+}

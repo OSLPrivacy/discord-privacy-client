@@ -356,6 +356,42 @@ fn a_legacy_burn_marker_is_honoured_but_never_permanent() {
     }
 }
 
+/// Old content at or below a durable burn floor is a migration/refusal guard,
+/// not an optimization. If this admits the message, the caller can continue
+/// into the destructive burn path with content that should already be terminal.
+#[test]
+fn old_message_migration_guard_refuses_burned_prefix_content() {
+    let alice = party();
+    let bob = party();
+    let key = scope_commit_key(alice.ik_pub.as_bytes(), bob.ik_pub.as_bytes()).unwrap();
+    let commitment = scope_commitment(&key, SCOPE);
+    let mut ledger = RevocationLedger::default();
+    let notice = RevocationNotice {
+        scope_commitment: commitment,
+        burn_epoch: 1,
+        burn_upto_seq: 3,
+        message_commitments: Vec::new(),
+        burn_id: burn_id(&key, &commitment, 1, 3),
+        issued_at: 1_700_000_000,
+    };
+
+    let out = apply_inbound_revocation(&mut ledger, &key, &notice, 1_700_000_001).unwrap();
+    assert_eq!(out.decision, InboundDecision::Applied);
+    assert_eq!(out.destroy_upto_seq, 3);
+
+    for seq in 1..=3 {
+        assert_eq!(
+            accept_content(&ledger, &commitment, seq),
+            ContentDecision::RefusedBurned,
+            "old message reaches destructive burn"
+        );
+    }
+    assert_eq!(
+        accept_content(&ledger, &commitment, 4),
+        ContentDecision::Accept
+    );
+}
+
 /// A revocation must not be accepted on a retired type byte. `0x02`/`0x03` are
 /// swallowed by the dispatcher's legacy-handshake arm, so framing must never
 /// classify them as a burn.

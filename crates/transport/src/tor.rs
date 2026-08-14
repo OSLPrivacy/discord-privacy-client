@@ -23,6 +23,8 @@ pub struct TorSidecarConfig {
     pub program: PathBuf,
     pub args: Vec<String>,
     pub status_timeout: Duration,
+    pub bootstrap_timeout: Duration,
+    pub readiness_poll_interval: Duration,
 }
 
 impl TorSidecarConfig {
@@ -31,9 +33,13 @@ impl TorSidecarConfig {
             program: program.into(),
             args: Vec::new(),
             status_timeout: Duration::from_secs(45),
+            bootstrap_timeout: Duration::from_secs(45),
+            readiness_poll_interval: Duration::from_millis(200),
         }
     }
 }
+
+pub type ArtiProxyConfig = TorSidecarConfig;
 
 /// A running Arti proxy and the only client OSL store traffic may use while
 /// Tor is selected.
@@ -69,7 +75,8 @@ impl TorTransport {
         let (status_tx, status_rx) = mpsc::sync_channel(1);
         thread::spawn(move || drain_status_stream(stdout, status_tx));
 
-        let socks_addr = match status_rx.recv_timeout(config.status_timeout) {
+        let status_timeout = config.status_timeout.min(config.bootstrap_timeout);
+        let socks_addr = match status_rx.recv_timeout(status_timeout) {
             Ok(Ok(addr)) => addr,
             Ok(Err(error)) => {
                 stop_child(&mut child);
@@ -77,7 +84,7 @@ impl TorTransport {
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 stop_child(&mut child);
-                return Err(TorError::StatusTimeout(config.status_timeout));
+                return Err(TorError::NoListeningReport(status_timeout));
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 let status = child.try_wait().map_err(TorError::ChildStatus)?;
@@ -138,6 +145,7 @@ struct SidecarStatusLine {
     addr: Option<String>,
     ip: Option<String>,
     port: Option<u16>,
+    detail: Option<String>,
 }
 
 fn drain_status_stream(
@@ -145,6 +153,7 @@ fn drain_status_stream(
     status_tx: mpsc::SyncSender<Result<SocketAddr, TorError>>,
 ) {
     let mut reported = false;
+    let mut listening = None;
     for line in BufReader::new(stdout).lines() {
         let line = match line {
             Ok(line) => line,
@@ -164,12 +173,29 @@ fn drain_status_stream(
                 return;
             }
         };
-        if reported || status.event != "listening" {
+        if reported {
             continue;
         }
-        let result = reported_socks_addr(status);
-        reported = true;
-        let _ = status_tx.send(result);
+        match status.event.as_str() {
+            "listening" => match reported_socks_addr(status) {
+                Ok(addr) => listening = Some(addr),
+                Err(error) => {
+                    reported = true;
+                    let _ = status_tx.send(Err(error));
+                }
+            },
+            "ready" => {
+                reported = true;
+                let _ = status_tx.send(listening.ok_or(TorError::IncompleteListeningStatus));
+            }
+            "error" => {
+                reported = true;
+                let _ = status_tx.send(Err(TorError::BootstrapFailed(
+                    status.detail.unwrap_or_else(|| "unknown sidecar failure".to_owned()),
+                )));
+            }
+            _ => {}
+        }
     }
 }
 
@@ -291,7 +317,10 @@ fn build_store_client(socks_addr: SocketAddr) -> Result<Client, TorError> {
     keystore::blocking_http::off_async_context(|| {
         Client::builder()
             .proxy(proxy)
-            .timeout(Duration::from_secs(30))
+            // Ordinary Tor sends have a wider route budget. Attachment parts
+            // and keyserver polls install their more specific request budgets
+            // at the callers, so neither inherits a clearnet 30-second cap.
+            .timeout(Duration::from_secs(90))
             .http1_title_case_headers()
             .redirect(reqwest::redirect::Policy::none())
             .user_agent("discord-privacy-client/0.0.1")
@@ -318,6 +347,8 @@ pub enum TorError {
     },
     #[error("OSL Tor sidecar did not report its SOCKS address within {0:?}")]
     StatusTimeout(Duration),
+    #[error("Tor sidecar reported no listening address within {0:?}")]
+    NoListeningReport(Duration),
     #[error("OSL Tor sidecar exited before or during use: {0}")]
     Exited(std::process::ExitStatus),
     #[error("OSL Tor sidecar has been stopped")]
@@ -330,6 +361,8 @@ pub enum TorError {
     MissingStatusStream,
     #[error("OSL Tor sidecar status stream closed before reporting a listener")]
     StatusStreamClosed,
+    #[error("OSL Tor sidecar bootstrap failed: {0}")]
+    BootstrapFailed(String),
     #[error("failed to read OSL Tor sidecar status")]
     ReadStatus(#[source] io::Error),
     #[error("OSL Tor sidecar emitted invalid JSON status")]
@@ -358,6 +391,57 @@ mod tests {
     use std::io::{Read, Write};
     use std::net::{Shutdown, TcpListener, TcpStream};
     use std::sync::mpsc;
+
+    /// A stand-in sidecar: prints the given status lines and stays alive.
+    fn fake_sidecar_config(script: String) -> ArtiProxyConfig {
+        let mut config = ArtiProxyConfig::new("/bin/sh");
+        config.args = vec!["-c".to_string(), script];
+        config.bootstrap_timeout = Duration::from_secs(5);
+        config
+    }
+
+    #[test]
+    fn start_adopts_the_address_the_sidecar_reports() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind stand-in SOCKS listener");
+        let addr = listener.local_addr().expect("read stand-in listener address");
+        let script = format!(
+            "echo '{{\"event\":\"start\",\"pid\":1,\"dial_mode\":\"direct\",\
+             \"requested_listen\":\"127.0.0.1:0\"}}'; \
+             echo '{{\"event\":\"listening\",\"addr\":\"{addr}\",\"ip\":\"{ip}\",\
+             \"port\":{port}}}'; echo '{{\"event\":\"ready\"}}'; sleep 30",
+            ip = addr.ip(),
+            port = addr.port(),
+        );
+        let transport = TorTransport::start(fake_sidecar_config(script))
+            .expect("adopt the reported listening address");
+        assert_eq!(transport.socks_addr(), addr);
+        transport.stop();
+    }
+
+    #[test]
+    fn start_without_a_listening_report_fails_closed() {
+        let mut config = fake_sidecar_config("sleep 30".to_string());
+        config.bootstrap_timeout = Duration::from_millis(300);
+        match TorTransport::start(config) {
+            Err(TorError::NoListeningReport(_)) => {}
+            Err(other) => panic!("expected NoListeningReport, got {other:?}"),
+            Ok(_) => panic!("a silent sidecar must not produce a transport"),
+        }
+    }
+
+    #[test]
+    fn start_refuses_a_reported_non_loopback_listener() {
+        let script = "echo '{\"event\":\"listening\",\"addr\":\"192.0.2.1:1080\",\
+                      \"ip\":\"192.0.2.1\",\"port\":1080}'; sleep 30"
+            .to_string();
+        match TorTransport::start(fake_sidecar_config(script)) {
+            Err(TorError::NonLoopbackProxy(addr)) => {
+                assert_eq!(addr.to_string(), "192.0.2.1:1080");
+            }
+            Err(other) => panic!("expected NonLoopbackProxy, got {other:?}"),
+            Ok(_) => panic!("a routable SOCKS listener must be refused"),
+        }
+    }
 
     #[test]
     fn store_requests_use_socks_and_proxy_resolves_the_store_hostname() {

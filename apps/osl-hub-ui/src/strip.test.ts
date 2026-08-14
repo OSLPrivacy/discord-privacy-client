@@ -208,14 +208,10 @@ describe("token conformance", () => {
     }
   });
 
-  it("the strip band is an always-visible 44px grid row above the composer", () => {
+  it("the strip band stays out of the natively sized composer window", () => {
     const css = readRelative("./strip.css");
-    expect(css).toContain(".osl-strip-band {");
-    expect(css).toContain("display: block;");
-    expect(css).toContain("grid-row: 1;");
-    expect(css).toContain("align-self: end;");
-    expect(css).toContain("height: 44px;");
-    expect(css).not.toContain(".osl-strip-band { display: none;");
+    expect(css).toContain(".osl-strip-band { display: none; }");
+    expect(css).toContain("@media (min-height: 102px)");
     const overlayHtml = readRelative("../overlay.html");
     expect(overlayHtml).toContain('<div id="osl-strip" class="osl-strip-band"></div>');
   });

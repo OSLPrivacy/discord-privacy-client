@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>OSL Verification warning fixture</title>
+    <style>
+      body { margin: 0; }
+      #app { min-height: 100vh; display: grid; place-items: center; padding: 28px; box-sizing: border-box; background: var(--bg); }
+    </style>
+    <script type="module">
+      import "../src/styles.css";
+      import { mountVerificationWarningScreen } from "../src/verification-warning-screen.ts";
+
+      const app = document.querySelector("#app");
+      const saves = [];
+      // The fixture is the real screen, mounted with its real handlers: the
+      // capture clicks the radios and the buttons rather than being handed a
+      // pre-rendered string.
+      const handle = mountVerificationWarningScreen(app, { onSave: (choice) => saves.push(choice) });
+      window.oslVerificationWarningFixture = { state: () => handle.state(), saves: () => [...saves] };
+      document.documentElement.dataset.fixtureReady = "verification-warning-screen";
+    </script>
+  </head>
+  <body>
+    <div id="app"></div>
+  </body>
+</html>

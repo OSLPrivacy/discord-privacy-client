@@ -1,3 +1,10 @@
+import {
+  attachmentBytesSent,
+  isSlowActiveTorAttachment,
+  TOR_SLOW_ATTACHMENT_LABEL,
+  type UiNetworkRoute,
+} from "./tor-breakage-honesty";
+
 /** Renderer-safe shape emitted by `osl://attachment-progress`. */
 export interface AttachmentProgressEvent {
   contextId: string;
@@ -95,8 +102,13 @@ const escapeHtml = (value: string): string => value.replace(/[&<>"']/gu, (charac
  * Renders the safe DTO only. Visual presentation belongs to styles.css because
  * the app's CSP rejects runtime style elements and inline style attributes.
  */
-export function attachmentProgressMarkup(event: AttachmentProgressEvent): string {
+export function attachmentProgressMarkup(event: AttachmentProgressEvent, route: UiNetworkRoute = null): string {
   const { job } = event;
   const stage = stageLabels[job.stage];
-  return `<section class="attachment-progress" data-attachment-context="${escapeHtml(event.contextId)}" data-attachment-stage="${job.stage}" role="status" aria-live="polite"><header class="attachment-progress__header"><strong class="attachment-progress__name">${escapeHtml(job.metadata.filename)}</strong><span class="attachment-progress__percent">${job.progress}%</span></header><p class="attachment-progress__stage">${stage}</p><progress class="attachment-progress__bar" value="${job.progress}" max="100" aria-label="${stage}: ${job.progress}%"></progress></section>`;
+  const slowOverTor = isSlowActiveTorAttachment(route, job.metadata.size, job.stage, job.progress);
+  const bytesSent = attachmentBytesSent(job.metadata.size, job.progress);
+  const torDetail = slowOverTor
+    ? `<p class="attachment-progress__tor"><strong>${TOR_SLOW_ATTACHMENT_LABEL}</strong><span>${bytesSent.toLocaleString("en-US")} of ${job.metadata.size.toLocaleString("en-US")} bytes sent</span></p>`
+    : "";
+  return `<section class="attachment-progress" data-attachment-context="${escapeHtml(event.contextId)}" data-attachment-stage="${job.stage}" data-network-route="${route ?? "unknown"}" role="status" aria-live="polite"><header class="attachment-progress__header"><strong class="attachment-progress__name">${escapeHtml(job.metadata.filename)}</strong><span class="attachment-progress__percent">${job.progress}%</span></header><p class="attachment-progress__stage">${stage}</p>${torDetail}<progress class="attachment-progress__bar" value="${job.progress}" max="100" aria-label="${stage}: ${job.progress}%"></progress></section>`;
 }

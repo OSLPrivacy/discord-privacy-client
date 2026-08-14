@@ -13,7 +13,7 @@ use crate::{models::OnboardingPreferences, preferences::PreviewState};
 
 pub(crate) const RECOVERY_KIT_STATUS_FILE: &str = "recovery_kit_status.json";
 const RECOVERY_KIT_STATUS_VERSION: u32 = 1;
-const MAX_RECOVERY_KIT_STATUS_PLAINTEXT_BYTES: usize = 256;
+const MAX_RECOVERY_KIT_STATUS_PLAINTEXT_BYTES: usize = 128;
 const MAX_RECOVERY_KIT_STATUS_SEALED_BYTES: u64 = 4 * 1024;
 
 #[derive(Deserialize, Serialize)]
@@ -22,31 +22,17 @@ struct RecoveryKitStatusDocument {
     version: u32,
     kit_unsaved: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    recovery_branch: Option<RecoverySetupBranch>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     recovery_confirmed_at_unix_seconds: Option<i64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    no_recovery_secret_chosen_at_unix_seconds: Option<i64>,
-}
-
-#[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub enum RecoverySetupBranch {
-    RecoveryWords,
-    NoRecoverySecret,
 }
 
 #[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RecoverySetupState {
     pub kit_unsaved: bool,
-    pub recovery_branch: Option<RecoverySetupBranch>,
     pub recovery_confirmed_at_unix_seconds: Option<i64>,
-    pub no_recovery_secret_chosen_at_unix_seconds: Option<i64>,
 }
 
-pub const SETUP_NEEDS_RECOVERY_CHOICE: &str =
-    "Confirm your recovery words or explicitly choose no recovery secret before finishing setup";
+pub use ipc::unfinished_onboarding::AccountUsabilitySnapshot;
 
 /// Returns whether the current account has a recovery kit that still needs to
 /// be saved. Missing state is the safe legacy value: no kit has been produced.
@@ -59,44 +45,76 @@ pub fn recovery_setup_state() -> Result<RecoverySetupState, String> {
     load_recovery_setup_state(&active_recovery_kit_status_path()?, &key)
 }
 
-/// The one native false-to-true setup commit boundary.
+/// Whether this account may use or publish its canonical identity key.
 ///
-/// A profile that created recovery words must carry its authenticated word
-/// confirmation. A profile that created no words must carry its own encrypted,
-/// explicit no-secret choice. Missing and ambiguous legacy status never mean
-/// "no secret" here.
-pub fn require_supported_recovery_setup() -> Result<(), String> {
-    let state = recovery_setup_state()?;
-    let accepted = match state.recovery_branch {
-        Some(RecoverySetupBranch::RecoveryWords) => {
-            state.recovery_confirmed_at_unix_seconds.is_some()
-                && state.no_recovery_secret_chosen_at_unix_seconds.is_none()
-        }
-        Some(RecoverySetupBranch::NoRecoverySecret) => {
-            state.no_recovery_secret_chosen_at_unix_seconds.is_some()
-                && state.recovery_confirmed_at_unix_seconds.is_none()
-                && !state.kit_unsaved
-        }
-        None => false,
-    };
-    if accepted {
-        Ok(())
-    } else {
-        Err(SETUP_NEEDS_RECOVERY_CHOICE.to_owned())
+/// Accounts created before the recovery-confirmation record existed have no
+/// status file and remain usable for compatibility. Once the file exists, the
+/// recorded recovery-word confirmation is the authority: an unsaved or
+/// interrupted setup fails closed.
+pub fn account_allows_key_use() -> Result<bool, String> {
+    let path = active_recovery_kit_status_path()?;
+    if !path.exists() {
+        let directory = path
+            .parent()
+            .ok_or_else(|| "OSL active identity storage is unavailable".to_owned())?;
+        // Existing accounts have a password marker. A key created before the
+        // password step has neither that marker nor encrypted recovery status
+        // and must not be published during a restart in the middle of setup.
+        return Ok(!directory.join("identity.json").is_file()
+            || directory.join("password_marker.json").is_file());
     }
+    let key = active_file_key()?;
+    Ok(load_recovery_setup_state(&path, &key)?
+        .recovery_confirmed_at_unix_seconds
+        .is_some())
 }
 
-pub fn save_supported_setup_completion(
+/// True only for the durable state produced by a new account that has not yet
+/// passed recovery-word confirmation. Missing state is legacy, not unfinished.
+pub fn account_is_unfinished() -> Result<bool, String> {
+    let path = active_recovery_kit_status_path()?;
+    if !path.exists() {
+        let directory = path
+            .parent()
+            .ok_or_else(|| "OSL active identity storage is unavailable".to_owned())?;
+        return Ok(directory.join("identity.json").is_file()
+            && !directory.join("password_marker.json").exists());
+    }
+    let key = active_file_key()?;
+    Ok(load_recovery_setup_state(&path, &key)?
+        .recovery_confirmed_at_unix_seconds
+        .is_none())
+}
+
+pub fn account_usability_snapshot() -> Result<AccountUsabilitySnapshot, String> {
+    let directory = keystore::osl_config_dir()
+        .map_err(|_| "OSL active identity storage is unavailable".to_owned())?;
+    let key = active_file_key()?;
+    account_usability_snapshot_at(&directory, &key)
+}
+
+pub(crate) fn account_usability_snapshot_at(
+    directory: &Path,
+    key: &[u8; 32],
+) -> Result<AccountUsabilitySnapshot, String> {
+    ipc::unfinished_onboarding::account_usability_snapshot(directory, key)
+}
+
+/// Native trust boundary for the normal false-to-true setup finish.
+///
+/// Saves that leave setup unfinished, and later preference changes for an
+/// already-finished account, retain the ordinary preferences path. Only the
+/// first completion transition consumes this recovery-confirmation gate.
+pub fn save_normal_setup_completion(
     preview: &PreviewState,
     preferences: OnboardingPreferences,
 ) -> Result<OnboardingPreferences, String> {
     let finishing_setup = preferences.onboarding_complete && !preview.get()?.onboarding_complete;
     if finishing_setup {
-        require_supported_recovery_setup()?;
+        require_recovery_word_confirmation()?;
     }
     preview.save(preferences)
 }
-
 /// Records that a recovery kit was produced but has not been confirmed saved.
 pub fn mark_recovery_kit_unsaved() -> Result<(), String> {
     let key = active_file_key()?;
@@ -104,9 +122,7 @@ pub fn mark_recovery_kit_unsaved() -> Result<(), String> {
         &active_recovery_kit_status_path()?,
         &RecoverySetupState {
             kit_unsaved: true,
-            recovery_branch: Some(RecoverySetupBranch::RecoveryWords),
             recovery_confirmed_at_unix_seconds: None,
-            no_recovery_secret_chosen_at_unix_seconds: None,
         },
         &key,
     )
@@ -116,107 +132,58 @@ pub fn mark_recovery_kit_unsaved() -> Result<(), String> {
 pub fn clear_recovery_kit_unsaved() -> Result<(), String> {
     let key = active_file_key()?;
     let mut state = load_recovery_setup_state(&active_recovery_kit_status_path()?, &key)?;
-    if state.recovery_branch != Some(RecoverySetupBranch::RecoveryWords) {
-        return Err("OSL cannot mark a missing recovery kit as saved".to_owned());
-    }
     state.kit_unsaved = false;
     write_recovery_setup_state(&active_recovery_kit_status_path()?, &state, &key)
-}
-
-/// Persist the explicit branch for an account whose password marker contains
-/// no recovery phrase, hash, or file-key phrase wrap.
-pub fn record_explicit_no_recovery_secret_choice() -> Result<RecoverySetupState, String> {
-    let directory = keystore::osl_config_dir()
-        .map_err(|_| "OSL active identity storage is unavailable".to_owned())?;
-    let marker_path = directory.join("password_marker.json");
-    if !marker_path.is_file() {
-        return Err("OSL cannot choose no recovery secret before password setup".to_owned());
-    }
-    let marker = ipc::main_password::read_marker_pub(&directory)
-        .map_err(|_| "OSL password marker is unavailable".to_owned())?;
-    if ipc::main_password::marker_has_recovery_words(&marker) {
-        return Err(
-            "OSL cannot choose no recovery secret for an account that created recovery words"
-                .to_owned(),
-        );
-    }
-    let key = active_file_key()?;
-    let state = RecoverySetupState {
-        kit_unsaved: false,
-        recovery_branch: Some(RecoverySetupBranch::NoRecoverySecret),
-        recovery_confirmed_at_unix_seconds: None,
-        no_recovery_secret_chosen_at_unix_seconds: Some(ipc::main_password::now_unix_secs_pub()),
-    };
-    write_recovery_setup_state(&active_recovery_kit_status_path()?, &state, &key)?;
-    Ok(state)
 }
 
 pub fn record_recovery_word_confirmation(
     current: String,
     entries: Vec<ipc::main_password::RecoveryWordEntry>,
 ) -> Result<RecoverySetupState, String> {
-    // The command takes the DTO shape; `RecoveryWordEntry` is the same pair
-    // (position, word) under another lane's name, so convert rather than
-    // force one design onto the other.
-    let entries: Vec<ipc::commands::RecoveryWordRetypeEntryDto> = entries
+    let entries = entries
         .into_iter()
-        .map(|entry| ipc::commands::RecoveryWordRetypeEntryDto {
-            position: entry.position as u8,
-            word: entry.word,
+        .map(|entry| {
+            Ok(ipc::commands::RecoveryWordRetypeEntryDto {
+                position: u8::try_from(entry.position)
+                    .map_err(|_| "OSL recovery-word position is invalid".to_owned())?,
+                word: entry.word,
+            })
         })
-        .collect();
+        .collect::<Result<Vec<_>, String>>()?;
     let check = ipc::commands::cmd_osl_check_recovery_words(current, entries)?;
     if !check.ok {
         return Err("OSL recovery-word confirmation did not match".to_owned());
     }
     let key = active_file_key()?;
     let mut state = load_recovery_setup_state(&active_recovery_kit_status_path()?, &key)?;
-    if state.recovery_branch != Some(RecoverySetupBranch::RecoveryWords) {
-        return Err("OSL recovery words were not created for this account".to_owned());
-    }
     state.recovery_confirmed_at_unix_seconds = Some(ipc::main_password::now_unix_secs_pub());
-    state.no_recovery_secret_chosen_at_unix_seconds = None;
     write_recovery_setup_state(&active_recovery_kit_status_path()?, &state, &key)?;
     Ok(state)
 }
 
-/// Shipping setup retype boundary. The phrase carried by the one-shot setup
-/// screen is first authenticated against this profile's marker hash; only then
-/// can the selected words produce the durable confirmation timestamp.
-pub fn record_setup_recovery_word_confirmation(
-    request: crate::password_lifecycle::RecoveryWordRetypeRequest,
-) -> Result<crate::password_lifecycle::RecoveryWordRetypeResult, String> {
-    let result = crate::password_lifecycle::check_recovery_word_retype(request.clone())?;
-    if !result.passed {
-        return Ok(result);
-    }
-    let entries = request
-        .answers
-        .into_iter()
-        .map(|answer| ipc::main_password::RecoveryWordEntry {
-            position: answer.position,
-            word: answer.word,
-        })
-        .collect::<Vec<_>>();
-    let directory = keystore::osl_config_dir()
-        .map_err(|_| "OSL active identity storage is unavailable".to_owned())?;
-    let authenticated = ipc::main_password::check_recovery_words_for_setup_phrase(
-        &directory,
-        &request.recovery_phrase,
-        &entries,
-    )?;
-    if !authenticated.ok {
-        return Err("OSL recovery-word confirmation did not match".to_owned());
-    }
-    let key = active_file_key()?;
-    let mut state = load_recovery_setup_state(&active_recovery_kit_status_path()?, &key)?;
-    if state.recovery_branch != Some(RecoverySetupBranch::RecoveryWords) {
-        return Err("OSL recovery words were not created for this account".to_owned());
-    }
-    state.recovery_confirmed_at_unix_seconds = Some(ipc::main_password::now_unix_secs_pub());
-    state.no_recovery_secret_chosen_at_unix_seconds = None;
-    write_recovery_setup_state(&active_recovery_kit_status_path()?, &state, &key)?;
-    Ok(result)
+/// The message the owner sees when setup is finished without the recovery-word
+/// confirmation. It names the step, not the internal record.
+pub const SETUP_NEEDS_RECOVERY_CONFIRMATION: &str =
+    "Confirm your recovery words before finishing setup";
+
+/// TASK 0453: the native precondition for completing normal account setup.
+///
+/// Setup completion is a native write, so the renderer route order is not a
+/// gate: clearing WebView storage, replaying an old bundle, or calling
+/// `save_onboarding_preferences` directly all reach the same command. This is
+/// the check that stands behind all of them, and it reads the encrypted,
+/// account-scoped confirmation record written by gate 0452 -- the only place
+/// the retype outcome survives a cache clear.
+///
+/// Fails closed: a locked main password or unreadable status file is a refusal,
+/// not a pass, because neither can show that the words were ever confirmed.
+pub fn require_recovery_word_confirmation() -> Result<i64, String> {
+    // A read failure keeps its own reason ("main password must be unlocked",
+    // "status is malformed"): it is still a refusal, and the owner cannot act
+    // on it if it is relabelled as a missing confirmation.
+    recovery_setup_state()?
+        .recovery_confirmed_at_unix_seconds
+        .ok_or_else(|| SETUP_NEEDS_RECOVERY_CONFIRMATION.to_owned())
 }
 
 fn active_file_key() -> Result<[u8; 32], String> {
@@ -253,9 +220,7 @@ fn load_recovery_setup_state(path: &Path, key: &[u8; 32]) -> Result<RecoverySetu
     else {
         return Ok(RecoverySetupState {
             kit_unsaved: false,
-            recovery_branch: None,
             recovery_confirmed_at_unix_seconds: None,
-            no_recovery_secret_chosen_at_unix_seconds: None,
         });
     };
     if !ipc::main_password::has_enc_magic(&sealed) {
@@ -275,16 +240,7 @@ fn load_recovery_setup_state(path: &Path, key: &[u8; 32]) -> Result<RecoverySetu
     }
     Ok(RecoverySetupState {
         kit_unsaved: document.kit_unsaved,
-        // v1 records that actually named an unsaved kit or a confirmation are
-        // unambiguously the words branch. The old all-false shape remains
-        // unknown; it is never upgraded into a no-secret choice by absence.
-        recovery_branch: document.recovery_branch.or_else(|| {
-            (document.kit_unsaved || document.recovery_confirmed_at_unix_seconds.is_some())
-                .then_some(RecoverySetupBranch::RecoveryWords)
-        }),
         recovery_confirmed_at_unix_seconds: document.recovery_confirmed_at_unix_seconds,
-        no_recovery_secret_chosen_at_unix_seconds: document
-            .no_recovery_secret_chosen_at_unix_seconds,
     })
 }
 
@@ -296,9 +252,7 @@ fn write_recovery_setup_state(
     let document = RecoveryKitStatusDocument {
         version: RECOVERY_KIT_STATUS_VERSION,
         kit_unsaved: state.kit_unsaved,
-        recovery_branch: state.recovery_branch,
         recovery_confirmed_at_unix_seconds: state.recovery_confirmed_at_unix_seconds,
-        no_recovery_secret_chosen_at_unix_seconds: state.no_recovery_secret_chosen_at_unix_seconds,
     };
     let mut plaintext = serde_json::to_vec(&document)
         .map_err(|_| "OSL recovery-kit status could not be encoded".to_owned())?;
@@ -314,6 +268,38 @@ fn write_recovery_setup_state(
         return Err("OSL encrypted recovery-kit status exceeds its storage limit".to_owned());
     }
     crate::atomic_file::write_recoverable(path, &sealed, "OSL recovery-kit status")
+}
+
+pub(crate) fn load_recovery_kit_confirmation_time(
+    path: &Path,
+    key: &[u8; 32],
+) -> Result<Option<i64>, String> {
+    Ok(load_recovery_setup_state(path, key)?.recovery_confirmed_at_unix_seconds)
+}
+
+pub(crate) fn write_recovery_kit_status_with_confirmation(
+    path: &Path,
+    kit_unsaved: bool,
+    recovery_confirmed_at_unix_seconds: Option<i64>,
+    key: &[u8; 32],
+) -> Result<(), String> {
+    write_recovery_setup_state(
+        path,
+        &RecoverySetupState {
+            kit_unsaved,
+            recovery_confirmed_at_unix_seconds,
+        },
+        key,
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn write_recovery_setup_state_for_test(
+    directory: &Path,
+    state: &RecoverySetupState,
+    key: &[u8; 32],
+) -> Result<(), String> {
+    write_recovery_setup_state(&directory.join(RECOVERY_KIT_STATUS_FILE), state, key)
 }
 
 #[cfg(test)]
@@ -343,9 +329,7 @@ mod tests {
             &status_path,
             &RecoverySetupState {
                 kit_unsaved: true,
-                recovery_branch: Some(RecoverySetupBranch::RecoveryWords),
                 recovery_confirmed_at_unix_seconds: None,
-                no_recovery_secret_chosen_at_unix_seconds: None,
             },
             &TEST_KEY,
         )
@@ -458,9 +442,7 @@ mod tests {
             &status_path,
             &RecoverySetupState {
                 kit_unsaved: true,
-                recovery_branch: Some(RecoverySetupBranch::RecoveryWords),
                 recovery_confirmed_at_unix_seconds: None,
-                no_recovery_secret_chosen_at_unix_seconds: None,
             },
             &TEST_KEY,
         )
@@ -469,9 +451,7 @@ mod tests {
             &status_path,
             &RecoverySetupState {
                 kit_unsaved: false,
-                recovery_branch: Some(RecoverySetupBranch::RecoveryWords),
                 recovery_confirmed_at_unix_seconds: None,
-                no_recovery_secret_chosen_at_unix_seconds: None,
             },
             &TEST_KEY,
         )

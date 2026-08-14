@@ -1,46 +1,13 @@
 # AI carrier copy
 
-Status: planned copy for a future interface. AI-generated carrier text and
-processing credits are not available in the shipping app and credits are not
-on sale. This page is a source for T7; it is not a product-availability claim.
+Status: shipping on-device copy. AI-generated carrier text is produced by the
+verified model pack on the person's own machine. No processing credits or
+remote model option exist.
 
-## Cloud-processing consent
+## In-flow local label
 
-### Title
-
-Use cloud processing for carrier text?
-
-### Body
-
-This is a planned option. Cloud processing is less private than local
-processing because selected cover context reaches an OSL server. It is not
-end-to-end private. OSL does not send the protected message itself to the
-cloud model.
-
-Choose local processing if you want the privacy-preferred option. You can
-decline cloud processing and still use OSL.
-
-### Consent action
-
-I understand that cloud processing is less private than local processing.
-
-Source: `AI-generated carrier text` in the public-claim allowlist; D46 in
-the AI carrier architecture.
-
-## In-flow cloud label
-
-Cloud processing selected — less private than local processing; not
-end-to-end private.
-
-Source: `AI-generated carrier text` in the public-claim allowlist.
-
-## Credits exhausted
-
-Cloud processing credits are exhausted. Use local processing if available, or
-continue with the free word-bank carrier. Encryption still works.
-
-Source: `Processing credits` and `AI-generated carrier text` in the
-public-claim allowlist; the architecture's required free-tier floor.
+AI Covertext selected — the verified model on this device writes the carrier.
+The private words never touch the model.
 
 ## Local model unavailable
 

@@ -74,6 +74,8 @@ const RATCHET_PUBLIC_BYTES: usize = 32;
 const SAFETY_NUMBER_BUNDLE_REFUSAL: &str = "OSL friend key bundle is invalid";
 const SAFETY_NUMBER_MISMATCH_REFUSAL: &str = "OSL safety number does not match";
 const PENDING_KEY_CHANGE_REFUSAL: &str = "OSL friend key change state is incomplete";
+/// The fixed refusal returned when a People relationship has been blocked.
+pub const FRIEND_BLOCKED_ERROR: &str = "friend blocked";
 
 #[derive(Debug, Default)]
 pub struct HubSecurityState {
@@ -113,7 +115,7 @@ pub struct AddFriendResult {
     pub safety_number_verified: bool,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RemoveFriendResult {
     pub person_id: String,
@@ -121,6 +123,15 @@ pub struct RemoveFriendResult {
     pub peer_key_removed: bool,
     pub revocations_queued: usize,
     pub revocation_queue_complete: bool,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FriendPageRemoveActionResult {
+    pub person_id: String,
+    pub confirmation_required: bool,
+    pub removed: bool,
+    pub removal: Option<RemoveFriendResult>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -135,6 +146,7 @@ pub struct PersonDto {
     pub whitelisted_scopes: Vec<PersonWhitelistScopeDto>,
     pub whitelisted_scopes_truncated: bool,
     pub pending_key_change: bool,
+    pub relationship: FriendRelationship,
     /// True when the user deliberately extended this person's trust to the
     /// other scopes they share. Never set by an ordinary scope approval.
     pub reach_broadened: bool,
@@ -143,6 +155,21 @@ pub struct PersonDto {
     /// Scope storage keys explicitly taken back from this person; they stay
     /// denied while reach is broadened.
     pub reach_narrowed_scopes: Vec<String>,
+}
+
+/// The local relationship state for a person in People.  A blocked record is
+/// retained for display, but is never a messaging authority.
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FriendRelationship {
+    Accepted,
+    Blocked,
+}
+
+impl Default for FriendRelationship {
+    fn default() -> Self {
+        Self::Accepted
+    }
 }
 
 /// A local-only description of one approved encryption scope. It deliberately
@@ -172,6 +199,74 @@ pub struct ScopeSecurityDto {
     pub decrypt_display_enabled: bool,
 }
 
+/// The Strip timer deliberately has minute granularity.  A seconds wheel made
+/// it possible to set a timer the owner does not permit, so seconds are not
+/// represented in the state sent to the picker at all.
+pub const TIMER_PICKER_MINUTES: u32 = 1;
+pub const TIMER_PICKER_MAX_DAYS: u32 = 30;
+const MINUTES_PER_HOUR: u32 = 60;
+const HOURS_PER_DAY: u32 = 24;
+const TIMER_PICKER_MAX_MINUTES: u32 = TIMER_PICKER_MAX_DAYS * HOURS_PER_DAY * MINUTES_PER_HOUR;
+
+/// State for the Strip timer controls.  Values remain zero-padded strings for
+/// direct picker binding, but the state intentionally exposes only days,
+/// hours, and minutes.
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TimerPickerStateDto {
+    pub days: String,
+    pub hours: String,
+    pub minutes: String,
+}
+
+fn two_digit_timer_value(value: u32) -> String {
+    format!("{value:02}")
+}
+
+fn timer_picker_total_minutes(days: u32, hours: u32, minutes: u32) -> Result<u32, String> {
+    if days > TIMER_PICKER_MAX_DAYS {
+        return Err("OSL timer picker days must be between 00 and 30".to_owned());
+    }
+    if hours >= HOURS_PER_DAY {
+        return Err("OSL timer picker hours must be between 00 and 23".to_owned());
+    }
+    if minutes >= MINUTES_PER_HOUR {
+        return Err("OSL timer picker minutes must be between 00 and 59".to_owned());
+    }
+
+    let total_minutes =
+        days * HOURS_PER_DAY * MINUTES_PER_HOUR + hours * MINUTES_PER_HOUR + minutes;
+    if total_minutes < TIMER_PICKER_MINUTES {
+        return Err("OSL timer picker must be at least one minute".to_owned());
+    }
+    if total_minutes > TIMER_PICKER_MAX_MINUTES {
+        return Err("OSL timer picker cannot exceed 30 days".to_owned());
+    }
+    Ok(total_minutes)
+}
+
+pub fn default_timer_picker_state() -> TimerPickerStateDto {
+    // A default is an admissible timer, not an all-zero placeholder.
+    TimerPickerStateDto {
+        days: two_digit_timer_value(0),
+        hours: two_digit_timer_value(0),
+        minutes: two_digit_timer_value(TIMER_PICKER_MINUTES),
+    }
+}
+
+pub fn timer_picker_state(
+    days: u32,
+    hours: u32,
+    minutes: u32,
+) -> Result<TimerPickerStateDto, String> {
+    timer_picker_total_minutes(days, hours, minutes)?;
+    Ok(TimerPickerStateDto {
+        days: two_digit_timer_value(days),
+        hours: two_digit_timer_value(hours),
+        minutes: two_digit_timer_value(minutes),
+    })
+}
+
 #[derive(Debug, Clone, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GroupMemberPermissionRecord {
@@ -182,10 +277,78 @@ pub struct GroupMemberPermissionRecord {
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct LookChoiceRecord {
+    pub name: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppNotificationChoiceRecord {
+    pub app_id: String,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ChatApprovalSuggestionChoice {
+    Off,
+    #[default]
+    On,
+}
+
+impl ChatApprovalSuggestionChoice {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::On => "on",
+        }
+    }
+}
+
+impl std::str::FromStr for ChatApprovalSuggestionChoice {
+    type Err = String;
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "off" | "disabled" | "false" => Ok(Self::Off),
+            "on" | "enabled" | "true" => Ok(Self::On),
+            _ => Err("OSL chat approval suggestion choice must be off or on".to_owned()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatApprovalSuggestionChoiceDto {
+    pub choice: String,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResetEverySettingRecord {
+    pub action: String,
+    pub settings_defaulted: bool,
+    pub look_choices_defaulted: usize,
+    pub friend_choice_groups_defaulted: usize,
+    pub behaviour_choices_defaulted: usize,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct FriendAccountReachAccount {
     pub service_id: String,
     pub account_id: String,
     pub account_label: String,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FriendAccountReachChoiceRecord {
+    pub person_id: String,
+    pub service_id: String,
+    pub account_id: String,
+    pub broadened: bool,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize)]
@@ -279,6 +442,7 @@ pub struct AllowedPlaceDirectionState {
     /// `visible` only when both reciprocal allowance records are present.
     pub verification_state: String,
     pub state: String,
+    pub verification_ticked: bool,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize)]
@@ -298,6 +462,15 @@ pub struct OneUseInviteLink {
     pub use_limit: u8,
     pub expires_at: i64,
     pub consumed_at: Option<i64>,
+}
+
+/// Receipt for a reset constrained to one Settings screen.
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResetSettingGroupRecord {
+    pub action: String,
+    pub group: String,
+    pub settings_defaulted: usize,
 }
 
 /// The minimum friend state needed to create a manual peer-messaging lease.
@@ -568,6 +741,8 @@ struct SignedFriendCode {
 struct PersonMetadata {
     osl_user_id: String,
     ed25519_public: String,
+    #[serde(default)]
+    relationship: FriendRelationship,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     alias: Option<String>,
     #[serde(default)]
@@ -591,16 +766,17 @@ struct PeopleFile {
 
 /// Schema version of `hub_people.json`.
 ///
-/// Version 4 is the first schema whose verification claims cover the full
-/// 60-digit bilateral safety number. Earlier claims either used a one-sided
-/// number or the retired 30-digit bilateral format, so they are cleared on
-/// load rather than migrated: there is nothing in them to carry forward.
-const PEOPLE_SCHEMA_VERSION: u32 = 4;
+/// Version 3 is the first version in which `safety_number_verified` means what
+/// it says. Every earlier file recorded verifications made against a one-sided
+/// number — a value OSL generated and then compared against itself — so those
+/// flags record only that a button was pressed. They are cleared on load, not
+/// migrated: there is nothing in them to carry forward.
+const PEOPLE_SCHEMA_VERSION: u32 = 3;
 
 /// The sole definition of a verified peer in the Hub.
 ///
-/// Pre-v4 files do not prove comparison of the current full bilateral number,
-/// and a pending key change invalidates any earlier result.
+/// Pre-v3 files contain a self-referential ceremony result, never a bilateral
+/// verification, and a pending key change invalidates any earlier result.
 pub fn peer_is_verified(
     people_schema_version: u32,
     safety_number_verified: bool,
@@ -609,7 +785,7 @@ pub fn peer_is_verified(
     people_schema_version >= PEOPLE_SCHEMA_VERSION && safety_number_verified && !pending_key_change
 }
 
-/// Load `hub_people.json`, invalidating pre-v4 verification claims.
+/// Load `hub_people.json`, invalidating pre-v3 verification claims.
 ///
 /// Every read of the People file goes through here so no caller can observe the
 /// stale flags. The clear happens in memory **before** the write, so a crash or
@@ -705,6 +881,13 @@ struct SecurityPreferences {
     /// there is deliberately no OSL-name field to infer or later bind.
     #[serde(default)]
     one_use_invite_links: BTreeMap<String, OneUseInviteLink>,
+    /// Device-local visual choices. Unknown names are refused before mutation.
+    #[serde(default)]
+    look_choices: BTreeMap<String, String>,
+    #[serde(default)]
+    chat_approval_suggestion: ChatApprovalSuggestionChoice,
+    #[serde(default)]
+    app_notification_choices: BTreeMap<String, bool>,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -990,6 +1173,7 @@ pub fn add_friend_code(
         PersonMetadata {
             osl_user_id: parsed.payload.osl_user_id.clone(),
             ed25519_public: parsed.payload.ed25519_public.clone(),
+            relationship: FriendRelationship::Accepted,
             alias,
             safety_number_verified: false,
             auto_whitelist: ipc::auto_whitelist_rules::AutoWhitelistChoice::Never,
@@ -1109,6 +1293,42 @@ pub fn remove_friend(
         peer_key_removed,
         revocations_queued,
         revocation_queue_complete,
+    })
+}
+
+/// Connect the friend page's destructive control to the real friend-removal
+/// transition. The first call only opens the confirmation path; no friendship,
+/// key, grant, or share preference changes until the caller resubmits the same
+/// selected person with `confirmed=true`.
+pub fn remove_friend_from_friend_page(
+    core: &HubCoreState,
+    security: &HubSecurityState,
+    person_id: String,
+    confirmed: bool,
+) -> Result<FriendPageRemoveActionResult, String> {
+    require_unlocked()?;
+    validate_person_id(&person_id)?;
+    if !load_people_file(&config_dir()?)?
+        .people
+        .contains_key(&person_id)
+    {
+        return Err("OSL friend is unknown".to_owned());
+    }
+    if !confirmed {
+        return Ok(FriendPageRemoveActionResult {
+            person_id,
+            confirmation_required: true,
+            removed: false,
+            removal: None,
+        });
+    }
+
+    let removal = remove_friend(core, security, person_id.clone())?;
+    Ok(FriendPageRemoveActionResult {
+        person_id,
+        confirmation_required: false,
+        removed: true,
+        removal: Some(removal),
     })
 }
 
@@ -1254,30 +1474,6 @@ pub fn list_people(core: &HubCoreState) -> Result<Vec<PersonDto>, String> {
         .collect()
 }
 
-/// Complete, unprojected friend records for a portable owner export. Unlike
-/// `list_people`, this does not apply UI display caps to nested account-owned
-/// fields.
-pub fn account_export_friend_documents() -> Result<Vec<(String, serde_json::Value)>, String> {
-    require_unlocked()?;
-    let people = load_people_file(&config_dir()?)?;
-    people
-        .people
-        .into_iter()
-        .map(|(person_id, metadata)| {
-            serde_json::to_value(metadata)
-                .map(|value| (person_id, value))
-                .map_err(|_| "OSL friend record could not be encoded for export".to_owned())
-        })
-        .collect()
-}
-
-/// Complete encrypted account settings, decoded only inside the trusted core.
-pub fn account_export_settings_document() -> Result<serde_json::Value, String> {
-    require_unlocked()?;
-    serde_json::to_value(load_security_preferences()?)
-        .map_err(|_| "OSL settings could not be encoded for export".to_owned())
-}
-
 /// Set or clear a user-owned nickname for one friend. The nickname is written
 /// only to the encrypted device-local People file; it is never included in a
 /// friend code, peer key lookup, or Cloudflare request.
@@ -1301,6 +1497,29 @@ pub fn set_friend_alias(
         .get_mut(&person_id)
         .ok_or_else(|| "OSL friend is unknown".to_owned())?;
     metadata.alias = alias;
+    let updated = metadata.clone();
+    write_encrypted_json(&dir.join(PEOPLE_FILE), &people)?;
+    person_dto(core, &person_id, &updated, &load_security_preferences()?)
+}
+
+/// Change only the local relationship state.  Blocking preserves the roster
+/// record for review while `manual_peer_binding` makes every messaging route
+/// refuse the person by the fixed error name.
+pub fn set_friend_relationship(
+    core: &HubCoreState,
+    security: &HubSecurityState,
+    person_id: String,
+    relationship: FriendRelationship,
+) -> Result<PersonDto, String> {
+    require_unlocked()?;
+    validate_person_id(&person_id)?;
+    let _transition = security.transition.lock()
+        .map_err(|_| "OSL People state is unavailable".to_owned())?;
+    let dir = config_dir()?;
+    let mut people = load_people_file(&dir)?;
+    let metadata = people.people.get_mut(&person_id)
+        .ok_or_else(|| "OSL friend is unknown".to_owned())?;
+    metadata.relationship = relationship;
     let updated = metadata.clone();
     write_encrypted_json(&dir.join(PEOPLE_FILE), &people)?;
     person_dto(core, &person_id, &updated, &load_security_preferences()?)
@@ -1363,6 +1582,118 @@ pub fn remove_group_member_permission(
         write_encrypted_json(&path, &prefs)?;
     }
     Ok(removed)
+}
+
+pub fn list_app_notification_choices(
+    _security: &HubSecurityState,
+) -> Result<Vec<AppNotificationChoiceRecord>, String> {
+    require_unlocked()?;
+    let prefs = load_security_preferences()?;
+    Ok(prefs
+        .app_notification_choices
+        .into_iter()
+        .map(|(app_id, enabled)| AppNotificationChoiceRecord { app_id, enabled })
+        .collect())
+}
+
+/// Restore every user-owned preference to its documented fail-safe default.
+///
+/// This intentionally preserves identities, friends, messages, burned-scope
+/// history, and explicit reach narrowing. It removes only preference and
+/// allow-choice state. The three preference files are rolled back on a later
+/// write failure so callers never observe a successful partial reset.
+pub fn reset_every_setting(
+    core: &HubCoreState,
+    security: &HubSecurityState,
+) -> Result<ResetEverySettingRecord, String> {
+    require_unlocked()?;
+    let _transition = security
+        .transition
+        .lock()
+        .map_err(|_| "OSL setting reset state is unavailable".to_owned())?;
+    let dir = config_dir()?;
+    let owner = active_user_id(core)?;
+    let security_path = dir.join(SECURITY_PREFS_FILE);
+    let app_preferences_path = dir.join("app_preferences.json");
+    let auto_rules_path = dir.join("auto_whitelist_rules.json");
+
+    let previous_security = load_encrypted_json::<SecurityPreferences>(&security_path)?;
+    let mut next_security = previous_security.clone();
+    next_security.version = 2;
+    next_security.decrypt_display_by_scope.clear();
+    next_security.manual_approved_scopes.clear();
+    next_security.manual_approved_scope_people.clear();
+    next_security.group_member_permissions.clear();
+    next_security.friend_account_reach_choices.clear();
+    next_security.friend_conversation_share_choices.clear();
+    next_security.friend_new_account_share_rules.clear();
+    next_security.protected_friend_profile_pictures.clear();
+    next_security.allowed_places.clear();
+    next_security.app_notification_choices.clear();
+    next_security.chat_approval_suggestion = ChatApprovalSuggestionChoice::default();
+    next_security.look_choices.clear();
+
+    let mut app_preferences = core
+        .osl
+        .app_preferences
+        .lock()
+        .map_err(|_| "OSL app preference state is unavailable".to_owned())?;
+    let previous_app_preferences = app_preferences.clone();
+    let mut next_app_preferences = ipc::app_preferences::AppPreferences::default();
+    // Tour progress is lifecycle state, not a setting choice. Resetting it
+    // would unexpectedly force an established account through onboarding.
+    next_app_preferences.tour = previous_app_preferences.tour.clone();
+    next_app_preferences.version = ipc::app_preferences::APP_PREFERENCES_VERSION;
+
+    let mut auto_rules = core
+        .osl
+        .auto_whitelist_rules
+        .lock()
+        .map_err(|_| "OSL automatic allow-rule state is unavailable".to_owned())?;
+    let previous_auto_rules = auto_rules.clone();
+    let next_auto_rules = ipc::auto_whitelist_rules::AutoWhitelistRules::default();
+
+    write_encrypted_json(&security_path, &next_security)?;
+    if let Err(error) =
+        ipc::app_preferences::write_app_preferences(&app_preferences_path, &next_app_preferences)
+    {
+        let _ = write_encrypted_json(&security_path, &previous_security);
+        return Err(error);
+    }
+    if let Err(error) =
+        ipc::auto_whitelist_rules::write_auto_whitelist_rules(&auto_rules_path, &next_auto_rules)
+    {
+        let _ = ipc::app_preferences::write_app_preferences(
+            &app_preferences_path,
+            &previous_app_preferences,
+        );
+        let _ = write_encrypted_json(&security_path, &previous_security);
+        return Err(error);
+    }
+    if let Err(error) = crate::osl_profile::clear_active_profile_picture(&owner) {
+        let _ = ipc::auto_whitelist_rules::write_auto_whitelist_rules(
+            &auto_rules_path,
+            &previous_auto_rules,
+        );
+        let _ = ipc::app_preferences::write_app_preferences(
+            &app_preferences_path,
+            &previous_app_preferences,
+        );
+        let _ = write_encrypted_json(&security_path, &previous_security);
+        return Err(error);
+    }
+
+    *app_preferences = next_app_preferences;
+    *auto_rules = next_auto_rules;
+    core.osl.set_rn_wire_in_enabled(false);
+
+    Ok(ResetEverySettingRecord {
+        action: "reset".to_owned(),
+        settings_defaulted: true,
+        look_choices_defaulted: 8,
+        friend_choice_groups_defaulted: 6,
+        behaviour_choices_defaulted: ipc::app_preferences::BehaviourChoiceName::ALL.len(),
+    })
 }
 
 pub fn list_group_member_permissions(
@@ -1436,6 +1767,96 @@ pub fn set_hub_friend_account_reach_nowhere(
     })
 }
 
+/// Allow an accepted friend to reach every supplied local account.  The choice
+/// is explicit per account; absent records remain a refusal at send time.
+pub fn set_hub_friend_account_reach_everywhere(
+    security: &HubSecurityState,
+    person_id: String,
+    accounts: Vec<FriendAccountReachAccount>,
+) -> Result<FriendAccountReachBulkResult, String> {
+    require_unlocked()?;
+    validate_person_id(&person_id)?;
+    if accounts.is_empty() {
+        return Err("OSL friend account reach requires at least one owned account".to_owned());
+    }
+    let account_keys = validate_friend_account_reach_accounts(&accounts)?;
+    let _transition = security
+        .transition
+        .lock()
+        .map_err(|_| "OSL friend account reach is unavailable".to_owned())?;
+    let dir = config_dir()?;
+    ensure_friend_accepted(&dir, &person_id)?;
+    let path = dir.join(SECURITY_PREFS_FILE);
+    let mut prefs = load_encrypted_json::<SecurityPreferences>(&path)?;
+    let choices = prefs
+        .friend_account_reach_choices
+        .entry(person_id.clone())
+        .or_default();
+    let mut changed_count = 0;
+    for key in account_keys {
+        if choices.insert(key, true) != Some(true) {
+            changed_count += 1;
+        }
+    }
+    prefs.version = 2;
+    write_encrypted_json(&path, &prefs)?;
+    Ok(FriendAccountReachBulkResult {
+        action: "everywhere".to_owned(),
+        person_id: person_id.clone(),
+        accounts: accounts
+            .into_iter()
+            .map(|account| FriendAccountReachRecord {
+                person_id: person_id.clone(),
+                service_id: account.service_id,
+                account_id: account.account_id,
+                account_label: account.account_label,
+                allowed: true,
+            })
+            .collect(),
+        changed_count,
+    })
+}
+
+pub fn set_friend_account_reach_choice(
+    security: &HubSecurityState,
+    person_id: String,
+    service_id: String,
+    account_id: String,
+    broadened: bool,
+) -> Result<FriendAccountReachChoiceRecord, String> {
+    let account = FriendAccountReachAccount {
+        service_id: service_id.clone(),
+        account_id: account_id.clone(),
+        account_label: "Account".to_owned(),
+    };
+    if broadened {
+        set_hub_friend_account_reach_everywhere(security, person_id.clone(), vec![account])?;
+    } else {
+        set_hub_friend_account_reach_nowhere(security, person_id.clone(), vec![account])?;
+    }
+    Ok(FriendAccountReachChoiceRecord { person_id, service_id, account_id, broadened })
+}
+
+pub fn list_friend_account_reach_choices(
+    _security: &HubSecurityState,
+    person_id: String,
+) -> Result<Vec<FriendAccountReachChoiceRecord>, String> {
+    require_unlocked()?;
+    validate_person_id(&person_id)?;
+    let dir = config_dir()?;
+    ensure_friend_accepted(&dir, &person_id)?;
+    let prefs = load_encrypted_json::<SecurityPreferences>(&dir.join(SECURITY_PREFS_FILE))?;
+    Ok(prefs.friend_account_reach_choices.get(&person_id).into_iter().flat_map(|choices| {
+        choices.iter().filter_map(|(key, allowed)| {
+            let (service_id, account_id) = key.split_once(':')?;
+            Some(FriendAccountReachChoiceRecord {
+                person_id: person_id.clone(), service_id: service_id.to_owned(),
+                account_id: account_id.to_owned(), broadened: *allowed,
+            })
+        })
+    }).collect())
+}
+
 pub fn read_friend_page_share_data(
     _security: &HubSecurityState,
     person_id: String,
@@ -1500,6 +1921,47 @@ pub fn save_friend_page_share_data(
     }
     write_encrypted_json(&path, &prefs)?;
     read_friend_page_share_data(security, person_id, account_catalog, conversation_catalog)
+}
+
+/// Change only the future-account rule for the selected friend. Account and
+/// conversation choices are catalogs here, not write input, so a switch click
+/// cannot accidentally save a stale checkbox belonging to this or any other
+/// friend.
+pub fn set_friend_page_new_account_rule(
+    security: &HubSecurityState,
+    person_id: String,
+    accounts: Vec<FriendAccountReachAccount>,
+    conversations: Vec<FriendPageShareConversation>,
+    new_account_rule: String,
+) -> Result<FriendPageShareData, String> {
+    require_unlocked()?;
+    validate_person_id(&person_id)?;
+    let account_keys = validate_friend_account_reach_accounts(&accounts)?;
+    validate_friend_page_share_conversations(&conversations)?;
+    let enabled = parse_friend_page_new_account_rule(&new_account_rule)?;
+
+    let _transition = security
+        .transition
+        .lock()
+        .map_err(|_| "OSL friend share choices are unavailable".to_owned())?;
+    let path = config_dir()?.join(SECURITY_PREFS_FILE);
+    let mut prefs = load_encrypted_json::<SecurityPreferences>(&path)?;
+    prefs.version = 2;
+    if enabled {
+        prefs
+            .friend_new_account_share_rules
+            .insert(person_id.clone(), true);
+    } else {
+        prefs.friend_new_account_share_rules.remove(&person_id);
+    }
+    write_encrypted_json(&path, &prefs)?;
+    Ok(friend_page_share_data_from_preferences(
+        &person_id,
+        accounts,
+        account_keys,
+        conversations,
+        &prefs,
+    ))
 }
 
 pub fn remove_friend_page_share_data(
@@ -1679,6 +2141,213 @@ pub fn list_allowed_place_records(
     Ok(prefs.allowed_places.values().cloned().collect())
 }
 
+pub fn set_look_choice(
+    security: &HubSecurityState,
+    name: String,
+    value: String,
+) -> Result<LookChoiceRecord, String> {
+    require_unlocked()?;
+    validate_look_choice_name(&name)?;
+    validate_look_choice_value(&value)?;
+    let _transition = security
+        .transition
+        .lock()
+        .map_err(|_| "OSL look choice state is unavailable".to_owned())?;
+    let path = config_dir()?.join(SECURITY_PREFS_FILE);
+    let mut prefs = load_encrypted_json::<SecurityPreferences>(&path)?;
+    prefs.version = 2;
+    prefs.look_choices.insert(name.clone(), value.clone());
+    write_encrypted_json(&path, &prefs)?;
+    Ok(LookChoiceRecord { name, value })
+}
+
+pub fn look_choice_value(
+    _security: &HubSecurityState,
+    name: String,
+) -> Result<Option<String>, String> {
+    require_unlocked()?;
+    validate_look_choice_name(&name)?;
+    let prefs = load_security_preferences()?;
+    Ok(prefs.look_choices.get(&name).cloned())
+}
+
+pub fn list_look_choices(_security: &HubSecurityState) -> Result<Vec<LookChoiceRecord>, String> {
+    require_unlocked()?;
+    let prefs = load_security_preferences()?;
+    Ok(look_choice_records(&prefs))
+}
+
+pub fn chat_approval_suggestion_choice() -> Result<ChatApprovalSuggestionChoiceDto, String> {
+    require_unlocked()?;
+    let prefs = load_security_preferences()?;
+    Ok(ChatApprovalSuggestionChoiceDto {
+        choice: prefs.chat_approval_suggestion.as_str().to_owned(),
+    })
+}
+
+pub fn save_chat_approval_suggestion_choice(
+    security: &HubSecurityState,
+    choice: String,
+) -> Result<ChatApprovalSuggestionChoiceDto, String> {
+    require_unlocked()?;
+    let choice = choice.parse::<ChatApprovalSuggestionChoice>()?;
+    let _transition = security
+        .transition
+        .lock()
+        .map_err(|_| "OSL chat approval suggestion state is unavailable".to_owned())?;
+    let path = config_dir()?.join(SECURITY_PREFS_FILE);
+    let mut prefs = load_encrypted_json::<SecurityPreferences>(&path)?;
+    prefs.version = 2;
+    prefs.chat_approval_suggestion = choice;
+    write_encrypted_json(&path, &prefs)?;
+    Ok(ChatApprovalSuggestionChoiceDto {
+        choice: choice.as_str().to_owned(),
+    })
+}
+
+pub fn set_app_notification_choice(
+    security: &HubSecurityState,
+    app_id: String,
+    enabled: bool,
+) -> Result<AppNotificationChoiceRecord, String> {
+    validate_app_notification_id(&app_id)?;
+    require_unlocked()?;
+    let _transition = security
+        .transition
+        .lock()
+        .map_err(|_| "OSL app notification state is unavailable".to_owned())?;
+    let path = config_dir()?.join(SECURITY_PREFS_FILE);
+    let mut prefs = load_encrypted_json::<SecurityPreferences>(&path)?;
+    prefs.version = 2;
+    prefs
+        .app_notification_choices
+        .insert(app_id.clone(), enabled);
+    write_encrypted_json(&path, &prefs)?;
+    Ok(AppNotificationChoiceRecord { app_id, enabled })
+}
+
+pub fn app_notification_enabled_before_notice(
+    _security: &HubSecurityState,
+    app_id: String,
+) -> Result<bool, String> {
+    validate_app_notification_id(&app_id)?;
+    require_unlocked()?;
+    let prefs = load_security_preferences()?;
+    Ok(prefs
+        .app_notification_choices
+        .get(&app_id)
+        .copied()
+        .unwrap_or(false))
+}
+
+/// Restore only the preferences owned by one named Settings screen.
+pub fn reset_setting_group(
+    core: &HubCoreState,
+    security: &HubSecurityState,
+    group: String,
+) -> Result<ResetSettingGroupRecord, String> {
+    crate::setting_groups::validate_saved_settings_group(&group)?;
+    require_unlocked()?;
+    let _transition = security
+        .transition
+        .lock()
+        .map_err(|_| "OSL setting reset state is unavailable".to_owned())?;
+    let settings_defaulted = crate::setting_groups::SAVED_SETTING_GROUPS
+        .iter()
+        .filter(|entry| entry.group == group)
+        .count();
+
+    match group.as_str() {
+        "Account" => {
+            let owner = active_user_id(core)?;
+            crate::osl_profile::clear_active_profile_picture(&owner)?;
+        }
+        "Notifications" | "Look" => {
+            let path = config_dir()?.join(SECURITY_PREFS_FILE);
+            let mut prefs = load_encrypted_json::<SecurityPreferences>(&path)?;
+            prefs.version = 2;
+            if group == "Notifications" {
+                prefs.chat_approval_suggestion = ChatApprovalSuggestionChoice::default();
+                prefs.app_notification_choices.clear();
+            } else {
+                prefs.look_choices.clear();
+            }
+            write_encrypted_json(&path, &prefs)?;
+        }
+        "Whitelisting" | "Privacy" | "Apps and sending" | "Behaviour" => {
+            let dir = config_dir()?;
+            let app_preferences_path = dir.join("app_preferences.json");
+            let mut app_preferences = core
+                .osl
+                .app_preferences
+                .lock()
+                .map_err(|_| "OSL app preference state is unavailable".to_owned())?;
+            let previous_app_preferences = app_preferences.clone();
+            let mut next_app_preferences = previous_app_preferences.clone();
+            let defaults = ipc::app_preferences::AppPreferences::default();
+            next_app_preferences.version = ipc::app_preferences::APP_PREFERENCES_VERSION;
+
+            match group.as_str() {
+                "Whitelisting" => {
+                    next_app_preferences.new_friend_defaults = defaults.new_friend_defaults;
+                    next_app_preferences.auto_whitelist_rules.clear();
+                }
+                "Privacy" => {
+                    next_app_preferences.privacy_level = defaults.privacy_level;
+                    next_app_preferences.privacy_level_rule_sets.clear();
+                    next_app_preferences.verification_warning = defaults.verification_warning;
+                }
+                "Apps and sending" => {
+                    next_app_preferences.next_generation_message_policy =
+                        defaults.next_generation_message_policy;
+                    next_app_preferences.message_defaults = defaults.message_defaults;
+                    next_app_preferences.rn_wire_policy_requested = false;
+                }
+                "Behaviour" => next_app_preferences.behaviour_choices.clear(),
+                _ => unreachable!("validated Settings group"),
+            }
+
+            ipc::app_preferences::write_app_preferences(
+                &app_preferences_path,
+                &next_app_preferences,
+            )?;
+
+            if group == "Whitelisting" {
+                let auto_rules_path = dir.join("auto_whitelist_rules.json");
+                let mut auto_rules = core
+                    .osl
+                    .auto_whitelist_rules
+                    .lock()
+                    .map_err(|_| "OSL automatic allow-rule state is unavailable".to_owned())?;
+                let next_auto_rules = ipc::auto_whitelist_rules::AutoWhitelistRules::default();
+                if let Err(error) = ipc::auto_whitelist_rules::write_auto_whitelist_rules(
+                    &auto_rules_path,
+                    &next_auto_rules,
+                ) {
+                    let _ = ipc::app_preferences::write_app_preferences(
+                        &app_preferences_path,
+                        &previous_app_preferences,
+                    );
+                    return Err(error);
+                }
+                *auto_rules = next_auto_rules;
+            }
+
+            *app_preferences = next_app_preferences;
+            if group == "Apps and sending" {
+                core.osl.set_rn_wire_in_enabled(false);
+            }
+        }
+        _ => unreachable!("validated Settings group"),
+    }
+
+    Ok(ResetSettingGroupRecord {
+        action: "reset".to_owned(),
+        group,
+        settings_defaulted,
+    })
+}
+
 pub fn compare_allowed_place_direction_state(
     _security: &HubSecurityState,
     app: String,
@@ -1720,6 +2389,7 @@ pub fn compare_allowed_place_direction_state(
         "hidden"
     }
     .to_owned();
+    let verification_ticked = first_to_second_allowed && second_to_first_allowed;
     Ok(AllowedPlaceDirectionState {
         app,
         kind,
@@ -1732,6 +2402,7 @@ pub fn compare_allowed_place_direction_state(
         saved_directions,
         verification_state,
         state,
+        verification_ticked,
     })
 }
 
@@ -2233,6 +2904,20 @@ fn validate_manual_peer_identity(
     Ok(())
 }
 
+fn ensure_friend_accepted(dir: &Path, person_id: &str) -> Result<(), String> {
+    let people = load_people_file(dir)?;
+    let metadata = people.people.get(person_id)
+        .ok_or_else(|| "OSL friend is unknown".to_owned())?;
+    ensure_friend_relationship_accepted(metadata)
+}
+
+fn ensure_friend_relationship_accepted(metadata: &PersonMetadata) -> Result<(), String> {
+    match metadata.relationship {
+        FriendRelationship::Accepted => Ok(()),
+        FriendRelationship::Blocked => Err(FRIEND_BLOCKED_ERROR.to_owned()),
+    }
+}
+
 /// Resolve one existing, verified friend for manual peer messaging. This is
 /// deliberately re-run by every prepare/open operation rather than treating
 /// activation as a durable authorization decision.
@@ -2248,6 +2933,7 @@ pub fn manual_peer_binding(
         .people
         .get(&person_id)
         .ok_or_else(|| "OSL friend is unknown".to_owned())?;
+    ensure_friend_relationship_accepted(metadata)?;
     let peer = core
         .osl
         .peer_map
@@ -2376,12 +3062,32 @@ fn manual_peer_scope_approved_for_binding(
     let dir = config_dir()?;
     let prefs = load_encrypted_json::<SecurityPreferences>(&dir.join(SECURITY_PREFS_FILE))?;
     let storage_key = scope.storage_key();
-    Ok(manual_scope_preference_approved(&prefs, &storage_key))
+    Ok(manual_scope_preference_approved(&prefs, &storage_key)
+        && friend_account_reach_choice_allows_action(
+            &prefs,
+            &binding.person_id,
+            service_id,
+            account_id,
+        ))
 }
 
 fn manual_scope_preference_approved(prefs: &SecurityPreferences, storage_key: &str) -> bool {
     prefs.manual_approved_scopes.contains(storage_key)
         && !prefs.burned_manual_scopes.contains(storage_key)
+}
+
+fn friend_account_reach_choice_allows_action(
+    prefs: &SecurityPreferences,
+    person_id: &str,
+    service_id: &str,
+    account_id: &str,
+) -> bool {
+    prefs
+        .friend_account_reach_choices
+        .get(person_id)
+        .and_then(|accounts| accounts.get(&format!("{service_id}:{account_id}")))
+        .copied()
+        .unwrap_or(false)
 }
 
 /// Withdraw every manual grant attributed to one person. Burn records are
@@ -2399,6 +3105,12 @@ fn withdraw_person_grants(prefs: &mut SecurityPreferences, person_id: &str) -> u
         prefs.decrypt_display_by_scope.remove(storage_key);
     }
     prefs.reach_narrowed_scopes.remove(person_id);
+    // Friend-page share decisions belong to the friendship, not to the stable
+    // identifier forever. Keeping them would silently restore old reach if the
+    // same person were added again later.
+    prefs.friend_account_reach_choices.remove(person_id);
+    prefs.friend_conversation_share_choices.remove(person_id);
+    prefs.friend_new_account_share_rules.remove(person_id);
     storage_keys.len()
 }
 
@@ -2628,6 +3340,12 @@ pub fn apply_scoped_trust_grant(
         .lock()
         .map_err(|_| "OSL manual peer settings are unavailable".to_owned())?;
     let dir = config_dir()?;
+    let people = load_people_file(&dir)?;
+    let metadata = people
+        .people
+        .get(grant.person_id())
+        .ok_or_else(|| "OSL friend is unknown".to_owned())?;
+    ensure_friend_can_be_enabled(metadata, people.version)?;
     let path = dir.join(SECURITY_PREFS_FILE);
     let mut prefs = load_encrypted_json::<SecurityPreferences>(&path)?;
     if prefs.burned_manual_scopes.contains(grant.storage_key()) {
@@ -2641,7 +3359,7 @@ pub fn apply_scoped_trust_grant(
         .manual_approved_scope_people
         .insert(grant.storage_key().to_owned(), grant.person_id().to_owned());
     let defaults = ipc::app_preferences::load_app_preferences(&dir.join("app_preferences.json"));
-    if defaults.new_friend_account_reach
+    if defaults.new_friend_defaults.account_reach
         == ipc::app_preferences::NewFriendAccountReach::AllSharedChats
     {
         prefs
@@ -2667,9 +3385,9 @@ fn apply_new_friend_defaults_to_people(
     let Some(metadata) = people.people.get_mut(person_id) else {
         return Err("OSL friend is unknown".to_owned());
     };
-    metadata.auto_whitelist = defaults.new_friend_auto_whitelist;
+    metadata.auto_whitelist = defaults.new_friend_defaults.auto_whitelist;
     metadata.auto_whitelist_future_accounts = matches!(
-        defaults.new_friend_auto_whitelist,
+        defaults.new_friend_defaults.auto_whitelist,
         ipc::auto_whitelist_rules::AutoWhitelistChoice::Always
     );
     write_encrypted_json(&path, &people)
@@ -4667,6 +5385,17 @@ fn one_use_invite_link_records(prefs: &SecurityPreferences) -> Vec<OneUseInviteL
     prefs.one_use_invite_links.values().cloned().collect()
 }
 
+fn look_choice_records(prefs: &SecurityPreferences) -> Vec<LookChoiceRecord> {
+    prefs
+        .look_choices
+        .iter()
+        .map(|(name, value)| LookChoiceRecord {
+            name: name.clone(),
+            value: value.clone(),
+        })
+        .collect()
+}
+
 fn validate_allowed_place_record(record: &AllowedPlaceRecord) -> Result<(), String> {
     validate_allowed_place_id(&record.app, "OSL allowed-place app is invalid")?;
     validate_allowed_place_id(&record.account, "OSL allowed-place account is invalid")?;
@@ -4679,8 +5408,13 @@ fn validate_allowed_place_record(record: &AllowedPlaceRecord) -> Result<(), Stri
     {
         return Err("OSL Instagram allowed-place kind is invalid".to_owned());
     }
-    if record.app == "x" && !matches!(record.kind.as_str(), "direct_message" | "post") {
+    if record.app == "x"
+        && !matches!(record.kind.as_str(), "direct_message" | "public_post")
+    {
         return Err("OSL X allowed-place kind is invalid".to_owned());
+    }
+    if record.app == ipc::allowed_places::APP_MESSENGER {
+        ipc::allowed_places::normalize_messenger_whitelist_kind(&record.kind)?;
     }
     validate_allowed_place_id(&record.stable_id, "OSL allowed-place identifier is invalid")?;
     let expected_prefix = format!("{}:{}:{}:", record.app, record.account, record.kind);
@@ -4701,6 +5435,26 @@ fn validate_allowed_place_id(value: &str, message: &str) -> Result<(), String> {
         || value.chars().any(char::is_whitespace)
     {
         return Err(message.to_owned());
+    }
+    Ok(())
+}
+
+fn validate_look_choice_name(value: &str) -> Result<(), String> {
+    if !matches!(
+        value,
+        "theme" | "named-look" | "accent" | "corners" | "glow" | "text" | "spacing" | "see-through"
+    ) {
+        return Err("OSL look choice name is invalid".to_owned());
+    }
+    Ok(())
+}
+
+fn validate_look_choice_value(value: &str) -> Result<(), String> {
+    if value.is_empty()
+        || value.len() > 128
+        || value.chars().any(|character| character.is_control())
+    {
+        return Err("OSL look choice value is invalid".to_owned());
     }
     Ok(())
 }
@@ -4811,6 +5565,7 @@ fn person_dto(
         person_id: person_id.to_owned(),
         osl_user_id: metadata.osl_user_id.clone(),
         alias: metadata.alias.clone(),
+        relationship: metadata.relationship,
         // Ordinarily this is the complete bundle OSL holds and encrypts to. A
         // signed pending transport-key update is shown only while encryption
         // is blocked; successful comparison adopts that exact bundle
@@ -4884,6 +5639,18 @@ fn validate_person_id(value: &str) -> Result<(), String> {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
     {
         return Err("OSL person id is invalid".to_owned());
+    }
+    Ok(())
+}
+
+fn validate_app_notification_id(value: &str) -> Result<(), String> {
+    if value.is_empty()
+        || value.len() > 128
+        || value
+            .bytes()
+            .any(|byte| !byte.is_ascii_alphanumeric() && !matches!(byte, b'-' | b'_' | b'.'))
+    {
+        return Err("OSL app notification identifier is invalid".to_owned());
     }
     Ok(())
 }
@@ -4988,26 +5755,16 @@ fn safety_number_matches(expected: &str, supplied: &str) -> bool {
     let expected = normalise_safety_number(expected);
     let supplied = normalise_safety_number(supplied);
     let comparison_value = |digits: &str| {
-        let mut value = [0u8; 64];
-        for (slot, digit) in value[..60].iter_mut().zip(digits.bytes()) {
+        let mut value = [0u8; 32];
+        for (slot, digit) in value[..30].iter_mut().zip(digits.bytes()) {
             *slot = digit;
         }
         let length = u16::try_from(digits.len()).unwrap_or(u16::MAX);
-        value[62..].copy_from_slice(&length.to_be_bytes());
+        value[30..].copy_from_slice(&length.to_be_bytes());
         value
     };
-    // `ipc::revocation::ct_eq` is intentionally sized for 32-byte revocation
-    // digests. Safety-number values include 60 fixed-width digit slots plus a
-    // length suffix, so compare their 64-byte representations here without an
-    // early-exit equality operation.
-    let expected_value = comparison_value(&expected);
-    let supplied_value = comparison_value(&supplied);
-    let equal = expected_value
-        .iter()
-        .zip(supplied_value.iter())
-        .fold(0u8, |difference, (left, right)| difference | (left ^ right))
-        == 0;
-    equal && expected.len() == 60 && supplied.len() == 60
+    let equal = ipc::revocation::ct_eq(&comparison_value(&expected), &comparison_value(&supplied));
+    equal && expected.len() == 30 && supplied.len() == 30
 }
 
 /// Which friend does this DM-kind scope belong to, as far as OSL can prove?
@@ -5456,11 +6213,232 @@ fn write_encrypted_json_with_key<T: Serialize>(
     crate::atomic_file::write_recoverable(path, &sealed, "OSL security state")
 }
 
+#[cfg(feature = "task-0863-test")]
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct Task0863ResetObservation {
+    pub group: String,
+    pub settings_at_default: usize,
+    pub other_changed: usize,
+}
+
+#[cfg(feature = "task-0863-test")]
+struct Task0863Harness {
+    dir: std::path::PathBuf,
+    previous_active_account_dir: Option<std::path::PathBuf>,
+    previous_file_key: Option<[u8; 32]>,
+}
+
+#[cfg(feature = "task-0863-test")]
+impl Task0863Harness {
+    fn new(label: &str) -> Result<Self, String> {
+        let base = std::env::temp_dir();
+        let dir = (0..100)
+            .find_map(|attempt| {
+                let nonce = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos();
+                let candidate = base.join(format!(
+                    "osl-task0863-{label}-{}-{nonce}-{attempt}",
+                    std::process::id()
+                ));
+                match std::fs::create_dir(&candidate) {
+                    Ok(()) => Some(candidate),
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => None,
+                    Err(_) => None,
+                }
+            })
+            .ok_or_else(|| "TASK0863 could not allocate fixture directory".to_owned())?;
+        let previous_active_account_dir = keystore::active_account_dir();
+        let previous_file_key = ipc::main_password::get_file_storage_key();
+        keystore::set_active_account_dir(Some(dir.clone()));
+        ipc::main_password::set_file_storage_key(Some([0x86; 32]));
+        Ok(Self {
+            dir,
+            previous_active_account_dir,
+            previous_file_key,
+        })
+    }
+}
+
+#[cfg(feature = "task-0863-test")]
+impl Drop for Task0863Harness {
+    fn drop(&mut self) {
+        keystore::set_active_account_dir(self.previous_active_account_dir.clone());
+        ipc::main_password::set_file_storage_key(self.previous_file_key);
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+#[cfg(feature = "task-0863-test")]
+fn task0863_seed_all_screens(core: &HubCoreState, owner: &str, dir: &Path) -> Result<(), String> {
+    let mut security_preferences = SecurityPreferences::default();
+    security_preferences.version = 2;
+    security_preferences.chat_approval_suggestion = ChatApprovalSuggestionChoice::Off;
+    security_preferences
+        .app_notification_choices
+        .insert("signal".to_owned(), true);
+    security_preferences
+        .look_choices
+        .insert("theme".to_owned(), "dark".to_owned());
+    write_encrypted_json(&dir.join(SECURITY_PREFS_FILE), &security_preferences)?;
+
+    let mut app_preferences = ipc::app_preferences::AppPreferences::default();
+    app_preferences.new_friend_defaults.account_reach =
+        ipc::app_preferences::NewFriendAccountReach::AllSharedChats;
+    app_preferences.privacy_level = ipc::app_preferences::PrivacyLevel::Maximum;
+    app_preferences.next_generation_message_policy =
+        ipc::app_preferences::NextGenerationMessagePolicy::On;
+    app_preferences.message_defaults.timer_seconds = 901;
+    app_preferences
+        .behaviour_choices
+        .insert("sound".to_owned(), "changed".to_owned());
+    ipc::app_preferences::write_app_preferences(
+        &dir.join("app_preferences.json"),
+        &app_preferences,
+    )?;
+    *core
+        .osl
+        .app_preferences
+        .lock()
+        .map_err(|_| "TASK0863 app preference fixture is unavailable".to_owned())? =
+        app_preferences;
+
+    crate::osl_profile::set_active_profile_picture(
+        owner,
+        "data:image/png;base64,iVBORw0KGgo=".to_owned(),
+    )?;
+    Ok(())
+}
+
+#[cfg(feature = "task-0863-test")]
+fn task0863_changed_settings(
+    core: &HubCoreState,
+    owner: &str,
+    dir: &Path,
+) -> Result<[bool; 7], String> {
+    let security_preferences =
+        load_encrypted_json::<SecurityPreferences>(&dir.join(SECURITY_PREFS_FILE))?;
+    let app_preferences = core
+        .osl
+        .app_preferences
+        .lock()
+        .map_err(|_| "TASK0863 app preference fixture is unavailable".to_owned())?;
+    Ok([
+        crate::osl_profile::read_active_profile_picture(owner)?
+            .image
+            .is_some(),
+        app_preferences.new_friend_defaults.account_reach
+            == ipc::app_preferences::NewFriendAccountReach::AllSharedChats,
+        app_preferences.privacy_level == ipc::app_preferences::PrivacyLevel::Maximum,
+        security_preferences.chat_approval_suggestion == ChatApprovalSuggestionChoice::Off
+            && security_preferences.app_notification_choices.get("signal") == Some(&true),
+        app_preferences.next_generation_message_policy
+            == ipc::app_preferences::NextGenerationMessagePolicy::On
+            && app_preferences.message_defaults.timer_seconds == 901,
+        security_preferences.look_choices.get("theme").map(String::as_str) == Some("dark"),
+        app_preferences.behaviour_choices.get("sound").map(String::as_str) == Some("changed"),
+    ])
+}
+
+/// Run the TASK 0863 file-backed acceptance proof through the real reset
+/// function. This symbol exists only with the dedicated test feature.
+#[cfg(feature = "task-0863-test")]
+pub fn task0863_run_per_screen_resets(
+    groups: Vec<String>,
+) -> Result<Vec<Task0863ResetObservation>, String> {
+    const EXPECTED: [&str; 7] = [
+        "Account",
+        "Whitelisting",
+        "Privacy",
+        "Notifications",
+        "Apps and sending",
+        "Look",
+        "Behaviour",
+    ];
+    for expected in EXPECTED {
+        if !groups.iter().any(|group| group == expected) {
+            return Err(format!("TASK0863 fixture missing reset group {expected}"));
+        }
+    }
+    if groups.len() != EXPECTED.len() {
+        return Err("TASK0863 fixture must name exactly seven reset groups".to_owned());
+    }
+
+    let mut observations = Vec::with_capacity(EXPECTED.len());
+    for (reset_index, group) in groups.into_iter().enumerate() {
+        let harness = Task0863Harness::new(&group.to_ascii_lowercase().replace(' ', "-"))?;
+        let core = HubCoreState::default();
+        let security = HubSecurityState::default();
+        *core
+            .osl
+            .identity
+            .lock()
+            .map_err(|_| "TASK0863 identity fixture is unavailable".to_owned())? =
+            Some(keystore::generate_native_identity());
+        let owner = active_user_id(&core)?;
+        task0863_seed_all_screens(&core, &owner, &harness.dir)?;
+        if task0863_changed_settings(&core, &owner, &harness.dir)? != [true; 7] {
+            return Err("TASK0863 fixture did not change one setting on every screen".to_owned());
+        }
+
+        let receipt = reset_setting_group(&core, &security, group.clone())?;
+        if receipt.action != "reset" || receipt.group != group {
+            return Err(format!("TASK0863 reset receipt did not match {group}"));
+        }
+        let changed = task0863_changed_settings(&core, &owner, &harness.dir)?;
+        let settings_at_default = changed.iter().filter(|is_changed| !**is_changed).count();
+        let other_changed = changed
+            .iter()
+            .enumerate()
+            .filter(|(index, is_changed)| *index != reset_index && **is_changed)
+            .count();
+        if changed[reset_index] || settings_at_default != 1 || other_changed != 6 {
+            return Err(format!(
+                "TASK0863 {group} reset was broad: settings_at_default={settings_at_default} other_changed={other_changed}"
+            ));
+        }
+        observations.push(Task0863ResetObservation {
+            group,
+            settings_at_default,
+            other_changed,
+        });
+    }
+    Ok(observations)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     const TEST_FILE_KEY: [u8; 32] = [0x91; 32];
+
+    #[test]
+    fn task_0549_strip_timer_has_only_day_hour_minute_state_and_enforces_bounds() {
+        let default = default_timer_picker_state();
+        assert_eq!(default.days, "00");
+        assert_eq!(default.hours, "00");
+        assert_eq!(default.minutes, "01");
+
+        let one_minute = timer_picker_state(0, 0, 1).unwrap();
+        assert_eq!(one_minute.minutes, "01");
+
+        let thirty_days = timer_picker_state(30, 0, 0).unwrap();
+        assert_eq!(thirty_days.days, "30");
+
+        assert_eq!(
+            timer_picker_state(0, 0, 0).unwrap_err(),
+            "OSL timer picker must be at least one minute"
+        );
+        assert_eq!(
+            timer_picker_state(31, 0, 0).unwrap_err(),
+            "OSL timer picker days must be between 00 and 30"
+        );
+        assert_eq!(
+            timer_picker_state(30, 0, 1).unwrap_err(),
+            "OSL timer picker cannot exceed 30 days"
+        );
+    }
 
     struct FileBackedSecurityHarness {
         dir: std::path::PathBuf,
@@ -5496,6 +6474,241 @@ mod tests {
             ipc::main_password::set_file_storage_key(self.previous_file_key);
             let _ = std::fs::remove_dir_all(&self.dir);
         }
+    }
+
+    #[test]
+    fn linux_test_window_changes_all_eight_style_values_from_direct_saved_settings() {
+        let _harness = FileBackedSecurityHarness::new("look-window-0769");
+        let security = HubSecurityState::default();
+        let saved = [
+            ("theme", "theme-0769-midnight"),
+            ("named-look", "named-look-0769-quiet"),
+            ("accent", "accent-0769-teal"),
+            ("corners", "corners-0769-soft"),
+            ("glow", "glow-0769-low"),
+            ("text", "text-0769-readable"),
+            ("spacing", "spacing-0769-open"),
+            ("see-through", "see-through-0769-off"),
+        ];
+        for (name, value) in saved {
+            set_look_choice(&security, name.to_owned(), value.to_owned()).unwrap();
+        }
+        let mut window = crate::look_window::LinuxTestWindow::default();
+        let changed =
+            crate::look_window::apply_saved_look_choices(&HubSecurityState::default(), &mut window)
+                .unwrap();
+        println!("TASK0769 linux_test_window_direct_saved_settings style_values_changed={} style_values={}", changed, window.style_values.len());
+        assert_eq!(changed, 8);
+        assert_eq!(window.style_values.len(), 8);
+        for ((_, property), (_, value)) in crate::look_window::LOOK_STYLE_BINDINGS.iter().zip(saved)
+        {
+            assert_eq!(window.style_values.get(*property), Some(&value.to_owned()));
+        }
+    }
+
+    #[test]
+    fn task_0796_one_reset_restores_every_saved_choice_to_safe_defaults() {
+        use ipc::app_preferences::{
+            MessageDefaults, MessageScopeDefault, MessageWriterDefault, NewFriendAccountReach,
+            NewFriendDefaults, NewFriendVerificationWarnings, NextGenerationMessagePolicy,
+            PrivacyLevel, PrivacyLevelRuleSet, VerificationWarningChoice,
+        };
+        use ipc::auto_whitelist_rules::{
+            AutoWhitelistAppKind, AutoWhitelistChoice, AutoWhitelistRules,
+        };
+        use ipc::commands::{
+            cmd_osl_get_auto_whitelist_rule, cmd_osl_get_new_friend_defaults,
+            cmd_osl_read_behaviour_choice, cmd_osl_read_message_default_burn_scope,
+            cmd_osl_read_message_default_cover_writing, cmd_osl_read_message_default_timer_seconds,
+            cmd_osl_read_message_default_view_once_length_seconds,
+            cmd_osl_read_next_generation_message_policy, cmd_osl_read_privacy_protection_choices,
+            cmd_osl_read_verification_warning_choice,
+        };
+
+        let harness = FileBackedSecurityHarness::new("task-0796-reset-every-setting");
+        let core = HubCoreState::default();
+        install_self_identity(&core);
+        let owner = active_user_id(&core).unwrap();
+        let security = HubSecurityState::default();
+
+        let mut seeded_app = ipc::app_preferences::AppPreferences::default();
+        seeded_app.version = ipc::app_preferences::APP_PREFERENCES_VERSION;
+        seeded_app
+            .auto_whitelist_rules
+            .insert("chat".to_owned(), AutoWhitelistChoice::Always);
+        seeded_app.new_friend_defaults = NewFriendDefaults {
+            account_reach: NewFriendAccountReach::AllSharedChats,
+            auto_whitelist: AutoWhitelistChoice::Always,
+            verification_warnings: NewFriendVerificationWarnings::Disabled,
+        };
+        seeded_app.new_friend_account_reach = NewFriendAccountReach::AllSharedChats;
+        seeded_app.new_friend_auto_whitelist = AutoWhitelistChoice::Always;
+        seeded_app.new_friend_verification_warnings = NewFriendVerificationWarnings::Disabled;
+        seeded_app.privacy_level = PrivacyLevel::Maximum;
+        seeded_app.privacy_level_rule_sets.insert(
+            "maximum".to_owned(),
+            PrivacyLevelRuleSet::for_level(PrivacyLevel::Maximum),
+        );
+        seeded_app.rn_wire_policy_requested = true;
+        seeded_app.next_generation_message_policy = NextGenerationMessagePolicy::On;
+        seeded_app.verification_warning = VerificationWarningChoice::Never;
+        seeded_app.message_defaults = MessageDefaults {
+            scope: MessageScopeDefault::App,
+            timer_seconds: 86_400,
+            display_length_seconds: 45,
+            writer: MessageWriterDefault::AiCovertext,
+        };
+        for name in ipc::app_preferences::BehaviourChoiceName::ALL {
+            seeded_app
+                .behaviour_choices
+                .insert(name.label().to_owned(), format!("changed-{}", name.label()));
+        }
+        ipc::app_preferences::write_app_preferences(
+            &harness.path().join("app_preferences.json"),
+            &seeded_app,
+        )
+        .unwrap();
+        *core.osl.app_preferences.lock().unwrap() = seeded_app;
+        core.osl.set_rn_wire_in_enabled(true);
+
+        let mut seeded_auto_rules = AutoWhitelistRules::default();
+        seeded_auto_rules.save(AutoWhitelistAppKind::Chat, AutoWhitelistChoice::Always);
+        ipc::auto_whitelist_rules::write_auto_whitelist_rules(
+            &harness.path().join("auto_whitelist_rules.json"),
+            &seeded_auto_rules,
+        )
+        .unwrap();
+        *core.osl.auto_whitelist_rules.lock().unwrap() = seeded_auto_rules;
+
+        let mut seeded_security = SecurityPreferences::default();
+        seeded_security.version = 2;
+        seeded_security.chat_approval_suggestion = ChatApprovalSuggestionChoice::Off;
+        seeded_security
+            .app_notification_choices
+            .insert("discord".to_owned(), true);
+        for (name, _) in crate::look_window::LOOK_STYLE_BINDINGS {
+            seeded_security
+                .look_choices
+                .insert(name.to_owned(), format!("changed-{name}"));
+        }
+        write_encrypted_json(&harness.path().join(SECURITY_PREFS_FILE), &seeded_security).unwrap();
+
+        let png = format!(
+            "data:image/png;base64,{}",
+            STANDARD.encode(b"\x89PNG\r\n\x1a\n")
+        );
+        crate::osl_profile::set_active_profile_picture(&owner, png).unwrap();
+
+        let reset = reset_every_setting(&core, &security).unwrap();
+        assert_eq!(reset.action, "reset");
+
+        let restarted = HubCoreState::default();
+        *restarted.osl.app_preferences.lock().unwrap() = ipc::app_preferences::load_app_preferences(
+            &harness.path().join("app_preferences.json"),
+        );
+
+        let mut direct_reads = Vec::new();
+        let auto_rule = cmd_osl_get_auto_whitelist_rule(&restarted.osl, "chat".to_owned()).unwrap();
+        assert_eq!(auto_rule, "never");
+        direct_reads.push(format!("auto_rule={auto_rule}"));
+        let typed_auto_rule = restarted
+            .osl
+            .auto_whitelist_rules
+            .lock()
+            .unwrap()
+            .query(AutoWhitelistAppKind::Chat)
+            .saved_choice;
+        assert_eq!(typed_auto_rule, None);
+
+        let picture = crate::osl_profile::read_active_profile_picture(&owner).unwrap();
+        assert_eq!(picture.status, "image-absent");
+        assert_eq!(picture.image, None);
+        direct_reads.push(format!("friend_picture={}", picture.status));
+
+        let friends = cmd_osl_get_new_friend_defaults(&restarted.osl).unwrap();
+        assert_eq!(friends.account_reach, "approved_chats_only");
+        assert_eq!(friends.auto_whitelist, "never");
+        assert_eq!(friends.verification_warnings, "always");
+        direct_reads.extend([
+            format!("friend_account_reach={}", friends.account_reach),
+            format!("friend_auto_rule={}", friends.auto_whitelist),
+            format!("friend_warnings={}", friends.verification_warnings),
+        ]);
+
+        let privacy = cmd_osl_read_privacy_protection_choices(&restarted.osl).unwrap();
+        assert_eq!(privacy.level, "balanced");
+        assert_eq!(privacy.warnings, "before_send_warnings");
+        assert_eq!(privacy.cleanup, "attachment_cleaning_plus_30_day_review");
+        assert_eq!(privacy.app_exceptions, "app_exceptions_reviewed");
+        assert_eq!(privacy.contact_rules, "verified_contacts_suggested");
+        direct_reads.push(format!("privacy={}", privacy.level));
+
+        let suggestion = chat_approval_suggestion_choice().unwrap();
+        assert_eq!(suggestion.choice, "on");
+        direct_reads.push(format!("chat_suggestion={}", suggestion.choice));
+        let app_notice =
+            app_notification_enabled_before_notice(&security, "discord".to_owned()).unwrap();
+        assert!(!app_notice);
+        assert!(list_app_notification_choices(&security).unwrap().is_empty());
+        direct_reads.push(format!("app_notification={app_notice}"));
+
+        let next_generation = cmd_osl_read_next_generation_message_policy(&restarted.osl).unwrap();
+        assert_eq!(next_generation.choice, "off");
+        assert!(!core.osl.rn_wire_in_enabled());
+        assert!(
+            !restarted
+                .osl
+                .app_preferences
+                .lock()
+                .unwrap()
+                .rn_wire_policy_requested
+        );
+        direct_reads.push(format!("next_generation={}", next_generation.choice));
+
+        let warning = cmd_osl_read_verification_warning_choice(&restarted.osl).unwrap();
+        assert_eq!(warning.choice, "every time");
+        direct_reads.push(format!("verification_warning={}", warning.choice));
+
+        let burn_scope = cmd_osl_read_message_default_burn_scope(&restarted.osl).unwrap();
+        let timer = cmd_osl_read_message_default_timer_seconds(&restarted.osl).unwrap();
+        let view_once =
+            cmd_osl_read_message_default_view_once_length_seconds(&restarted.osl).unwrap();
+        let writing = cmd_osl_read_message_default_cover_writing(&restarted.osl).unwrap();
+        assert_eq!(burn_scope, "message");
+        assert_eq!(timer, 3_600);
+        assert_eq!(view_once, 10);
+        assert_eq!(writing, "plaintext");
+        direct_reads.extend([
+            format!("message_scope={burn_scope}"),
+            format!("message_timer={timer}"),
+            format!("view_once={view_once}"),
+            format!("message_writer={writing}"),
+        ]);
+
+        let reset_security = HubSecurityState::default();
+        for (name, _) in crate::look_window::LOOK_STYLE_BINDINGS {
+            let value = look_choice_value(&reset_security, name.to_owned()).unwrap();
+            assert_eq!(value, None);
+            direct_reads.push(format!("look_{name}=unset"));
+        }
+        assert!(list_look_choices(&reset_security).unwrap().is_empty());
+
+        for name in ipc::app_preferences::BehaviourChoiceName::ALL {
+            let value =
+                cmd_osl_read_behaviour_choice(&restarted.osl, name.label().to_owned()).unwrap();
+            assert_eq!(value.choice, "default");
+            direct_reads.push(format!("behaviour_{}={}", name.label(), value.choice));
+        }
+
+        assert_eq!(direct_reads.len(), 29);
+        println!(
+            "TASK0796 action={} direct_read_count={} {} runtime_rn={} typed_auto_rule={:?}",
+            reset.action,
+            direct_reads.len(),
+            direct_reads.join(" | "),
+            core.osl.rn_wire_in_enabled(),
+            typed_auto_rule,
+        );
     }
 
     #[test]
@@ -5864,10 +7077,7 @@ mod tests {
             &security,
             friend_a.clone(),
             vec![],
-            vec![FriendPageShareConversation {
-                checked: true,
-                ..conversation.clone()
-            }],
+            vec![FriendPageShareConversation { checked: true, ..conversation.clone() }],
             "off".to_owned(),
         )
         .unwrap();
@@ -5886,33 +7096,12 @@ mod tests {
             &security,
             friend_c.clone(),
             vec![],
-            vec![FriendPageShareConversation {
-                checked: true,
-                ..conversation.clone()
-            }],
+            vec![FriendPageShareConversation { checked: true, ..conversation.clone() }],
         )
         .unwrap();
-        let reopened_a = read_friend_page_share_data(
-            &security,
-            friend_a.clone(),
-            vec![],
-            vec![conversation.clone()],
-        )
-        .unwrap();
-        let reopened_b = read_friend_page_share_data(
-            &security,
-            friend_b.clone(),
-            vec![],
-            vec![conversation.clone()],
-        )
-        .unwrap();
-        let reopened_c = read_friend_page_share_data(
-            &security,
-            friend_c.clone(),
-            vec![],
-            vec![conversation.clone()],
-        )
-        .unwrap();
+        let reopened_a = read_friend_page_share_data(&security, friend_a.clone(), vec![], vec![conversation.clone()]).unwrap();
+        let reopened_b = read_friend_page_share_data(&security, friend_b.clone(), vec![], vec![conversation.clone()]).unwrap();
+        let reopened_c = read_friend_page_share_data(&security, friend_c.clone(), vec![], vec![conversation.clone()]).unwrap();
         let stored: SecurityPreferences =
             load_encrypted_json(&harness.path().join(SECURITY_PREFS_FILE)).unwrap();
         let cancelled_saved_changes = stored
@@ -5934,10 +7123,7 @@ mod tests {
         let mut throwaway = reopened_a.clone();
         throwaway.conversations[0].checked = false;
         let throwaway_check_fails = !choice(&throwaway);
-        assert!(
-            throwaway_check_fails,
-            "the throwaway Allow -> Block mutation must be detected"
-        );
+        assert!(throwaway_check_fails, "the throwaway Allow -> Block mutation must be detected");
 
         println!(
             "TASK0838 friend_share_actions friend_a={} reopened=Allow friend_b={} reopened=Block friend_c={} fresh_default=Block cancelled_saved_changes={} isolation={} throwaway_changed_values=1 throwaway_check=FAIL",
@@ -6243,6 +7429,55 @@ mod tests {
         assert_eq!(compare_json["firstToSecondAllowed"], true);
         assert_eq!(compare_json["secondToFirstAllowed"], true);
         assert_eq!(remove_json, true);
+    }
+
+    #[test]
+    fn task_0770_each_extreme_saved_look_matches_its_computed_window_style() {
+        let _harness = FileBackedSecurityHarness::new("look-window-0770");
+        let security = HubSecurityState::default();
+        let saved = [
+            ("theme", "theme-0770-absolute-midnight"),
+            ("named-look", "named-look-0770-maximum-contrast"),
+            ("accent", "accent-0770-neon-cyan"),
+            ("corners", "corners-0770-fully-square"),
+            ("glow", "glow-0770-maximum"),
+            ("text", "text-0770-largest"),
+            ("spacing", "spacing-0770-widest"),
+            ("see-through", "see-through-0770-on"),
+        ];
+
+        for (name, value) in saved {
+            set_look_choice(&security, name.to_owned(), value.to_owned()).unwrap();
+        }
+
+        let mut window = crate::look_window::LinuxTestWindow::default();
+        let changed = crate::look_window::apply_saved_look_choices(&security, &mut window).unwrap();
+        assert_eq!(changed, 8);
+        assert_eq!(window.computed_style_values.len(), 8);
+
+        for ((name, property), (_, saved_value)) in
+            crate::look_window::LOOK_STYLE_BINDINGS.iter().zip(saved)
+        {
+            let computed_value = window.computed_style_values.get(*property).unwrap();
+            println!("TASK0770 saved.{name}={saved_value} computed.{property}={computed_value}");
+            assert_eq!(
+                computed_value, saved_value,
+                "saved {name} must directly set {property}"
+            );
+        }
+        crate::look_window::saved_values_match_computed(&saved, &window.computed_style_values)
+            .expect("all eight saved values must match their computed window styles");
+
+        let mut throwaway_saved = saved;
+        throwaway_saved[0].1 = "theme-0770-throwaway-mismatch";
+        let mutation_refusal = crate::look_window::saved_values_match_computed(
+            &throwaway_saved,
+            &window.computed_style_values,
+        )
+        .unwrap_err();
+        println!("TASK0770 throwaway_saved_value_mutation_refused={mutation_refusal}");
+        assert!(mutation_refusal.contains("theme-0770-throwaway-mismatch"));
+        println!("TASK0770 matching_saved_and_computed_values={changed}");
     }
 
     fn fresh_test_dir(label: &str) -> std::path::PathBuf {
@@ -6979,24 +8214,24 @@ mod tests {
 
     #[test]
     fn safety_number_comparison_requires_the_complete_number_but_ignores_grouping() {
-        let expected = "12345 67890 12345 67890 12345 67890 12345 67890 12345 67890 12345 67890";
+        let expected = "12345 67890 12345 67890 12345 67890";
         assert!(!safety_number_matches(
             expected,
-            "12345 67890 12345 67890 12345 67890 12345 67890 12345 67890 12345 67891"
+            "12345 67890 12345 67890 12345 67891"
         ));
         assert!(safety_number_matches(
             expected,
-            "123-456\n789 012 345-678-901-234-567-890-123-456-789-012-345-678-901-234-567-890"
+            "123-456\n789 012 345-678-901-234-567-890"
         ));
         assert!(!safety_number_matches(expected, ""));
-        assert!(!safety_number_matches("", "123456789012345678901234567890123456789012345678901234567890"));
+        assert!(!safety_number_matches("", "123456789012345678901234567890"));
         assert!(!safety_number_matches(
             expected,
-            "12345678901234567890123456789012345678901234567890123456789"
+            "12345678901234567890123456789"
         ));
         assert!(!safety_number_matches(
             expected,
-            "1234567890123456789012345678901234567890123456789012345678901"
+            "1234567890123456789012345678901"
         ));
     }
 
@@ -7069,7 +8304,7 @@ mod tests {
                 .chars()
                 .filter(char::is_ascii_digit)
                 .count(),
-            60,
+            30,
         );
         assert!(!on_alice.safety_number_verified);
         assert!(!on_bob.safety_number_verified);
@@ -7115,7 +8350,7 @@ mod tests {
             .safety_number_verified
         );
 
-        // Refusals. A different pair's real 60-digit number, and a single
+        // Refusals. A different pair's real 30-digit number, and a single
         // altered digit, are both rejected — and neither marks anyone verified.
         use_device(&carol_dir);
         let mut altered = normalise_safety_number(&on_carol.safety_number).into_bytes();
@@ -9236,6 +10471,165 @@ key"
     }
 
     #[test]
+    fn task_0539_account_burn_boundary_keeps_other_account_history() {
+        let harness = FileBackedSecurityHarness::new("task-0539-account-burn-boundary");
+        let core = HubCoreState::default();
+        let security = HubSecurityState::default();
+        let identity = keystore::generate_native_identity();
+        *core.osl.identity.lock().unwrap() = Some(identity.clone());
+        let history_dir = harness.path().join("history");
+        let history = store::MessageStore::open(&history_dir, identity.x25519_secret.as_bytes())
+            .expect("open history store");
+
+        let owner = "identity-task-0539";
+        let service = "discord";
+        let current_account = "current-account";
+        let other_account = "other-account";
+        let current_channels = [
+            "task0539-current-channel-1",
+            "task0539-current-channel-2",
+            "task0539-current-channel-3",
+        ];
+        let other_channels = [
+            "task0539-other-channel-1",
+            "task0539-other-channel-2",
+            "task0539-other-channel-3",
+        ];
+
+        for (channel_index, channel) in current_channels.iter().enumerate() {
+            for row_index in 0..2 {
+                history
+                    .put(&store::StoredMessage {
+                        discord_message_id: format!("task0539-current-{channel_index}-{row_index}"),
+                        channel_id: (*channel).to_owned(),
+                        sender_discord_id: "task0539-self".to_owned(),
+                        sender_osl_user_id: owner.to_owned(),
+                        plaintext: format!("current account row {channel_index}-{row_index}"),
+                        decrypted_at: 1_700_539_000 + (channel_index * 10 + row_index) as i64,
+                        burned: false,
+                    })
+                    .expect("persist current-account row");
+            }
+        }
+        for (channel_index, channel) in other_channels.iter().enumerate() {
+            history
+                .put(&store::StoredMessage {
+                    discord_message_id: format!("task0539-other-{channel_index}"),
+                    channel_id: (*channel).to_owned(),
+                    sender_discord_id: "task0539-self".to_owned(),
+                    sender_osl_user_id: owner.to_owned(),
+                    plaintext: format!("other account row {channel_index}"),
+                    decrypted_at: 1_700_539_100 + channel_index as i64,
+                    burned: false,
+                })
+                .expect("persist other-account row");
+        }
+        *core.osl.message_store.lock().unwrap() = Some(history);
+
+        let current_before = count_history_rows(&core, &current_channels);
+        let other_before = count_history_rows(&core, &other_channels);
+        println!("TASK0539_CURRENT_ACCOUNT_BEFORE={current_before}");
+        println!("TASK0539_OTHER_ACCOUNT_BEFORE={other_before}");
+        assert_eq!(current_before, 6);
+        assert_eq!(other_before, 3);
+
+        let index = crate::service_scope_index::ServiceScopeIndexState::load(
+            harness.path().join("task0539-service-scope-index.json"),
+        );
+        index
+            .initialize_clean_account(owner, service, current_account)
+            .expect("initialize current account");
+        index
+            .initialize_clean_account(owner, service, other_account)
+            .expect("initialize other account");
+        for channel in current_channels {
+            index
+                .with_registered_write(
+                    account_scope_registration(owner, service, current_account, channel),
+                    || Ok(()),
+                )
+                .expect("register current account scope");
+        }
+        for channel in other_channels {
+            index
+                .with_registered_write(
+                    account_scope_registration(owner, service, other_account, channel),
+                    || Ok(()),
+                )
+                .expect("register other account scope");
+        }
+
+        let manifest = index
+            .freeze_complete_manifest(owner, service, current_account)
+            .expect("freeze current account burn manifest");
+        let mut rows_destroyed = 0usize;
+        for indexed in index.pending_scopes(&manifest).expect("pending scopes") {
+            let result = burn_scope(
+                &core,
+                &security,
+                indexed.scope.clone(),
+                indexed.canonical_channel_ids.clone(),
+                true,
+                Vec::new(),
+            )
+            .expect("burn indexed current-account scope");
+            rows_destroyed = rows_destroyed.saturating_add(result.rows_destroyed);
+            index
+                .mark_scope_burned(&manifest, &indexed.storage_key)
+                .expect("mark scope burned");
+        }
+        index.finish_burn(&manifest).expect("finish account burn");
+
+        let current_after = count_history_rows(&core, &current_channels);
+        let other_after = count_history_rows(&core, &other_channels);
+        let current_disappeared = current_before.saturating_sub(current_after);
+        println!("TASK0539_ROWS_DESTROYED={rows_destroyed}");
+        println!("TASK0539_CURRENT_ACCOUNT_AFTER={current_after}");
+        println!("TASK0539_CURRENT_ACCOUNT_DISAPPEARED={current_disappeared}");
+        println!("TASK0539_OTHER_ACCOUNT_AFTER={other_after}");
+        assert_eq!(rows_destroyed, 6);
+        assert_eq!(current_after, 0);
+        assert_eq!(current_disappeared, 6);
+        assert_eq!(other_after, 3);
+    }
+
+    fn account_scope_registration(
+        owner: &str,
+        service: &str,
+        account: &str,
+        channel: &str,
+    ) -> crate::service_scope_index::ServiceScopeRegistration {
+        crate::service_scope_index::ServiceScopeRegistration {
+            owner_osl_user_id: owner.to_owned(),
+            service_id: service.to_owned(),
+            account_id: account.to_owned(),
+            scope: ScopeInput {
+                kind: ScopeKind::Dm,
+                id: channel.to_owned(),
+                server_id: None,
+                channel_id: Some(channel.to_owned()),
+            },
+            canonical_channel_ids: vec![channel.to_owned()],
+            local_context_binding_sha256: "5".repeat(64),
+            manual_peer_person_id: None,
+        }
+    }
+
+    fn count_history_rows(core: &HubCoreState, channels: &[&str]) -> usize {
+        let history = core.osl.message_store.lock().unwrap();
+        let history = history.as_ref().expect("history store remains open");
+        channels
+            .iter()
+            .map(|channel| {
+                history
+                    .list_by_channel(channel, 20)
+                    .expect("read test channel")
+                    .len()
+            })
+            .sum()
+    }
+
+    #[test]
     fn burn_identifiers_render_as_canonical_lower_hex() {
         let rendered = lower_hex(&[0x0fu8; 32]);
         assert_eq!(rendered.len(), 64);
@@ -9337,6 +10731,47 @@ key"
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+    #[test]
+    fn task_5088_blocked_friend_and_unticked_account_refuse_send_authorization() {
+        let harness = FileBackedSecurityHarness::new("task-5088-reach-and-block");
+        let core = HubCoreState::default();
+        let security = HubSecurityState::default();
+        install_self_identity(&core);
+        let (person_id, metadata, peer) = test_friend(88);
+        write_people(harness.path(), &person_id, metadata);
+        install_peer_map(&core, harness.path(), &person_id, peer);
+
+        let service_id = "discord";
+        let account_id = "account-5088";
+        let scope_id = manual_peer_scope_id(service_id, account_id, &person_id).unwrap();
+        let scope = dm_scope_input(scope_id);
+        let binding = manual_peer_binding(&core, person_id.clone()).unwrap();
+        let grant = ScopedTrustGrant::for_manual_peer(
+            &binding, service_id, account_id, scope.clone(), ScopedTrustConsent::ExplicitUserAction,
+        ).unwrap();
+        apply_scoped_trust_grant(&security, &binding, &grant).unwrap();
+        let account = FriendAccountReachAccount {
+            service_id: service_id.to_owned(), account_id: account_id.to_owned(),
+            account_label: "TASK5088 Discord".to_owned(),
+        };
+        set_hub_friend_account_reach_everywhere(&security, person_id.clone(), vec![account.clone()]).unwrap();
+        assert!(manual_peer_scope_approved(&core, service_id, account_id, person_id.clone(), scope.clone()).unwrap());
+
+        set_hub_friend_account_reach_nowhere(&security, person_id.clone(), vec![account]).unwrap();
+        let unticked = require_manual_peer_scope_approved(
+            &core, service_id, account_id, person_id.clone(), scope.clone(),
+        ).unwrap_err();
+        assert_eq!(unticked, "Approve encryption for this friend before continuing");
+
+        set_friend_relationship(&core, &security, person_id.clone(), FriendRelationship::Blocked).unwrap();
+        let blocked_binding = manual_peer_binding(&core, person_id.clone()).unwrap_err();
+        let blocked_send = require_manual_peer_scope_approved(
+            &core, service_id, account_id, person_id.clone(), scope,
+        ).unwrap_err();
+        assert_eq!(blocked_binding, FRIEND_BLOCKED_ERROR);
+        assert_eq!(blocked_send, FRIEND_BLOCKED_ERROR);
+        println!("TASK5088 allowed_before=true unticked_refusal={unticked} blocked_binding={blocked_binding} blocked_send={blocked_send}");
     }
 }
 

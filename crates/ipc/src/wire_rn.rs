@@ -572,7 +572,7 @@ pub enum RnPolicy {
     Required,
 }
 
-/// The sticky, monotone per-peer version pin.
+/// The sticky, monotone per-device-pair version pin.
 ///
 /// There is intentionally no way to lower `min_wire_version`. The type
 /// exposes exactly one mutator and it only raises.
@@ -726,11 +726,13 @@ fn rn_negotiation<'a>(
 // Sealed per-peer state
 // ---------------------------------------------------------------
 
-/// Sealed, per-peer storage for ratchet session state and version pins.
+/// Sealed, per-peer storage for ratchet session state and per-device-pair
+/// version pins.
 ///
-/// One file per peer per kind. Per-peer granularity keeps a torn write
-/// from taking out more than one conversation and avoids rewriting every
-/// session on every message.
+/// Session state remains one file per peer. Downgrade pins are keyed by both
+/// this device's identity key and the peer device's identity key, so one local
+/// device observing RN support cannot force every other local device to stop
+/// talking to that account's older devices.
 #[derive(Clone)]
 pub struct RnSessionStore {
     dir: PathBuf,
@@ -783,6 +785,11 @@ struct SessionSendFloor {
 }
 
 impl RnSessionStore {
+    fn pin_path(&self, peer_identity_x25519: &[u8; 32]) -> PathBuf {
+        self.dir
+            .join(format!("{}.pin", Self::peer_key(peer_identity_x25519)))
+    }
+
     /// Build the session store for an account configuration directory.
     ///
     /// Older builds used `rn/`; migrate it into the canonical directory
@@ -861,6 +868,21 @@ impl RnSessionStore {
         out.iter().take(16).map(|b| format!("{b:02x}")).collect()
     }
 
+    /// Storage key for a downgrade pin between this device and one peer
+    /// device. Both inputs are public identity keys; hashing keeps filenames
+    /// fixed-width and makes the per-pair boundary explicit on disk.
+    fn device_pair_key(
+        local_identity_x25519: &[u8; 32],
+        peer_identity_x25519: &[u8; 32],
+    ) -> String {
+        let mut h = Sha256::new();
+        h.update(b"OSL-RN/v2/device-pair-pin/");
+        h.update(local_identity_x25519);
+        h.update(peer_identity_x25519);
+        let out = h.finalize();
+        out.iter().take(16).map(|b| format!("{b:02x}")).collect()
+    }
+
     fn session_path(&self, peer_identity_x25519: &[u8; 32]) -> PathBuf {
         self.dir
             .join(format!("{}.session", Self::peer_key(peer_identity_x25519)))
@@ -898,15 +920,25 @@ impl RnSessionStore {
         })
     }
 
-    fn pin_path(&self, peer_identity_x25519: &[u8; 32]) -> PathBuf {
-        self.dir
-            .join(format!("{}.pin", Self::peer_key(peer_identity_x25519)))
+    fn device_pair_pin_path(
+        &self,
+        local_identity_x25519: &[u8; 32],
+        peer_identity_x25519: &[u8; 32],
+    ) -> PathBuf {
+        self.dir.join(format!(
+            "{}.pin",
+            Self::device_pair_key(local_identity_x25519, peer_identity_x25519)
+        ))
     }
 
-    fn pin_floor_path(&self, peer_identity_x25519: &[u8; 32]) -> PathBuf {
+    fn device_pair_pin_floor_path(
+        &self,
+        local_identity_x25519: &[u8; 32],
+        peer_identity_x25519: &[u8; 32],
+    ) -> PathBuf {
         self.dir.join(format!(
             "{}.pin-floor",
-            Self::peer_key(peer_identity_x25519)
+            Self::device_pair_key(local_identity_x25519, peer_identity_x25519)
         ))
     }
 
@@ -1222,11 +1254,19 @@ impl RnSessionStore {
 
     // ---- pins ----
 
-    /// Load a peer's pin. An absent file is [`RnPeerPin::UNKNOWN`]; a
-    /// present but unparseable one is an error, never a silent reset.
-    pub fn load_pin(&self, peer_identity_x25519: &[u8; 32]) -> Result<RnPeerPin, RnError> {
-        let pin = self.load_pin_file(&self.pin_path(peer_identity_x25519), "pin")?;
-        let floor = self.load_pin_floor(peer_identity_x25519)?;
+    /// Load the downgrade pin for one ordered local-device/peer-device pair.
+    /// An absent file is [`RnPeerPin::UNKNOWN`]; a present but unparseable one
+    /// is an error, never a silent reset.
+    pub fn load_pair_pin(
+        &self,
+        local_identity_x25519: &[u8; 32],
+        peer_identity_x25519: &[u8; 32],
+    ) -> Result<RnPeerPin, RnError> {
+        let pin = self.load_pin_file(
+            &self.device_pair_pin_path(local_identity_x25519, peer_identity_x25519),
+            "pin",
+        )?;
+        let floor = self.load_pair_pin_floor(local_identity_x25519, peer_identity_x25519)?;
         match (pin, floor) {
             (Some(pin), Some(floor)) if pin.min_wire_version() < floor.min_wire_version() => Err(
                 RnError::Storage("pin file is below the persisted RN downgrade floor".into()),
@@ -1237,34 +1277,54 @@ impl RnSessionStore {
         }
     }
 
-    /// Raise a peer's pin to OSL-RN and persist it.
+    /// Raise one ordered local-device/peer-device pin to OSL-RN and persist it.
     ///
     /// Read-modify-write through [`RnPeerPin::raise_to_rn`], so a
     /// concurrent writer can only ever raise it too. There is no
     /// `write_pin` that takes an arbitrary value.
-    pub fn raise_pin_to_rn(&self, peer_identity_x25519: &[u8; 32]) -> Result<RnPeerPin, RnError> {
-        let mut pin = self.load_pin(peer_identity_x25519)?;
+    pub fn raise_pair_pin_to_rn(
+        &self,
+        local_identity_x25519: &[u8; 32],
+        peer_identity_x25519: &[u8; 32],
+    ) -> Result<RnPeerPin, RnError> {
+        let mut pin = self.load_pair_pin(local_identity_x25519, peer_identity_x25519)?;
         if pin.is_pinned_to_rn() {
-            self.persist_pin_floor_to_rn(peer_identity_x25519)?;
+            self.persist_pair_pin_floor_to_rn(local_identity_x25519, peer_identity_x25519)?;
             return Ok(pin);
         }
         pin.raise_to_rn();
-        self.persist_pin_floor_to_rn(peer_identity_x25519)?;
+        self.persist_pair_pin_floor_to_rn(local_identity_x25519, peer_identity_x25519)?;
         let json = serde_json::to_vec(&serde_json::json!({
             "version": PIN_BLOB_VERSION,
             "pin": pin,
         }))
         .map_err(|e| RnError::Storage(format!("serialize pin: {e}")))?;
-        atomic_write(&self.pin_path(peer_identity_x25519), &json)?;
+        atomic_write(
+            &self.device_pair_pin_path(local_identity_x25519, peer_identity_x25519),
+            &json,
+        )?;
         Ok(pin)
     }
 
-    fn load_pin_floor(
+    #[cfg(test)]
+    pub fn load_pin(&self, peer_identity_x25519: &[u8; 32]) -> Result<RnPeerPin, RnError> {
+        self.load_pair_pin(peer_identity_x25519, peer_identity_x25519)
+    }
+
+    #[cfg(test)]
+    pub fn raise_pin_to_rn(&self, peer_identity_x25519: &[u8; 32]) -> Result<RnPeerPin, RnError> {
+        self.raise_pair_pin_to_rn(peer_identity_x25519, peer_identity_x25519)
+    }
+
+    fn load_pair_pin_floor(
         &self,
+        local_identity_x25519: &[u8; 32],
         peer_identity_x25519: &[u8; 32],
     ) -> Result<Option<RnPeerPin>, RnError> {
-        let Some(floor) =
-            self.load_pin_file(&self.pin_floor_path(peer_identity_x25519), "pin floor")?
+        let Some(floor) = self.load_pin_file(
+            &self.device_pair_pin_floor_path(local_identity_x25519, peer_identity_x25519),
+            "pin floor",
+        )?
         else {
             return Ok(None);
         };
@@ -1298,7 +1358,11 @@ impl RnSessionStore {
         file.pin.validated().map(Some)
     }
 
-    fn persist_pin_floor_to_rn(&self, peer_identity_x25519: &[u8; 32]) -> Result<(), RnError> {
+    fn persist_pair_pin_floor_to_rn(
+        &self,
+        local_identity_x25519: &[u8; 32],
+        peer_identity_x25519: &[u8; 32],
+    ) -> Result<(), RnError> {
         let floor = RnPeerPin {
             min_wire_version: WIRE_VERSION_RN,
         };
@@ -1307,7 +1371,10 @@ impl RnSessionStore {
             "pin": floor,
         }))
         .map_err(|e| RnError::Storage(format!("serialize pin floor: {e}")))?;
-        atomic_write(&self.pin_floor_path(peer_identity_x25519), &json)
+        atomic_write(
+            &self.device_pair_pin_floor_path(local_identity_x25519, peer_identity_x25519),
+            &json,
+        )
     }
 }
 
@@ -1323,9 +1390,13 @@ impl RnSessionStore {
 /// The caller performs that fresh handshake with the authenticated peer bundle.
 pub fn recover_session(
     store: &RnSessionStore,
+    local_identity_x25519: &[u8; 32],
     peer_identity_x25519: &[u8; 32],
 ) -> Result<(), RnError> {
-    if !store.load_pin(peer_identity_x25519)?.is_pinned_to_rn() {
+    if !store
+        .load_pair_pin(local_identity_x25519, peer_identity_x25519)?
+        .is_pinned_to_rn()
+    {
         return Err(RnError::RecoveryRequiresRnPin);
     }
     store.delete_session(peer_identity_x25519)
@@ -1412,7 +1483,7 @@ pub fn initiate_and_persist_with_sealer(
         .map_err(RnError::from)?;
     store.save_session_with_sealer(&peer_id, &session, sealer)?;
     if caps.supports_rn() {
-        store.raise_pin_to_rn(&peer_id)?;
+        store.raise_pair_pin_to_rn(own_identity_public, &peer_id)?;
     }
     Ok(session)
 }
@@ -1473,7 +1544,7 @@ pub fn accept_and_persist_with_sealer(
         osl_ratchet_next::accept_rn_bound(local, wire, &binding, params).map_err(RnError::from)?;
     let peer_id = *initiator.as_bytes();
     store.save_session_with_sealer(&peer_id, &session, sealer)?;
-    store.raise_pin_to_rn(&peer_id)?;
+    store.raise_pair_pin_to_rn(own_identity_public, &peer_id)?;
     Ok((session, opened))
 }
 
@@ -1549,7 +1620,7 @@ pub fn accept_b5_prekey_state_and_persist_with_sealer(
 
     let peer_id = *initiator.as_bytes();
     store.save_session_with_sealer(&peer_id, &session, sealer)?;
-    store.raise_pin_to_rn(&peer_id)?;
+    store.raise_pair_pin_to_rn(identity.x25519_public.as_bytes(), &peer_id)?;
     Ok((session, opened))
 }
 
@@ -1618,7 +1689,10 @@ pub fn fetch_prekey_bundle_and_initiate_first_contact(
         )
         .map_err(|_| RnError::PrekeyAdapter("peer identity bundle is not authenticated"))?;
     let caps = keystore::client::PeerCapabilities::Verified(peer_identity_bundle.capability_bundle);
-    let pin = store.load_pin(&peer_identity_bundle.x25519_identity_pub)?;
+    let pin = store.load_pair_pin(
+        requester.x25519_public.as_bytes(),
+        &peer_identity_bundle.x25519_identity_pub,
+    )?;
     if select_wire_version(&pin, caps, policy)? != SelectedVersion::Rn {
         return Err(RnError::RnRequiredButUnsupported);
     }

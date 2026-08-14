@@ -1,0 +1,10 @@
+checked 2026-08-08
+claim supported: a screenshot already saved by the other person is outside a later timed-delete operation and outside OSL's reach
+
+Messenger's official disappearing-message guidance says a recipient can take and save a screenshot or screen recording before a message disappears, and warns that not all captures can be detected:
+https://www.facebook.com/help/messenger-app/1039542879410863/
+
+Signal Support limits Delete for everyone to a best-effort delete on devices in the specific chat; it does not claim authority over separately saved files:
+https://support.signal.org/hc/en-us/articles/360050426432-Delete-for-everyone
+
+OSL implementation boundary: timed delete invokes the messaging app's delete operation. It has no command or permission that addresses a recipient device's screenshot storage. Once the recipient has made that separate file, this app has no handle with which to identify, verify, or erase it.

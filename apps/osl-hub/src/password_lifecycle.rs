@@ -304,8 +304,9 @@ fn create_native_identity_after_owner_authorization_signoff(
         .lifecycle_lock
         .lock()
         .map_err(|_| "OSL account lifecycle is unavailable".to_owned())?;
-    let current = readiness(state);
     let dir = isolated_account_dir()?;
+    restart_unfinished_account_if_present(state, &dir)?;
+    let current = readiness(state);
     let sealer = persistent_sealer()?;
     let result = create_native_identity_after_owner_authorization_signoff_using(
         state,
@@ -371,7 +372,9 @@ pub fn import_native_identity_phrase(
     }
     let dir = isolated_account_dir()?;
     ensure_empty_identity_slot(&state.osl, &dir)?;
-    let identity = identity_for_recovery_phrase(&phrase)?;
+    let entropy = parse_identity_phrase(&phrase)?;
+    let mut identity = keystore::identity_from_entropy(entropy, "osl-pending".to_owned());
+    identity.user_id = native_user_id(&identity);
     let sealer = persistent_sealer()?;
     let result = install_identity(
         &state.osl,
@@ -409,6 +412,11 @@ pub fn setup_main_password(
         // recovery phrase, and file-key installation cannot drift from OSL.
         ipc::commands::cmd_osl_set_main_password(password)
     })?;
+    // Install the durable unfinished marker before returning the password
+    // setup result. The renderer also writes this marker for older backends,
+    // but the trusted lifecycle cannot leave a crash window in which a new
+    // identity has keys and no record saying confirmation is still pending.
+    crate::account_recovery::mark_recovery_kit_unsaved()?;
     // Initial password setup happens after first-run bootstrap, so the first
     // bootstrap could not have opened password-protected state (or a store for
     // a just-created identity). Re-run the original bootstrap now that the
@@ -574,6 +582,36 @@ fn isolated_account_dir() -> Result<std::path::PathBuf, String> {
     keystore::osl_config_dir().map_err(|_| "OSL Privacy account storage is unavailable".to_owned())
 }
 
+fn restart_unfinished_account_if_present(
+    state: &HubCoreState,
+    directory: &Path,
+) -> Result<bool, String> {
+    if !crate::account_recovery::account_is_unfinished()? {
+        return Ok(false);
+    }
+    restart_unfinished_account_using(state, directory)
+}
+
+fn restart_unfinished_account_using(
+    state: &HubCoreState,
+    directory: &Path,
+) -> Result<bool, String> {
+    let restarted = match ipc::main_password::get_file_storage_key() {
+        Some(key) => {
+            ipc::unfinished_onboarding::restart_unfinished_account(&state.osl, directory, &key)?
+        }
+        None => ipc::unfinished_onboarding::restart_pre_password_unfinished_account(
+            &state.osl, directory,
+        )?,
+    };
+    if restarted {
+        // The IPC primitive clears the identity/prekey slot before deleting
+        // disk keys. Clear the hub's remaining account-scoped caches too.
+        crate::identity_registry::reset_account_scoped_state(&state.osl);
+    }
+    Ok(restarted)
+}
+
 pub(crate) fn persistent_sealer() -> Result<Box<dyn Sealer>, String> {
     let sealer = keystore::select_best_sealer();
     match sealer.method_label() {
@@ -656,33 +694,6 @@ pub(crate) fn identity_recovery_phrase(identity: &Identity) -> Result<String, St
     Mnemonic::from_entropy_in(Language::English, &entropy)
         .map(|mnemonic| mnemonic.to_string())
         .map_err(|_| "OSL identity recovery phrase could not be created".to_owned())
-}
-
-/// The identity a twelve-word identity recovery phrase reconstructs.
-///
-/// `import_native_identity_phrase` above calls this rather than repeating it,
-/// so the identity that an import *installs* and the identity that TASK 6804's
-/// recovery-kit comparison *predicts* are produced by one piece of code. Two
-/// copies of this derivation would let the comparison drift into agreeing with
-/// a kit the importer would then reject, or refusing one it would have
-/// accepted — and either way the user is told something untrue about their own
-/// account.
-pub(crate) fn identity_for_recovery_phrase(phrase: &str) -> Result<Identity, String> {
-    let entropy = parse_identity_phrase(phrase)?;
-    let mut identity = keystore::identity_from_entropy(entropy, "osl-pending".to_owned());
-    identity.user_id = native_user_id(&identity);
-    Ok(identity)
-}
-
-/// TASK 6804 — which account a recovery kit's identity phrase belongs to.
-///
-/// Read-only by construction: it derives keys in memory, writes nothing,
-/// installs nothing and returns only the public `osl_` routing label. It exists
-/// so a kit belonging to another account is refused on the Restore Account
-/// screen *before* its phrase reaches the authenticated importer, rather than
-/// after an import has already replaced something.
-pub fn identity_user_id_for_recovery_phrase(phrase: &str) -> Result<String, String> {
-    identity_for_recovery_phrase(phrase).map(|identity| identity.user_id.clone())
 }
 
 pub(crate) fn parse_identity_phrase(phrase: &str) -> Result<[u8; 16], String> {
@@ -1013,6 +1024,123 @@ mod tests {
         assert!(state.osl.identity.lock().unwrap().is_some());
 
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn task_3609_interrupted_account_stays_unfinished_and_retry_replaces_its_keys() {
+        let _guard = crate::global_keystore_test_lock();
+        let _reset = KeystoreGlobalReset;
+        const FILE_KEY: [u8; 32] = [0x36; 32];
+        ipc::main_password::set_file_storage_key(Some(FILE_KEY));
+
+        let root = temp_dir("task-3609");
+        let control_dir = root.join("control");
+        let interrupted_dir = root.join("interrupted");
+        std::fs::create_dir_all(&control_dir).unwrap();
+        std::fs::create_dir_all(&interrupted_dir).unwrap();
+        let sealer = keystore::MemorySealer::new();
+
+        // A completed control account has a confirmed recovery record and one
+        // canonical identity key. Its public key is captured so the retry of a
+        // different account must prove it was not replaced as collateral.
+        let mut control_identity =
+            keystore::identity_from_entropy([0x11; 16], "control-pending".to_owned());
+        control_identity.user_id = native_user_id(&control_identity);
+        let control_public_key = control_identity.ed25519_public;
+        keystore::save_identity(
+            &control_dir.join("identity.json"),
+            &control_identity,
+            &sealer,
+        )
+        .unwrap();
+        crate::account_recovery::write_recovery_setup_state_for_test(
+            &control_dir,
+            &crate::account_recovery::RecoverySetupState {
+                kit_unsaved: false,
+                recovery_confirmed_at_unix_seconds: Some(1_800_000_000),
+            },
+            &FILE_KEY,
+        )
+        .unwrap();
+
+        // The second account reached key creation but was interrupted before
+        // recovery-word confirmation. This is exactly the durable state left
+        // by setup_main_password + mark_recovery_kit_unsaved.
+        let interrupted_state = HubCoreState::default();
+        let mut old_identity =
+            keystore::identity_from_entropy([0x22; 16], "interrupted-pending".to_owned());
+        old_identity.user_id = native_user_id(&old_identity);
+        let old_public_key = old_identity.ed25519_public;
+        install_identity(
+            &interrupted_state.osl,
+            old_identity,
+            &interrupted_dir,
+            &sealer,
+            None,
+            false,
+        )
+        .unwrap();
+        std::fs::write(interrupted_dir.join("prekeys.json"), b"old-key-material").unwrap();
+        crate::account_recovery::write_recovery_setup_state_for_test(
+            &interrupted_dir,
+            &crate::account_recovery::RecoverySetupState {
+                kit_unsaved: true,
+                recovery_confirmed_at_unix_seconds: None,
+            },
+            &FILE_KEY,
+        )
+        .unwrap();
+
+        // Starting that unfinished account again removes its old identity and
+        // prekeys before fresh generation. The encrypted unfinished marker is
+        // intentionally retained, so the replacement key is still unusable
+        // until recovery-word confirmation.
+        assert!(restart_unfinished_account_using(&interrupted_state, &interrupted_dir).unwrap());
+        assert!(!interrupted_dir.join("identity.json").exists());
+        assert!(!interrupted_dir.join("prekeys.json").exists());
+        assert!(interrupted_dir
+            .join(crate::account_recovery::RECOVERY_KIT_STATUS_FILE)
+            .is_file());
+
+        let replacement = create_native_identity_after_owner_authorization_signoff_using(
+            &interrupted_state,
+            &readiness_from(false, true, true, 0, 0),
+            &interrupted_dir,
+            &sealer,
+            HubIdentityCreationOwnerSignoff::owner_authorized_for_new_identity(),
+        )
+        .unwrap();
+        let replacement_identity =
+            keystore::load_identity(&interrupted_dir.join("identity.json"), &sealer).unwrap();
+        assert_ne!(replacement_identity.ed25519_public, old_public_key);
+        assert_eq!(replacement.user_id, replacement_identity.user_id);
+
+        let control_after =
+            keystore::load_identity(&control_dir.join("identity.json"), &sealer).unwrap();
+        assert_eq!(control_after.ed25519_public, control_public_key);
+
+        let control =
+            crate::account_recovery::account_usability_snapshot_at(&control_dir, &FILE_KEY)
+                .unwrap();
+        let interrupted =
+            crate::account_recovery::account_usability_snapshot_at(&interrupted_dir, &FILE_KEY)
+                .unwrap();
+        let usable_account_count = control.usable_account_count + interrupted.usable_account_count;
+        let usable_key_count = control.usable_key_count + interrupted.usable_key_count;
+
+        assert_eq!(usable_account_count, 1);
+        assert_eq!(usable_key_count, 1);
+        assert_eq!(interrupted.account_name, "unfinished");
+        assert_eq!(control.usable_key_count, 1);
+
+        println!(
+            "TASK_3609_FINISH usable_account_count={usable_account_count} usable_key_count={usable_key_count} interrupted_account_name={} control_usable_key_count={} old_interrupted_key_replaced={}",
+            interrupted.account_name,
+            control.usable_key_count,
+            replacement_identity.ed25519_public != old_public_key,
+        );
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

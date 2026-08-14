@@ -2,6 +2,10 @@
 /// capability digests and lifecycle metadata.
 import type { Env } from "../env.js";
 import { isPadmeLength, MAX_LIVE_BLOB_BYTES, MAX_LIVE_BLOB_ROWS } from "../lib/blob-limits.js";
+import {
+  attachmentRetentionLimitMessage,
+  parseAttachmentTier,
+} from "../lib/attachment-retention.js";
 import { applyBurn } from "../lib/burn-policy.js";
 import { parseDeleteGrant } from "../lib/delete-grant.js";
 import { constantTimeEqualHex, sha256Hex } from "../lib/digest.js";
@@ -74,8 +78,12 @@ export async function handleUpload(request: Request, env: Env): Promise<Response
     return error(400, "bad_content_length", "Content-Length must be an unsigned integer");
   }
   if (length !== null && Number(length) > MAX_BLOB_BYTES) return error(413, "too_large", `blob exceeds ${MAX_BLOB_BYTES} bytes`);
+  const tier = parseAttachmentTier(request.headers.get("x-osl-account-tier"));
+  if (tier === null) return error(400, "bad_account_tier", "X-OSL-Account-Tier must be free or pro");
   const ttl = parseUploadTtl(request.headers.get("x-osl-ttl-seconds"), request.headers.get("x-osl-expiry-mode"));
   if (ttl === null) return error(400, "bad_ttl", "X-OSL-TTL-Seconds must be 3600 (1h), 86400 (24h), 259200 (72h), 604800 (7d), or 2592000 (30d); default mode requires at least 604800");
+  const ttlLimitMessage = attachmentRetentionLimitMessage(tier, ttl.ttl);
+  if (ttlLimitMessage !== null) return error(400, "attachment_ttl_limit", ttlLimitMessage);
   const headers = uploadHeaders(request);
   if (!headers) return error(400, "bad_blob_metadata", "blob id, capability digests, class, and delivery tag are required");
   const body = await readBoundedBody(request, MAX_BLOB_BYTES);
@@ -207,17 +215,7 @@ export async function readBoundedBody(request: Request, maxBytes: number): Promi
   return { status: "ok", bytes };
 }
 
-type BlobRow = {
-  fetch_digest_sha256_hex: string;
-  manage_digest_sha256_hex: string;
-  expires_at: number;
-};
-
-type DeleteGrantRow = {
-  delete_message: string | null;
-  delete_owner: string | null;
-  burn_scope: string | null;
-};
+type BlobRow = { fetch_digest_sha256_hex: string; manage_digest_sha256_hex: string; expires_at: number };
 
 async function liveRow(env: Env, blobId: string): Promise<BlobRow | null> {
   if (!ID_RE.test(blobId)) return null;
@@ -264,4 +262,50 @@ export async function handleDelete(request: Request, env: Env, blobId: string): 
     return error(403, "delete_grant_required", "delete grant required");
   }
   return burn;
+}
+
+type DeleteGrantRow = {
+  delete_message: string | null;
+  delete_owner: string | null;
+  burn_scope: string | null;
+};
+
+async function validateDeleteGrant(
+  request: Request,
+  env: Env,
+  blobId: string,
+): Promise<Response | null> {
+  if (!ID_RE.test(blobId)) return null;
+  const row = await env.DB.prepare(
+    `SELECT delete_message, delete_owner, burn_scope
+       FROM blob_capability_index
+      WHERE blob_id = ? LIMIT 1`,
+  ).bind(blobId).first<DeleteGrantRow>();
+  if (!row) return null;
+  const expected = [row.delete_message, row.delete_owner, row.burn_scope];
+  const protectedRow = expected.some((value) => value !== null);
+  if (!protectedRow) return null;
+  if (!row.delete_message || !row.delete_owner || !row.burn_scope) {
+    return error(403, "delete_grant_required", "delete grant required");
+  }
+  const header = request.headers.get("x-osl-delete-grant");
+  if (header === null) {
+    return error(403, "delete_grant_required", "delete grant required");
+  }
+  const grant = parseDeleteGrant(header);
+  if (typeof grant === "string") {
+    return error(403, grant, "delete grant refused");
+  }
+  if (
+    grant.message !== row.delete_message
+    || grant.owner !== row.delete_owner
+    || grant.scope !== row.burn_scope
+  ) {
+    return error(403, "delete_grant_scope", "delete grant refused");
+  }
+  const manageCap = request.headers.get("x-osl-manage-cap")?.trim().toLowerCase();
+  if (manageCap !== grant.grant) {
+    return error(403, "delete_grant_capability", "delete grant refused");
+  }
+  return null;
 }

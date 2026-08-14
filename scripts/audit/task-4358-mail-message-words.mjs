@@ -208,8 +208,22 @@ const serviceRoutes = {
   tuta: "imap=official Tuta says no IMAP/POP and guessed imap.tuta.com DNS failed; api_or_helper=own Tuta clients/offline cache only, no repo helper; web=browser shell lists tuta but no body command found; osl_source=open_shared_mailbox_message accepts tuta fixture bodies only; winner=none in OSL production routes",
 };
 
+const routeFields = ["imap=", "api_or_helper=", "web=", "osl_source=", "winner="];
+const serviceRouteProblems = services.flatMap((service) => {
+  const line = serviceRoutes[service];
+  if (typeof line !== "string" || line.trim() === "") {
+    return [`${service}: answered with no route named beside it`];
+  }
+  const missing = routeFields.filter((field) => !line.includes(field));
+  return missing.length === 0 ? [] : [`${service}: route line missing ${missing.join(",")}`];
+});
+assertMeasured(
+  serviceRouteProblems.length === 0,
+  `TASK4358_ROUTE_PROBLEMS ${serviceRouteProblems.join("; ")}`,
+);
+
 console.log(`TASK4358_SERVICE_COUNT=${services.length}`);
-console.log(`TASK4358_SERVICES_WITH_NO_LINE=0`);
+console.log(`TASK4358_SERVICES_WITH_NO_LINE=${serviceRouteProblems.length}`);
 console.log("TASK4358_ROUTES_TRIED_PER_SERVICE=4");
 console.log(`TASK4358_UNMEASURED_CLAIMS=0`);
 console.log("TASK4358_IMAP_WHOLE_COMMAND=UID FETCH <uid> (BODY.PEEK[])");

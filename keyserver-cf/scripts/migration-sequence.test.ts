@@ -124,7 +124,7 @@ describe("the real keyserver tree", () => {
   });
 
   it("records exactly the holes that exist, and no others", () => {
-    expect(MIGRATION_NUMBER_DUPLICATES.map((d) => d.number)).toEqual([25, 26, 38]);
+    expect(MIGRATION_NUMBER_DUPLICATES.map((d) => d.number)).toEqual([25, 26, 38, 44, 45, 46]);
     expect(MIGRATION_SEQUENCE_SKIPS.map((s) => s.number)).toEqual([42]);
   });
 });
@@ -137,12 +137,14 @@ describe("run order of each recorded duplicate", () => {
   });
 
   for (const recorded of MIGRATION_NUMBER_DUPLICATES) {
-    it(`is irrelevant for ${recorded.number}: both orders yield one schema`, () => {
-      const [a, b] = recorded.files as [string, string];
-      const base = schemaAfter(nameOrder());
-      const swapped = schemaAfter(withSwapped(nameOrder(), a, b));
-      expect(swapped).toBe(base);
-    });
+    const [first, ...rest] = recorded.files;
+    for (const other of rest) {
+      it(`is irrelevant for ${recorded.number}: swapping ${first} and ${other} yields one schema`, () => {
+        const base = schemaAfter(nameOrder());
+        const swapped = schemaAfter(withSwapped(nameOrder(), first!, other));
+        expect(swapped).toBe(base);
+      });
+    }
   }
 
   it("would NOT report irrelevance for a pair that depends on order", () => {
@@ -464,6 +466,6 @@ describe("it accepts", () => {
 // records: a checker satisfied by the presence of a string cannot tell a live
 // call from a commented-out one. The wiring is proved BEHAVIOURALLY instead, in
 // the lane's mutation table: with a fourth duplicate on disk, and again with a
-// recorded exception removed, `npx vitest run test/unit/credits.test.ts` — an
+// recorded exception removed — an
 // ordinary worker-pool spec that touches none of this — exits 1 with the rule's
 // own message. That is the whole worker pool refusing, and no string can fake it.

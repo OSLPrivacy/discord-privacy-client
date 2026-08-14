@@ -4,13 +4,19 @@
 //! paths, capabilities, keys, ciphertext, and plaintext bytes stay in Rust.
 
 use osl_privacy_hub::attachment_formats;
+use osl_privacy_hub::attachment_limits::AttachmentAccountTier;
 use osl_privacy_hub::attachment_partial_guard::AttachmentPartialGuard;
 use osl_privacy_hub::broker::{
     self, HubBrokerState, PendingNativeOverlayAttachment, PreparedNativeOverlayAttachment,
 };
 use osl_privacy_hub::core_bridge::HubCoreState;
+use osl_privacy_hub::osl_chat_attachment_download_permission::{
+    authorize_recipient_attachment_download, download_pro_attachment_for_recipient,
+    grant_recipient_download_from_authenticated_notice, RecipientAttachmentDownloadError,
+    RecipientAttachmentDownloadPermission, RecipientAttachmentDownloadRequest,
+    StoredReceiverPermission, StoredRecipientAttachment,
+};
 use osl_privacy_hub::peer_attachment_io;
-use osl_privacy_hub::protected_download_quarantine;
 use osl_privacy_hub::security::HubSecurityState;
 use osl_privacy_hub::service_host::ActiveServiceHost;
 use std::fs::File;
@@ -23,19 +29,7 @@ use tauri::Manager;
 use tauri_plugin_dialog::DialogExt;
 use zeroize::Zeroize;
 
-const OSL_CHAT_SPOILER_FILENAME_PREFIX: &str = "OSL-SPOILER-1--";
-
-fn osl_chat_attachment_filename(selected_filename: String, spoiler: bool) -> Result<String, String> {
-    let filename = if spoiler {
-        format!("{OSL_CHAT_SPOILER_FILENAME_PREFIX}{selected_filename}")
-    } else {
-        selected_filename
-    };
-    if filename.len() > ipc::attachment_wire::MAX_FILENAME_LEN {
-        return Err("The spoiler attachment filename is too long".to_owned());
-    }
-    Ok(filename)
-}
+pub(crate) const PRO_ATTACHMENT_LIMIT_BYTES: u64 = 1_073_741_824;
 
 /// Build the attachment store client for whatever route this process is on.
 ///
@@ -68,33 +62,11 @@ pub(crate) struct OpenedNativeOverlayAttachment {
     opened_in_native_viewer: bool,
 }
 
-fn attachment_tier(
-    core: &HubCoreState,
-) -> osl_privacy_hub::attachment_limits::AttachmentAccountTier {
-    osl_privacy_hub::attachment_limits::shipping_account_tier(&core.osl)
-}
-
-fn upload_tier(
-    tier: osl_privacy_hub::attachment_limits::AttachmentAccountTier,
-) -> ipc::cipher_store_client::AttachmentUploadTier {
-    match tier {
-        osl_privacy_hub::attachment_limits::AttachmentAccountTier::Free => {
-            ipc::cipher_store_client::AttachmentUploadTier::Free
-        }
-        osl_privacy_hub::attachment_limits::AttachmentAccountTier::Pro => {
-            ipc::cipher_store_client::AttachmentUploadTier::Pro
-        }
-    }
-}
-
-fn require_same_attachment_tier(
-    core: &HubCoreState,
-    expected: osl_privacy_hub::attachment_limits::AttachmentAccountTier,
-) -> Result<(), String> {
-    if attachment_tier(core) == expected {
+fn require_active_pro(core: &HubCoreState) -> Result<(), String> {
+    if ipc::tier_gate::is_paid_equivalent(&core.osl) {
         Ok(())
     } else {
-        Err("OSL attachment account tier changed during the operation".to_owned())
+        Err("Encrypted attachments require OSL Pro".to_owned())
     }
 }
 
@@ -114,7 +86,6 @@ pub(crate) fn select_encrypt_upload_deliver(
         broker_state,
         Some((context_epoch, expected_host)),
         view_once,
-        false,
     )
 }
 
@@ -124,9 +95,8 @@ pub(crate) fn select_osl_chat_attachment(
     security: &HubSecurityState,
     broker_state: &HubBrokerState,
     view_once: bool,
-    spoiler: bool,
 ) -> Result<Option<PreparedNativeOverlayAttachment>, String> {
-    select_encrypt_upload_deliver_inner(app, core, security, broker_state, None, view_once, spoiler)
+    select_encrypt_upload_deliver_inner(app, core, security, broker_state, None, view_once)
 }
 
 fn validate_surface(
@@ -148,9 +118,7 @@ fn select_encrypt_upload_deliver_inner(
     broker_state: &HubBrokerState,
     overlay_context: Option<(u64, &ActiveServiceHost)>,
     view_once: bool,
-    spoiler: bool,
 ) -> Result<Option<PreparedNativeOverlayAttachment>, String> {
-    let account_tier = attachment_tier(core);
     let parent_label = if overlay_context.is_some() {
         super::native_discord_overlay::OVERLAY_LABEL
     } else {
@@ -175,12 +143,12 @@ fn select_encrypt_upload_deliver_inner(
     let Some(selected) = selected else {
         return Ok(None);
     };
-    require_same_attachment_tier(core, account_tier)?;
+    require_active_pro(core)?;
     validate_surface(app, broker_state, overlay_context)?;
     let selected_path = selected
         .into_path()
         .map_err(|_| "The selected attachment path is unavailable".to_owned())?;
-    let selected_filename = selected_path
+    let filename = selected_path
         .file_name()
         .and_then(|value| value.to_str())
         .ok_or_else(|| "The selected attachment filename is invalid".to_owned())?
@@ -190,14 +158,6 @@ fn select_encrypt_upload_deliver_inner(
     // in, or hit a shell handler that ignores the filter. Refusing later would
     // leave remote ciphertext to roll back, which is exactly the path that
     // needed the deletion outbox in the first place.
-    if attachment_formats::accepted_attachment_mime(&selected_filename).is_none() {
-        return Err(attachment_formats::unsupported_selection_message());
-    }
-    // This prefix is authenticated inside the encrypted attachment envelope;
-    // it is not upload metadata. Keeping the original extension preserves the
-    // existing send/receive MIME authority. Refuse before reading any bytes if
-    // adding the format marker would exceed the wire filename bound.
-    let filename = osl_chat_attachment_filename(selected_filename, spoiler)?;
     if attachment_formats::accepted_attachment_mime(&filename).is_none() {
         return Err(attachment_formats::unsupported_selection_message());
     }
@@ -208,6 +168,9 @@ fn select_encrypt_upload_deliver_inner(
         .map_err(|_| "The selected attachment could not be checked".to_owned())?;
     if !metadata.is_file() {
         return Err("The selected attachment is not a regular file".to_owned());
+    }
+    if metadata.len() > PRO_ATTACHMENT_LIMIT_BYTES {
+        return Err(pro_attachment_too_large_message(metadata.len()));
     }
     let config_root = app
         .path()
@@ -233,12 +196,11 @@ fn select_encrypt_upload_deliver_inner(
         .path()
         .app_local_data_dir()
         .map_err(|_| "OSL attachment storage is unavailable".to_owned())?;
-    let staged = peer_attachment_io::encrypt_file_for_account_tier(
+    let staged = peer_attachment_io::encrypt_file(
         &local_root,
         &mut source,
         &plan.original_filename,
         &plan.mime_type,
-        account_tier,
         crypto::aead::Key::from_bytes(plan.attachment_key),
         plan.content_id.to_vec(),
         0,
@@ -259,12 +221,7 @@ fn select_encrypt_upload_deliver_inner(
         .map_err(|_| "OSL attachment expiry is invalid".to_owned())?;
     let sealed_file = File::open(staged.path())
         .map_err(|_| "OSL sealed attachment could not be reopened".to_owned())?;
-    let upload = match client.upload_attachment_file_for_tier(
-        sealed_file,
-        ttl,
-        &fetch_token,
-        upload_tier(account_tier),
-    ) {
+    let upload = match client.upload_attachment_file(sealed_file, ttl, &fetch_token) {
         Ok(upload) => upload,
         Err(error) => {
             fetch_token.zeroize();
@@ -302,7 +259,7 @@ fn select_encrypt_upload_deliver_inner(
         fetch_token.zeroize();
         return Err(with_rollback(error, rollback));
     }
-    if let Err(error) = require_same_attachment_tier(core, account_tier) {
+    if let Err(error) = require_active_pro(core) {
         let rollback = delete_remote_ciphertext(
             &client,
             &upload.id_hex,
@@ -744,15 +701,38 @@ fn open_pending_inner(
         return Err(attachment_formats::unsupported_protected_image_message());
     }
     let token = parse_token(&plan.fetch_token)?;
+    let stored_attachment = StoredRecipientAttachment {
+        file_id: plan.object_id.clone(),
+        file_name: plan.original_filename.clone(),
+        byte_length: plan.sealed_size,
+        kind: plan.mime_type.clone(),
+        owner_osl_user_id: plan.owner_osl_user_id.clone(),
+        receiver_permission: StoredReceiverPermission::Download,
+    };
+    let permission = grant_recipient_download_from_authenticated_notice(
+        plan.recipient_osl_user_id.clone(),
+        &stored_attachment,
+        token,
+    )
+    .map_err(|_| "This private attachment permission is invalid".to_owned())?;
+    let recipient_request = current_recipient_download_request(core)?;
+    authorize_recipient_attachment_download(&permission, &recipient_request)
+        .map_err(recipient_permission_error)?;
     let (download_path, mut download) = peer_attachment_io::create_download_file(&local_root)?;
     let mut partial = AttachmentPartialGuard::new(
         &local_root,
         download_path,
         peer_attachment_io::remove_staging_path_in_root,
     );
-    let fetched = match client.fetch_attachment_to_writer(&plan.object_id, &token, &mut download) {
-        Ok(size) => size,
-        Err(error) => {
+    let fetched = match download_pro_attachment_for_recipient(
+        &permission,
+        &stored_attachment,
+        &recipient_request,
+        &client,
+        &mut download,
+    ) {
+        Ok(receipt) => receipt.byte_length,
+        Err(RecipientAttachmentDownloadError::Transfer(error)) => {
             drop(download);
             // A rejected capability is not an expiry, and being offline is
             // neither. Report which one actually happened.
@@ -760,6 +740,10 @@ fn open_pending_inner(
                 &error,
                 peer_attachment_io::TransportPhase::Fetch,
             ));
+        }
+        Err(error) => {
+            drop(download);
+            return Err(recipient_permission_error(error));
         }
     };
     if fetched != plan.sealed_size || download.sync_all().is_err() {
@@ -794,12 +778,14 @@ fn open_pending_inner(
         if let Err(error) = validate_surface(app, broker_state, overlay_context) {
             return Err(error);
         }
+        authorize_current_recipient(core, &permission)?;
         // Decode and create the window while it is hidden. `prepare` applies
         // and reads back capture exclusion before returning; Drop closes the
         // hidden window and zeroizes its pixels on every later failure.
         let viewer =
             super::native_image_viewer::prepare(app, opened, plan.display_duration_seconds)?;
         validate_surface(app, broker_state, overlay_context)?;
+        authorize_current_recipient(core, &permission)?;
         if overlay_context.is_some() {
             broker::commit_native_overlay_attachment_open(core, security, broker_state, &plan)?;
         } else {
@@ -820,14 +806,8 @@ fn open_pending_inner(
             opened_in_native_viewer: true,
         });
     }
-    // TASK 5166: the plaintext's first and only home is the access-controlled
-    // OSL-private quarantine. `decrypt_target_root` is the quarantine root, so
-    // the streaming decryptor below never writes a protected byte into the
-    // staging directory an external reader can be pointed at.
-    let quarantine =
-        protected_download_quarantine::ProtectedDownloadQuarantine::for_app_root(&local_root)?;
     let opened = match peer_attachment_io::decrypt_file(
-        quarantine.decrypt_target_root(),
+        &local_root,
         &mut sealed,
         &plan.original_filename,
         &plan.mime_type,
@@ -849,6 +829,9 @@ fn open_pending_inner(
     if let Err(error) = validate_surface(app, broker_state, overlay_context) {
         return Err(with_plaintext_removal(error, opened.remove_now()));
     }
+    if let Err(error) = authorize_current_recipient(core, &permission) {
+        return Err(with_plaintext_removal(error, opened.remove_now()));
+    }
     let committed = if overlay_context.is_some() {
         broker::commit_native_overlay_attachment_open(core, security, broker_state, &plan)
     } else {
@@ -865,57 +848,54 @@ fn open_pending_inner(
         view_once_consumed: plan.view_once,
         opened_in_native_viewer: true,
     };
-    // TASK 5166: nothing reaches an external reader until the exact quarantined
-    // bytes have come back explicitly clean from the local AMSI provider and
-    // still hash the same at move time. Absence, error, timeout, detection and
-    // stale signatures all land in the `Withheld` arm, which exposes no byte and
-    // returns the local quarantine reason in OSL's own words.
-    let staged = opened
-        .release_to_external_reader()
-        .ok_or_else(|| "the decrypted attachment is no longer staged".to_owned())?;
-    let quarantine_path = staged.path().to_owned();
-    let held = match quarantine.adopt(quarantine_path.clone()) {
-        Ok(held) => held,
-        Err(error) => {
-            let _ = peer_attachment_io::remove_plaintext_with_retries(
-                quarantine.decrypt_target_root(),
-                &quarantine_path,
-            );
-            return Err(error);
-        }
-    };
-    let exposed = match quarantine.scan_and_release(
-        held,
-        &protected_download_quarantine::WindowsAmsiProvider::new(),
-        protected_download_quarantine::now_unix_seconds(),
-    ) {
-        protected_download_quarantine::ProtectedDownloadOutcome::Exposed(exposed) => exposed,
-        protected_download_quarantine::ProtectedDownloadOutcome::Withheld(withheld) => {
-            let _ = quarantine.discard_withheld(&withheld);
-            return Err(withheld.local_reason_text);
-        }
-    };
-    let opened = match peer_attachment_io::adopt_released_plaintext(
-        &local_root,
-        exposed.path.clone(),
-        &plan.original_filename,
-        &plan.mime_type,
-        exposed.bytes_exposed,
-    ) {
-        Ok(opened) => opened,
-        Err(error) => {
-            let _ = peer_attachment_io::remove_plaintext_with_retries(&local_root, &exposed.path);
-            return Err(error);
-        }
-    };
     // Replay is committed and the encrypted inbox capability is already gone, so
     // the remote burn cannot reopen this attachment. Hand the decrypted copy to
     // the external reader first, then burn: the replay slot is spent either way.
-    launch_and_scavenge(opened)?;
+    launch_and_scavenge(opened, plan.expires_at())?;
     if plan.view_once {
         burn_view_once(&client, &plan.object_id, &token)?;
     }
     Ok(response)
+}
+
+fn current_recipient_download_request(
+    core: &HubCoreState,
+) -> Result<RecipientAttachmentDownloadRequest, String> {
+    let recipient_osl_user_id = core
+        .osl
+        .identity
+        .lock()
+        .map_err(|_| "This private attachment recipient is unavailable".to_owned())?
+        .as_ref()
+        .map(|identity| identity.user_id.clone())
+        .ok_or_else(|| "This private attachment recipient is unavailable".to_owned())?;
+    let account_tier = if ipc::tier_gate::is_paid_equivalent(&core.osl) {
+        AttachmentAccountTier::Pro
+    } else {
+        AttachmentAccountTier::Free
+    };
+    Ok(RecipientAttachmentDownloadRequest {
+        recipient_osl_user_id,
+        account_tier,
+    })
+}
+
+fn authorize_current_recipient(
+    core: &HubCoreState,
+    permission: &RecipientAttachmentDownloadPermission,
+) -> Result<(), String> {
+    let request = current_recipient_download_request(core)?;
+    authorize_recipient_attachment_download(permission, &request)
+        .map_err(recipient_permission_error)
+}
+
+fn recipient_permission_error(error: RecipientAttachmentDownloadError) -> String {
+    match error {
+        RecipientAttachmentDownloadError::DownloadLengthMismatch { .. } => {
+            "This private attachment has an invalid size".to_owned()
+        }
+        _ => "This private attachment permission is unavailable".to_owned(),
+    }
 }
 
 /// Longest lifetime the cipher store honours. The taken plan does not expose its
@@ -984,7 +964,10 @@ const PLAINTEXT_REMOVAL_WINDOW: Duration = Duration::from_secs(600);
 #[cfg(windows)]
 const PLAINTEXT_REMOVAL_INTERVAL: Duration = Duration::from_secs(5);
 
-fn launch_and_scavenge(staged: peer_attachment_io::StagedPlaintext) -> Result<(), String> {
+fn launch_and_scavenge(
+    staged: peer_attachment_io::StagedPlaintext,
+    expires_at: i64,
+) -> Result<(), String> {
     if ipc::attachment_wire::is_blocked_automatic_open_filename(staged.original_filename()) {
         return Err(with_plaintext_removal(
             "This attachment type cannot be opened automatically".to_owned(),
@@ -1001,6 +984,17 @@ fn launch_and_scavenge(staged: peer_attachment_io::StagedPlaintext) -> Result<()
             Some(root) => root.to_owned(),
             None => return Err("The decrypted attachment is unavailable".to_owned()),
         };
+        if let Err(error) = osl_privacy_hub::message_expiry::record_timed_attachment_artifact(
+            &root,
+            &path,
+            osl_privacy_hub::message_expiry::TimedAttachmentArtifactKind::UnlockedCopy,
+            expires_at,
+        ) {
+            return Err(with_plaintext_removal(
+                format!("OSL could not guarantee timed removal of the decrypted copy ({error})"),
+                staged.remove_now(),
+            ));
+        }
         // Install the OS-owned deletion before anything can read the plaintext.
         // The reaper is a separate process, so the decrypted copy's lifetime no
         // longer depends on an in-process best-effort call winning a race with
@@ -1068,6 +1062,39 @@ fn external_viewer_unavailable() -> Result<(), String> {
     Err("Native attachment viewing is available only on Windows".to_owned())
 }
 
+fn pro_attachment_too_large_message(file_size: u64) -> String {
+    format!(
+        "This file is {} ({} bytes). Pro files are limited to 1 GB ({} bytes).",
+        format_attachment_size(file_size),
+        grouped_decimal(file_size),
+        grouped_decimal(PRO_ATTACHMENT_LIMIT_BYTES),
+    )
+}
+
+fn format_attachment_size(bytes: u64) -> String {
+    let tenths = bytes
+        .saturating_mul(10)
+        .saturating_add(PRO_ATTACHMENT_LIMIT_BYTES / 2)
+        / PRO_ATTACHMENT_LIMIT_BYTES;
+    if tenths % 10 == 0 {
+        format!("{} GB", tenths / 10)
+    } else {
+        format!("{}.{} GB", tenths / 10, tenths % 10)
+    }
+}
+
+fn grouped_decimal(value: u64) -> String {
+    let digits = value.to_string();
+    let mut grouped = String::with_capacity(digits.len() + digits.len() / 3);
+    for (index, digit) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index) % 3 == 0 {
+            grouped.push(',');
+        }
+        grouped.push(digit);
+    }
+    grouped
+}
+
 /// Absolute System32 path for a Windows helper binary, so neither spawn can be
 /// redirected by a hijacked `PATH`.
 #[cfg(windows)]
@@ -1132,20 +1159,16 @@ mod tests {
     }
 
     #[test]
-    fn osl_chat_spoiler_marker_is_inside_the_filename_and_preserves_mime_extension() {
+    fn pro_too_large_message_names_exact_file_size_and_limit() {
+        let file_size = PRO_ATTACHMENT_LIMIT_BYTES + (PRO_ATTACHMENT_LIMIT_BYTES / 10);
+        let message = pro_attachment_too_large_message(file_size);
         assert_eq!(
-            osl_chat_attachment_filename("private-plan.pdf".to_owned(), true).unwrap(),
-            "OSL-SPOILER-1--private-plan.pdf"
+            message,
+            "This file is 1.1 GB (1,181,116,006 bytes). Pro files are limited to 1 GB (1,073,741,824 bytes)."
         );
-        assert_eq!(
-            osl_chat_attachment_filename("private-plan.pdf".to_owned(), false).unwrap(),
-            "private-plan.pdf"
+        println!(
+            "TASK0049 rust_message=\"{message}\" file_size_bytes={file_size} limit_bytes={PRO_ATTACHMENT_LIMIT_BYTES}"
         );
-        assert!(osl_chat_attachment_filename(
-            "x".repeat(ipc::attachment_wire::MAX_FILENAME_LEN),
-            true,
-        )
-        .is_err());
     }
 
     #[cfg(not(windows))]

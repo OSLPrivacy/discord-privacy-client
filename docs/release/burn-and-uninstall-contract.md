@@ -245,6 +245,101 @@ one class.
 }
 ```
 
+## Windows uninstall inventory extensions
+
+The uninstall inventory also covers Windows-owned integration surfaces outside the seven
+user-actionable places in the footprint map. These rules are ownership-bounded: an uninstall may
+remove only records attributable to OSL, and must not remove provider browser data, another
+application's registry values, jobs, startup entries, or services. Each record is one discovery and
+removal rule, so its section's `count` must equal the number of records in that section.
+
+```json windows-uninstall-inventory
+{
+  "schema_version": 1,
+  "sections": [
+    {
+      "name": "OSL-owned browser records",
+      "count": 1,
+      "records": [
+        {
+          "name": "OSL app-owned browser profile data",
+          "locations": [
+            "%LOCALAPPDATA%\\org.oslprivacy.hub\\EBWebView\\",
+            "%LOCALAPPDATA%\\org.oslprivacy.hub\\service-profiles-v2\\",
+            "%LOCALAPPDATA%\\org.oslprivacy.hub\\browser-companion-profiles-v1\\"
+          ],
+          "ownership": "the record is below an org.oslprivacy.hub app-owned WebView2 or isolated companion-browser profile root; provider-owned browser profiles are excluded",
+          "uninstall_action": "inventory and remove the OSL-owned profile records during uninstall cleanup",
+          "source": "src-tauri/src/main.rs documents the org.oslprivacy.hub WebView2 profile; apps/osl-hub/src/cleanup.rs names service_profiles and browser_companion_profiles as OSL-owned purge targets"
+        }
+      ]
+    },
+    {
+      "name": "Windows registry keys",
+      "count": 1,
+      "records": [
+        {
+          "name": "OSL application registration records",
+          "locations": [
+            "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\<OSL-owned key>",
+            "HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\<OSL-owned key>",
+            "HKLM\\Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\<OSL-owned key>"
+          ],
+          "ownership": "the key identifies OSL Privacy by exact DisplayName or an OSL-owned key name and its uninstall command resolves to the OSL install root",
+          "uninstall_action": "inventory and remove only the matching OSL registration keys",
+          "source": "scripts/qa/measure-uninstall-residue.ps1 inventories the three Windows uninstall hives and bounds matches to OSL DisplayName or key names"
+        }
+      ]
+    },
+    {
+      "name": "scheduled jobs",
+      "count": 1,
+      "records": [
+        {
+          "name": "OSL Task Scheduler jobs",
+          "locations": [
+            "Task Scheduler Library\\OSL Privacy\\*"
+          ],
+          "ownership": "the task is inside the OSL Privacy task folder and every executable action resolves to the OSL install root",
+          "uninstall_action": "inventory, stop, and unregister each matching OSL job",
+          "source": "the Windows uninstall contract reserves a bounded OSL Privacy Task Scheduler folder for OSL-owned scheduled work; task 3706 exercises this inventory rule"
+        }
+      ]
+    },
+    {
+      "name": "startup entries",
+      "count": 1,
+      "records": [
+        {
+          "name": "OSL Privacy logon startup entry",
+          "locations": [
+            "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run\\OSL Privacy"
+          ],
+          "ownership": "the registry value name is exactly OSL Privacy and its command resolves to the installed OSL Privacy executable",
+          "uninstall_action": "inventory and delete the exact OSL Privacy Run value",
+          "source": "src-tauri/src/windows_startup.rs defines RUN_KEY and OSL_STARTUP_VALUE and changes only that exact value"
+        }
+      ]
+    },
+    {
+      "name": "background services",
+      "count": 1,
+      "records": [
+        {
+          "name": "OSL Privacy Windows services",
+          "locations": [
+            "Windows Service Control Manager entries with an OSL Privacy display name and an executable under the OSL install root"
+          ],
+          "ownership": "both the service display name begins with OSL Privacy and the registered executable resolves inside the OSL install root",
+          "uninstall_action": "inventory, stop, and delete each matching OSL service",
+          "source": "the Windows uninstall contract requires dual name-and-binary ownership before a background service is attributed to OSL; task 3706 exercises this inventory rule"
+        }
+      ]
+    }
+  ]
+}
+```
+
 ## Uninstall footprint map
 
 This is the full uninstall-facing map of places OSL writes to in the current Hub build. It groups

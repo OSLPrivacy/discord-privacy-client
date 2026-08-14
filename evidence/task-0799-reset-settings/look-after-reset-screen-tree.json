@@ -1,0 +1,47 @@
+{
+  "image": {
+    "bytes": 29152,
+    "colors": 648,
+    "height": 768,
+    "sha256": "9a12213c00486cabdc7b3b3ece6b0a1fbb6f53d3807e3263849cf1765c9f4c26",
+    "width": 1024
+  },
+  "reset": "completed",
+  "schema": "osl-task-0799-look-after-reset-v1",
+  "screen": "1024x768x24",
+  "states": [
+    {
+      "name": "Theme",
+      "value": "unset"
+    },
+    {
+      "name": "Named look",
+      "value": "unset"
+    },
+    {
+      "name": "Accent",
+      "value": "unset"
+    },
+    {
+      "name": "Corners",
+      "value": "unset"
+    },
+    {
+      "name": "Glow",
+      "value": "unset"
+    },
+    {
+      "name": "Text",
+      "value": "unset"
+    },
+    {
+      "name": "Spacing",
+      "value": "unset"
+    },
+    {
+      "name": "See-through",
+      "value": "unset"
+    }
+  ],
+  "title": "Look"
+}

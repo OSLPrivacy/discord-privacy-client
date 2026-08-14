@@ -33,7 +33,7 @@ export type MessageDefaults = {
  */
 export const FACTORY_MESSAGE_DEFAULTS: MessageDefaults = {
   burnScope: "message",
-  timerSeconds: 300,
+  timerSeconds: 3_600,
   viewOnceLengthSeconds: 10,
   coverWriting: "plaintext",
 };

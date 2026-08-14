@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest";
  * true for that to say anything: the id must sit on the heading (a landmark
  * with the id on itself has no accessible name and a screen reader announces
  * nothing), and exactly one element in the document may claim
- * `aria-current="page"`.
+ * the retired rail must not leave a second navigation landmark behind.
  */
 const source = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
 /** Markup only. A rationale that quotes an attribute is not an attribute. */
@@ -42,16 +42,8 @@ describe("route heading landmarks", () => {
     expect(source).toContain('document.querySelector<HTMLElement>("#route-heading")?.focus()');
   });
 
-  it("marks exactly one element per screen as the current page", () => {
-    // The primary sidebar owns `aria-current="page"`: the destination, or
-    // Settings. Settings' own section buttons choose a section WITHIN that
-    // page, so marking them `page` too put two current-page markers on screen
-    // at once.
-    const pageCurrent = markup.match(/aria-current="page"/gu) ?? [];
-    expect(pageCurrent).toHaveLength(2);
-    const sidebar = markup.slice(markup.indexOf("function primarySidebarMarkup"), markup.indexOf("function appLauncherStrip"));
-    expect(sidebar.match(/aria-current="page"/gu)).toHaveLength(2);
-
+  it("keeps Settings section state without a second current-page rail", () => {
+    expect(markup).not.toMatch(/primary-sidebar|data-primary-destination|with-primary-sidebar/u);
     const settings = markup.slice(markup.indexOf("function settingsContent"), markup.indexOf("function settingsSectionContent"));
     expect(settings).toContain('aria-current="true"');
     expect(settings).not.toContain('aria-current="page"');

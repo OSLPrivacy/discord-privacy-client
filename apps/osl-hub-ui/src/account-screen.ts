@@ -150,26 +150,7 @@ export interface AccountView {
 export interface AccountScreenState {
   readonly saved: AccountView;
   readonly draft: AccountView;
-  /** The latest payment event the buyer still needs to acknowledge. */
-  readonly buyerNoticeEvent: AccountBuyerNoticeEvent | null;
 }
-
-export type AccountBuyerNoticeEvent = "refund" | "chargeback";
-
-/** Exact buyer-facing copy chosen in TASK 3692. */
-export const ACCOUNT_BUYER_NOTICES: Readonly<
-  Record<AccountBuyerNoticeEvent, { readonly title: string; readonly notice: string }>
-> = {
-  refund: {
-    title: "Refund notice",
-    notice: "OSL does not offer refunds. Your purchase and stored data are unchanged.",
-  },
-  chargeback: {
-    title: "Chargeback notice",
-    notice:
-      "Your payment was charged back, so Pro has ended. Your messages are unchanged. Pro files remain downloadable for 7 days, then expire.",
-  },
-};
 
 export const DEFAULT_LOCK_MINUTES = 5;
 
@@ -254,10 +235,9 @@ export function accountView(secrets: AccountSecrets, settings: AccountSettings):
 export function accountScreenState(
   secrets: AccountSecrets,
   settings: AccountSettings,
-  buyerNoticeEvent: AccountBuyerNoticeEvent | null = null,
 ): AccountScreenState {
   const view = accountView(secrets, settings);
-  return { saved: view, draft: view, buyerNoticeEvent };
+  return { saved: view, draft: view };
 }
 
 /** One drawn control. */
@@ -370,7 +350,7 @@ export function accountControls(state: AccountScreenState): AccountControl[] {
 export function setDisplayName(state: AccountScreenState, name: string): AccountScreenState {
   const trimmed = name.trim();
   return {
-    ...state,
+    saved: state.saved,
     draft: {
       ...state.draft,
       settings: {
@@ -384,7 +364,7 @@ export function setDisplayName(state: AccountScreenState, name: string): Account
 export function setLockMinutes(state: AccountScreenState, minutes: number): AccountScreenState {
   lockLabel(minutes);
   return {
-    ...state,
+    saved: state.saved,
     draft: { ...state.draft, settings: { ...state.draft.settings, lockMinutes: minutes } },
   };
 }
@@ -418,7 +398,7 @@ export function resetAccountControl(
         throw new Error(unsafeResetError(id));
     }
   })();
-  return { ...state, draft };
+  return { saved: state.saved, draft };
 }
 
 /** Reset every control that is safe to reset, and leave the other three. */
@@ -449,7 +429,7 @@ export function saveAccount(state: AccountScreenState): {
   saved: SavedAccountSetting[];
 } {
   return {
-    state: { ...state, saved: state.draft, draft: state.draft },
+    state: { saved: state.draft, draft: state.draft },
     saved: accountSavePayload(state.draft),
   };
 }
@@ -546,29 +526,6 @@ function controlMarkup(control: AccountControl): string {
   ].join("");
 }
 
-/** The payment notice is a semantic status with two keyboard-accessible controls. */
-export function accountBuyerNoticeMarkup(event: AccountBuyerNoticeEvent | null): string {
-  if (!event) return "";
-  const copy = ACCOUNT_BUYER_NOTICES[event];
-  return [
-    `<section class="account-buyer-notice" role="status" aria-live="polite"`,
-    ` aria-labelledby="account-buyer-notice-title" data-account-buyer-event="${event}">`,
-    `<div class="account-buyer-notice-copy">`,
-    `<h2 id="account-buyer-notice-title">${escapeHtml(copy.title)}</h2>`,
-    `<p>${escapeHtml(copy.notice)}</p>`,
-    `</div>`,
-    `<div class="account-buyer-notice-actions" aria-label="${escapeHtml(copy.title)} actions">`,
-    `<button type="button" data-account-action="contact-support">Contact support</button>`,
-    `<button type="button" data-account-action="close-buyer-notice">Close</button>`,
-    `</div>`,
-    `</section>`,
-  ].join("");
-}
-
-export function closeAccountBuyerNotice(state: AccountScreenState): AccountScreenState {
-  return { ...state, buyerNoticeEvent: null };
-}
-
 export const SAVE_ACCOUNT_EXPLANATION = "Keeps the identity and lock changes, and any control you reset.";
 export const RESET_SAFE_EXPLANATION =
   `Puts back only what can be put back: ${ACCOUNT_SAFE_RESET_IDS.map((id) => ACCOUNT_CONTROL_LABELS[id].toLowerCase()).join(", ")}.`;
@@ -584,7 +541,6 @@ export function renderAccountScreen(state: AccountScreenState, lastRequest: stri
     `<h1 class="account-screen-heading">${ACCOUNT_SCREEN_TITLE}</h1>`,
     `<p class="account-screen-intro">${ACCOUNT_CONTROL_IDS.length} controls. The five that stand for a secret show that it is set and nothing else, and Reset is offered only where putting the control back costs nothing.</p>`,
     `</header>`,
-    accountBuyerNoticeMarkup(state.buyerNoticeEvent),
     `<ul class="account-controls">${controls.map(controlMarkup).join("")}</ul>`,
     `<section class="account-actions" aria-label="Save the account, or reset what is safe">`,
     `<div class="account-action-group">`,
@@ -622,12 +578,9 @@ export function attachAccountScreen(
   handlers: {
     onSave?: (saved: SavedAccountSetting[]) => void;
     onRequest?: (id: AccountControlId) => void;
-    onContactSupport?: (event: AccountBuyerNoticeEvent) => void;
-    onCloseBuyerNotice?: (event: AccountBuyerNoticeEvent) => void;
-    buyerNoticeEvent?: AccountBuyerNoticeEvent | null;
   } = {},
 ): void {
-  let state = accountScreenState(secrets, settings, handlers.buyerNoticeEvent ?? null);
+  let state = accountScreenState(secrets, settings);
   let lastRequest = "";
   const draw = (): void => {
     mount.innerHTML = renderAccountScreen(state, lastRequest);
@@ -655,18 +608,6 @@ export function attachAccountScreen(
     const button = target?.closest?.("[data-account-action]") as HTMLElement | null;
     if (!button) return;
     const action = button.dataset.accountAction;
-    if (action === "contact-support") {
-      if (state.buyerNoticeEvent) handlers.onContactSupport?.(state.buyerNoticeEvent);
-      return;
-    }
-    if (action === "close-buyer-notice") {
-      const eventName = state.buyerNoticeEvent;
-      if (!eventName) return;
-      state = closeAccountBuyerNotice(state);
-      handlers.onCloseBuyerNotice?.(eventName);
-      draw();
-      return;
-    }
     if (action === "reset") {
       state = resetAccountControl(state, controlOf(button));
       lastRequest = "";

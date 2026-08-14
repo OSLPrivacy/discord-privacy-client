@@ -143,12 +143,22 @@ pub fn save_search(input: OslSavedSearchInput) -> Result<OslSavedSearch, String>
     let mut ordinal = document.saved_searches.len();
     let id = loop {
         let candidate = note_id(created_at, &input.name, &input.query, ordinal);
-        if !document.saved_searches.iter().any(|search| search.id == candidate) {
+        if !document
+            .saved_searches
+            .iter()
+            .any(|search| search.id == candidate)
+        {
             break candidate;
         }
         ordinal += 1;
     };
-    let search = OslSavedSearch { id, name: input.name, query: input.query, filter: input.filter, created_at };
+    let search = OslSavedSearch {
+        id,
+        name: input.name,
+        query: input.query,
+        filter: input.filter,
+        created_at,
+    };
     document.saved_searches.push(search.clone());
     save(&path, &document, &key)?;
     Ok(search)
@@ -161,7 +171,9 @@ pub fn delete_saved_search(id: &str) -> Result<bool, String> {
     let mut document = load(&path, &key)?;
     let before = document.saved_searches.len();
     document.saved_searches.retain(|search| search.id != id);
-    if document.saved_searches.len() == before { return Ok(false); }
+    if document.saved_searches.len() == before {
+        return Ok(false);
+    }
     save(&path, &document, &key)?;
     Ok(true)
 }
@@ -392,8 +404,11 @@ fn validate_input(input: &OslNoteInput) -> Result<(), String> {
 }
 
 fn validate_saved_search_input(input: &OslSavedSearchInput) -> Result<(), String> {
-    if input.name.is_empty() || input.name.chars().count() > 80 || input.name.chars().any(char::is_control)
-        || input.query.chars().count() > 240 || input.query.contains('\0')
+    if input.name.is_empty()
+        || input.name.chars().count() > 80
+        || input.name.chars().any(char::is_control)
+        || input.query.chars().count() > 240
+        || input.query.contains('\0')
         || !valid_search_filter(&input.filter)
     {
         return Err("A saved search has an invalid name, query, or filter".into());
@@ -403,9 +418,28 @@ fn validate_saved_search_input(input: &OslSavedSearchInput) -> Result<(), String
 
 fn valid_search_filter(filter: &str) -> bool {
     matches!(filter, "all" | "favorites" | "trash")
-        || filter.strip_prefix("type:").is_some_and(|kind| matches!(kind, "note" | "document" | "spreadsheet" | "drawing" | "presentation" | "photo" | "video" | "audio" | "model3d"))
-        || filter.strip_prefix("folder:").is_some_and(|folder| !folder.is_empty() && folder.chars().count() <= 80 && !folder.chars().any(char::is_control))
-        || filter.strip_prefix("tag:").is_some_and(|tag| !tag.is_empty() && tag.chars().count() <= 32 && !tag.chars().any(char::is_control))
+        || filter.strip_prefix("type:").is_some_and(|kind| {
+            matches!(
+                kind,
+                "note"
+                    | "document"
+                    | "spreadsheet"
+                    | "drawing"
+                    | "presentation"
+                    | "photo"
+                    | "video"
+                    | "audio"
+                    | "model3d"
+            )
+        })
+        || filter.strip_prefix("folder:").is_some_and(|folder| {
+            !folder.is_empty()
+                && folder.chars().count() <= 80
+                && !folder.chars().any(char::is_control)
+        })
+        || filter.strip_prefix("tag:").is_some_and(|tag| {
+            !tag.is_empty() && tag.chars().count() <= 32 && !tag.chars().any(char::is_control)
+        })
 }
 
 fn validate_document(document: &Document) -> Result<(), String> {
@@ -470,8 +504,14 @@ fn validate_document(document: &Document) -> Result<(), String> {
     let mut search_ids = BTreeSet::new();
     for search in &document.saved_searches {
         valid_id(&search.id)?;
-        validate_saved_search_input(&OslSavedSearchInput { name: search.name.clone(), query: search.query.clone(), filter: search.filter.clone() })?;
-        if search.created_at == 0 || !search_ids.insert(&search.id) { return Err("OSL Notes saved searches are malformed".into()); }
+        validate_saved_search_input(&OslSavedSearchInput {
+            name: search.name.clone(),
+            query: search.query.clone(),
+            filter: search.filter.clone(),
+        })?;
+        if search.created_at == 0 || !search_ids.insert(&search.id) {
+            return Err("OSL Notes saved searches are malformed".into());
+        }
     }
     Ok(())
 }

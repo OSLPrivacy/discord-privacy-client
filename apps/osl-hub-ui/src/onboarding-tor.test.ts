@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 import {
   applyTorBootstrapStatus,
   canContinuePastTorChoice,
+  chooseBridgeUsage,
+  chooseLocalNetworkUsage,
   chooseTorRoute,
   initialTorOnboardingState,
   onboardingTorMarkup,
@@ -10,28 +12,57 @@ import {
 import { applyTorSidecarEvent, initialTorBootStatus, markTorBootSlow } from "./tor-boot-orchestrator";
 
 describe("Tor onboarding choice", () => {
-  // 2026-08-06: the screen used to start with nothing selected and a disabled
-  // Continue. Liam's redesign starts on Tor. The route is still saved on
-  // Continue, so what the backend receives is still what is on screen.
-  it("starts on Tor and can continue", () => {
+  // TASK 5019 keeps Direct shipped until the packaged-build 4900 proof is
+  // green over the tunnel. The current adjudicated proof is red.
+  it("starts on Direct and can continue", () => {
     const state = initialTorOnboardingState();
     const markup = onboardingTorMarkup(state);
 
-    expect(state.choice).toBe("tor");
+    expect(state.choice).toBe("direct");
+    expect(state.usingBridge).toBe(false);
     expect(canContinuePastTorChoice(state)).toBe(true);
-    expect(markup).toMatch(/value="tor"[^>]*checked/u);
-    expect(markup).not.toMatch(/value="direct"[^>]*checked/u);
+    expect(markup).not.toMatch(/value="tor"[^>]*checked/u);
+    expect(markup).toMatch(/value="direct"[^>]*checked/u);
     expect(markup).not.toContain("disabled");
   });
 
-  it("gives both routes equal weight and claims nothing in words", () => {
+  it("shows the shipped bridge control with the exact first-run label", () => {
+    const markup = onboardingTorMarkup(chooseTorRoute(initialTorOnboardingState(), "tor"));
+
+    expect(markup.match(/type="radio"/gu)).toHaveLength(2);
+    expect(markup).toContain('<span class="tor-bridge-label">Using a bridge</span>');
+    expect(markup).toContain('type="checkbox" id="tor-bridge"');
+    expect(markup).not.toMatch(/id="tor-bridge"[^>]*checked/u);
+  });
+
+  it("preserves bridge use while the route and bootstrap projection change", () => {
+    const enabled = chooseBridgeUsage(initialTorOnboardingState(), true);
+    expect(enabled.usingBridge).toBe(true);
+    expect(onboardingTorMarkup(enabled)).toMatch(/id="tor-bridge"[^>]*checked/u);
+
+    const direct = chooseTorRoute(enabled, "direct");
+    expect(direct.usingBridge).toBe(true);
+    expect(onboardingTorMarkup(direct)).not.toContain('id="tor-bridge"');
+
+    const restoredTor = chooseTorRoute(direct, "tor");
+    expect(restoredTor.usingBridge).toBe(true);
+    const connecting = applyTorBootstrapStatus(restoredTor, initialTorBootStatus());
+    expect(connecting.usingBridge).toBe(true);
+  });
+
+  it("gives the two routes equal weight and keeps Mullvad beside them as status", () => {
     const markup = onboardingTorMarkup(initialTorOnboardingState());
 
+    expect(markup.match(/type="radio"/gu)).toHaveLength(2);
     expect(markup).toContain('value="tor"');
     expect(markup).toContain('value="direct"');
     expect(markup).toContain(">Connection choice</h1>");
     expect(markup).toContain('aria-label="Tor"');
-    expect(markup).toContain('aria-label="direct"');
+    expect(markup).toContain('aria-label="Direct"');
+    expect(markup).toContain("<strong>Tor</strong>");
+    expect(markup).toContain("<strong>Direct</strong>");
+    expect(markup).toContain('<div class="tor-mullvad-status" aria-label="Mullvad status">');
+    expect(markup).toContain("You can use both. Neither replaces the other.");
     expect(markup).not.toMatch(/recommended|more private|safer/iu);
     // The two animations carry the comparison, so each card states only its
     // own travel time and neither is described as the better option.
@@ -90,14 +121,46 @@ describe("Tor onboarding choice", () => {
     expect(onboardingTorMarkup(direct)).toMatch(/value="direct"[^>]*checked/u);
   });
 
-  it("offers bridge mode on first run with the exact shipped label", () => {
-    const markup = onboardingTorMarkup(initialTorOnboardingState());
-    expect(markup).toContain("Using a bridge");
-    expect(markup).toContain("data-tor-bridge");
+  it("makes Tor and local network mutually exclusive and explains each change", () => {
+    const torDefault = chooseTorRoute(initialTorOnboardingState(), "tor");
+    const localNetwork = chooseLocalNetworkUsage(torDefault, true);
+    expect(localNetwork.choice).toBe("direct");
+    expect(localNetwork.localNetworkEnabled).toBe(true);
+    expect(onboardingTorMarkup(localNetwork)).toContain("Tor was turned off because Tor hides where you are, while local network access needs to see your local network.");
 
-    const bridge = chooseTorRoute(initialTorOnboardingState(), "bridge");
-    expect(onboardingTorMarkup(bridge)).toMatch(/data-tor-bridge checked/u);
-    console.log("TASK4914_FIRST_RUN_LABEL=Using a bridge");
+    const tor = chooseTorRoute(localNetwork, "tor");
+    expect(tor.choice).toBe("tor");
+    expect(tor.localNetworkEnabled).toBe(false);
+    expect(onboardingTorMarkup(tor)).toContain("Local network was turned off because Tor hides where you are, while local network access needs to see your local network.");
+    expect(tor.choice === "tor" && tor.localNetworkEnabled).toBe(false);
+  });
+
+  it("proves neither control can leave both enabled, including a legacy stored-both state", () => {
+    const starts = [
+      initialTorOnboardingState(),
+      chooseTorRoute(initialTorOnboardingState(), "direct"),
+      chooseLocalNetworkUsage(initialTorOnboardingState(), true),
+      { ...initialTorOnboardingState(), choice: "tor" as const, localNetworkEnabled: true },
+    ];
+    let checked = 0;
+    for (const start of starts) {
+      const torOn = chooseTorRoute(start, "tor");
+      expect(torOn.choice === "tor" && torOn.localNetworkEnabled).toBe(false);
+      checked++;
+
+      const localOn = chooseLocalNetworkUsage(start, true);
+      expect(localOn.choice === "tor" && localOn.localNetworkEnabled).toBe(false);
+      checked++;
+    }
+    expect(checked).toBe(8);
+
+    const legacy = starts[3]!;
+    const repairedByTor = chooseTorRoute(legacy, "tor");
+    expect(repairedByTor.localNetworkEnabled).toBe(false);
+    expect(onboardingTorMarkup(repairedByTor)).toContain("Local network was turned off because Tor hides where you are, while local network access needs to see your local network.");
+    const repairedByLocal = chooseLocalNetworkUsage(legacy, true);
+    expect(repairedByLocal.choice).toBe("direct");
+    expect(onboardingTorMarkup(repairedByLocal)).toContain("Tor was turned off because Tor hides where you are, while local network access needs to see your local network.");
   });
 
   it("renders first-run progress copied from a sidecar bootstrap event", () => {

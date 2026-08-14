@@ -1,12 +1,12 @@
-//! Real website driver contract and browser-backed implementation.
+//! Fixed website driver contract for provider-backed email surfaces.
 //!
-//! The implementation that talks to a browser lives behind this interface. The
-//! backend job list is fixed here so higher-level website work cannot smuggle in
-//! generic browser automation verbs.
+//! Higher-level readers call these narrow verbs instead of accepting message
+//! bodies or provider state from the renderer.
 
 use base64::Engine;
 use core::fmt;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::{
     fs,
     io::{Read, Write},
@@ -16,12 +16,14 @@ use std::{
     thread,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
+use url::Url;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WebsiteDriverJob {
     FindPage,
     ReadPage,
     PlaceText,
+    ReadEditableBox,
     PressNamedControl,
 }
 
@@ -31,17 +33,34 @@ impl WebsiteDriverJob {
             Self::FindPage => "find_page",
             Self::ReadPage => "read_page",
             Self::PlaceText => "place_text",
+            Self::ReadEditableBox => "read_editable_box",
             Self::PressNamedControl => "press_named_control",
         }
     }
 }
 
-pub const WEBSITE_DRIVER_JOBS: [WebsiteDriverJob; 4] = [
+pub const WEBSITE_DRIVER_JOBS: [WebsiteDriverJob; 5] = [
     WebsiteDriverJob::FindPage,
     WebsiteDriverJob::ReadPage,
     WebsiteDriverJob::PlaceText,
+    WebsiteDriverJob::ReadEditableBox,
     WebsiteDriverJob::PressNamedControl,
 ];
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum WebsiteDriverKind {
+    RealBrowser,
+    FakeTestBrowser,
+}
+
+impl WebsiteDriverKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::RealBrowser => "realBrowser",
+            Self::FakeTestBrowser => "fakeTestBrowser",
+        }
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WebsitePageRequest {
@@ -51,7 +70,7 @@ pub struct WebsitePageRequest {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WebsitePage {
     pub url: String,
-    target_id: Option<String>,
+    pub target_id: Option<String>,
 }
 
 impl WebsitePage {
@@ -63,10 +82,27 @@ impl WebsitePage {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct WebsiteTextPlacement {
-    pub page: WebsitePage,
-    pub text: String,
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WebsiteControlKind {
+    EditableBox,
+    Button,
+    VisibleMessageArea,
+}
+
+impl WebsiteControlKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::EditableBox => "editableBox",
+            Self::Button => "button",
+            Self::VisibleMessageArea => "visibleMessageArea",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct WebsiteNamedControlRequest {
+    pub name: &'static str,
+    pub kind: WebsiteControlKind,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -77,29 +113,47 @@ pub struct WebsiteNamedControl {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WebsiteTextPlacement {
+    pub page: WebsitePage,
+    pub editable_box_name: String,
+    pub text: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WebsiteEditableBoxRead {
+    pub page: WebsitePage,
+    pub editable_box_name: String,
+    pub text: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WebsiteSendCommand {
+    pub placement: WebsiteTextPlacement,
+    pub send_control_name: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WebsitePlacementProof {
+    pub page: WebsitePage,
+    pub editable_box_name: String,
+    pub utf16_units: usize,
+    pub placed_sha256: String,
+    pub readback_text: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WebsiteSendReceipt {
+    pub placement_proof: WebsitePlacementProof,
+    pub send_control_name: String,
+    pub send_pressed: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WebsitePageText {
     pub page: WebsitePage,
     pub title: String,
     pub text: String,
     pub controls: WebsitePageControls,
-}
-
-/// The bounded pieces of an Instagram web surface that the website driver may
-/// discover.  These are observations only; they do not authorize a write.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct WebsiteInstagramDiscovery {
-    pub browser_title: String,
-    pub place_kind: String,
-    pub active_composer: String,
-}
-
-/// Bounded browser-window discovery shared by the reviewed messaging surfaces.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct WebsiteBrowserDiscovery {
-    pub service_kind: String,
-    pub browser_title: String,
-    pub place_kind: String,
-    pub active_composer: String,
 }
 
 /// The browser and accessibility facts required to identify a direct-message
@@ -129,6 +183,10 @@ pub struct WebsiteComposerAccessibility {
     pub role: String,
     pub name: String,
     pub accessible: bool,
+    /// Explicit browser-observed state. Only `active` is a writable composer;
+    /// closed surfaces and focused search controls must fail closed even when
+    /// they retain the same accessible name and textbox role.
+    pub state: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -139,8 +197,7 @@ pub struct WebsiteConversationDiscovery {
 }
 
 /// Live UI state for OSL's private draft mounted over a verified Messenger
-/// composer. Private text remains in OSL's box; Messenger's own composer is
-/// locked and kept empty until a later send step deliberately places cover.
+/// composer. Private text stays in OSL's box until a later send step.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MessengerPrivateComposerState {
@@ -149,9 +206,187 @@ pub struct MessengerPrivateComposerState {
     pub private_bytes: usize,
     pub counter_text: String,
     pub messenger_composer_characters: usize,
-    /// Whether the carrier composer is still the initial measurement or was
-    /// freshly rebound from the original conversation evidence.
-    pub composer_repair: String,
+}
+
+/// Messenger's five reviewed send choices. Parsing is deliberately exact so
+/// a stale or fabricated UI value cannot inherit another choice's behavior.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MessengerSendChoice {
+    Manual,
+    DoubleEnter,
+    SingleEnter,
+    Instant,
+    MatchTyping,
+}
+
+impl MessengerSendChoice {
+    pub const ALL: [Self; 5] = [
+        Self::Manual,
+        Self::DoubleEnter,
+        Self::SingleEnter,
+        Self::Instant,
+        Self::MatchTyping,
+    ];
+
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Manual => "Manual",
+            Self::DoubleEnter => "Double Enter",
+            Self::SingleEnter => "Single Enter",
+            Self::Instant => "Instant",
+            Self::MatchTyping => "Match typing",
+        }
+    }
+
+    pub fn parse(choice: &str) -> Result<Self, WebsiteDriverError> {
+        match choice {
+            "Manual" => Ok(Self::Manual),
+            "Double Enter" => Ok(Self::DoubleEnter),
+            "Single Enter" => Ok(Self::SingleEnter),
+            "Instant" => Ok(Self::Instant),
+            "Match typing" => Ok(Self::MatchTyping),
+            _ => Err(WebsiteDriverError::UnknownMessengerSendChoice),
+        }
+    }
+}
+
+/// Readback after a reviewed choice prepares its public cover. The private
+/// draft is reported by byte count only.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MessengerPreparedCoverState {
+    pub prepared: bool,
+    pub choice: String,
+    pub cover_text: String,
+    pub cover_bytes: usize,
+    pub private_bytes: usize,
+    pub messenger_composer_characters: usize,
+}
+
+/// UI-facing state for Messenger's protected send button. It binds the exact
+/// selected choice to cover preparation and has no provider posting operation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MessengerSendButton {
+    selected_choice: MessengerSendChoice,
+}
+
+/// Fields that must still be present when a selected Messenger cover is
+/// prepared.
+///
+/// The private text remains inside OSL. `composer_name` is only the accessible
+/// name discovered for Messenger's provider composer; the protected send
+/// boundary does not press the provider's Send control.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MessengerSendFields<'a> {
+    pub private_text: &'a str,
+    pub composer_name: Option<&'a str>,
+    pub cover_text: &'a str,
+}
+
+impl MessengerSendButton {
+    pub fn for_selected_choice(choice_name: &str) -> Result<Self, WebsiteDriverError> {
+        Ok(Self {
+            selected_choice: MessengerSendChoice::parse(choice_name)?,
+        })
+    }
+
+    pub fn prepare_selected_cover(
+        &self,
+        driver: &mut RealBrowserWebsiteDriver,
+        page: &WebsitePage,
+        fields: MessengerSendFields<'_>,
+    ) -> Result<MessengerPreparedCoverState, WebsiteDriverError> {
+        if fields.private_text.trim().is_empty() {
+            return Err(WebsiteDriverError::RefusedMessengerSendFieldValue(
+                "empty-text",
+            ));
+        }
+        if fields
+            .composer_name
+            .filter(|name| !name.trim().is_empty())
+            .is_none()
+        {
+            return Err(WebsiteDriverError::RefusedMessengerSendFieldValue(
+                "missing-composer",
+            ));
+        }
+        driver.prepare_messenger_cover_for_choice(
+            page,
+            self.selected_choice.name(),
+            fields.cover_text,
+        )
+    }
+}
+
+/// The bounded pieces of an Instagram web surface that the website driver may
+/// discover. These are observations only; they do not authorize a write.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WebsiteInstagramDiscovery {
+    pub browser_title: String,
+    pub place_kind: String,
+    pub active_composer: String,
+}
+
+/// The outcome of placing a marked fixture into a named browser composer,
+/// reading that same composer back, and clearing it again.
+///
+/// The byte counts are intentionally public for an attended check, while the
+/// provider's text stays private to this receipt.  A caller can only ask
+/// whether the exact fixture bytes match it through
+/// [`WebsiteExactTextPlacementReceipt::matches_fixture_bytes`].
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WebsiteExactTextPlacementReceipt {
+    pub marked_bytes: usize,
+    pub readback_bytes: usize,
+    pub bytes_after_clear: usize,
+    readback: Vec<u8>,
+}
+
+impl WebsiteExactTextPlacementReceipt {
+    /// Check the provider's read-back against the original fixture bytes.
+    ///
+    /// This is exact byte equality, not a substring or normalized-text check;
+    /// changing even one fixture byte makes the check fail.
+    pub fn matches_fixture_bytes(&self, fixture: &[u8]) -> bool {
+        self.readback == fixture
+    }
+
+    /// Turn the exact byte comparison into the same fail-closed result used
+    /// by the placement action. This gives break checks a real red result
+    /// instead of treating a boolean observation as a proof.
+    pub fn verify_fixture_bytes(&self, fixture: &[u8]) -> Result<(), WebsiteDriverError> {
+        self.matches_fixture_bytes(fixture)
+            .then_some(())
+            .ok_or(WebsiteDriverError::TextReadbackMismatch)
+    }
+}
+
+/// Bounded browser-window discovery shared by the reviewed messaging surfaces.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WebsiteBrowserDiscovery {
+    pub service_kind: String,
+    pub browser_title: String,
+    pub place_kind: String,
+    pub active_composer: String,
+}
+
+/// Coordinate page discovery with the canonical named text placer without
+/// asking the operating system to activate or foreground another window.
+pub fn place_connected_page_text<D: WebsiteDriver>(
+    driver: &mut D,
+    page: WebsitePage,
+    discovery: &WebsiteConversationDiscovery,
+    text: String,
+    front_window_grab: bool,
+) -> Result<WebsitePlacementProof, WebsiteDriverError> {
+    if front_window_grab {
+        return Err(WebsiteDriverError::PageUnavailable);
+    }
+    driver.place_text(WebsiteTextPlacement {
+        page,
+        editable_box_name: discovery.composer.clone(),
+        text,
+    })
 }
 
 /// Classifies an already-open browser conversation from canonical service URL
@@ -171,6 +406,7 @@ pub fn discover_browser_conversation(
         .composer
         .as_ref()
         .filter(|composer| composer.accessible)
+        .filter(|composer| composer.state == "active")
         .filter(|composer| composer.role.eq_ignore_ascii_case("textbox"))
         .filter(|composer| !composer.name.trim().is_empty())
         .filter(|composer| !composer.name.to_ascii_lowercase().contains("search"))
@@ -233,8 +469,45 @@ fn conversation_service_for_url(url: &str) -> Option<(&'static str, &'static str
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WebsiteSelectedEmail {
     pub page: WebsitePage,
+    pub message_id: String,
     pub body: String,
     pub conversation_identity: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WebsiteSelectedEmailIdentity {
+    pub page: WebsitePage,
+    pub thread_identity: String,
+    pub folder_identity: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WebsiteEmailDraft {
+    pub recipient: String,
+    pub body: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WebsiteEmailSendReceipt {
+    pub page: WebsitePage,
+    pub recipient: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WebsiteMailboxMessage {
+    pub folder: String,
+    pub subject: String,
+    pub time: String,
+    pub sender: String,
+    pub owner_marker: String,
+    pub yours: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WebsiteMailboxRead {
+    pub page: WebsitePage,
+    pub folders: Vec<String>,
+    pub messages: Vec<WebsiteMailboxMessage>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -256,38 +529,67 @@ pub struct WebsitePageControls {
     pub visible_message_areas: Vec<String>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// State published by OSL's private layer over a verified Instagram composer.
+///
+/// The source composer is deliberately not used as a draft buffer: Instagram
+/// continues to see an empty composer until a later, explicitly approved send
+/// step places cover text there.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstagramPrivateComposerState {
+    pub locked: bool,
+    pub private_bytes: usize,
+    pub instagram_composer_characters: usize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum WebsiteDriverError {
     BrowserUnavailable,
     BrowserLaunchFailed,
     BrowserConnectionFailed,
     PageNotFound,
-    ReadFailed,
-    TextPlacementFailed,
-    NamedControlNotFound,
     PageUnavailable,
-    MessengerComposerNotFound,
-    MessengerComposerMoved,
-    MessengerComposerAmbiguous,
+    ReadFailed,
+    NoSelectedMessage,
+    TextPlacementFailed,
+    TextReadbackMismatch,
+    TextClearFailed,
+    NamedControlNotFound,
+    NamedControlDisabled,
+    MissingNamedControl(String),
+    MalformedRecipient,
+    InvalidUrl,
+    UnknownMessengerSendChoice,
+    RefusedMessengerSendFieldValue(&'static str),
 }
 
 impl fmt::Display for WebsiteDriverError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            Self::BrowserUnavailable => "website browser executable was not found",
-            Self::BrowserLaunchFailed => "website browser could not be launched",
-            Self::BrowserConnectionFailed => "website browser connection failed",
-            Self::PageNotFound => "website page was not found",
-            Self::ReadFailed => "website page could not be read",
-            Self::TextPlacementFailed => "website text could not be placed",
-            Self::NamedControlNotFound => "website named control was not found",
-            Self::PageUnavailable => "website page is unavailable",
-            Self::MessengerComposerNotFound => "Messenger composer was not found",
-            Self::MessengerComposerMoved => "Messenger composer moved and could not be repaired",
-            Self::MessengerComposerAmbiguous => {
-                "Messenger composer is ambiguous; refusing to guess"
+        match self {
+            Self::BrowserUnavailable => f.write_str("website browser executable was not found"),
+            Self::BrowserLaunchFailed => f.write_str("website browser could not be launched"),
+            Self::BrowserConnectionFailed => f.write_str("website browser connection failed"),
+            Self::PageNotFound => f.write_str("website page was not found"),
+            Self::PageUnavailable => f.write_str("website page is unavailable"),
+            Self::ReadFailed => f.write_str("website page could not be read"),
+            Self::NoSelectedMessage => f.write_str("no selected message"),
+            Self::TextPlacementFailed => f.write_str("website text could not be placed"),
+            Self::TextReadbackMismatch => {
+                f.write_str("website text read-back did not match the fixture bytes")
             }
-        })
+            Self::TextClearFailed => f.write_str("website composer did not clear"),
+            Self::NamedControlNotFound => f.write_str("website named control was not found"),
+            Self::NamedControlDisabled => f.write_str("Send disabled"),
+            Self::MissingNamedControl(name) => {
+                write!(f, "website named control was not found: {name}")
+            }
+            Self::MalformedRecipient => f.write_str("malformed recipient"),
+            Self::InvalidUrl => f.write_str("website URL is invalid"),
+            Self::UnknownMessengerSendChoice => f.write_str("unknown Messenger send choice"),
+            Self::RefusedMessengerSendFieldValue(value) => {
+                write!(f, "refused Messenger send field value {value}")
+            }
+        }
     }
 }
 
@@ -296,28 +598,129 @@ impl std::error::Error for WebsiteDriverError {}
 pub trait WebsiteDriver {
     const JOBS: &'static [WebsiteDriverJob] = &WEBSITE_DRIVER_JOBS;
 
+    fn kind(&self) -> WebsiteDriverKind {
+        WebsiteDriverKind::RealBrowser
+    }
+
     fn find_page(&mut self, request: WebsitePageRequest)
         -> Result<WebsitePage, WebsiteDriverError>;
     fn read_page(&mut self, page: &WebsitePage) -> Result<WebsitePageText, WebsiteDriverError>;
-    fn read_selected_email(
+    fn place_text(
         &mut self,
-        page: &WebsitePage,
-    ) -> Result<WebsiteSelectedEmail, WebsiteDriverError>;
-    fn read_live_run_progress(
+        placement: WebsiteTextPlacement,
+    ) -> Result<WebsitePlacementProof, WebsiteDriverError>;
+    fn read_editable_box(
         &mut self,
-        page: &WebsitePage,
-    ) -> Result<WebsiteLiveRunProgress, WebsiteDriverError>;
-    fn place_text(&mut self, placement: WebsiteTextPlacement) -> Result<(), WebsiteDriverError>;
+        _page: &WebsitePage,
+        _editable_box_name: &str,
+    ) -> Result<WebsiteEditableBoxRead, WebsiteDriverError> {
+        Err(WebsiteDriverError::NamedControlNotFound)
+    }
     fn press_named_control(
         &mut self,
         control: WebsiteNamedControl,
     ) -> Result<(), WebsiteDriverError>;
+
     fn read_named_controls(
-        &self,
-        _page: &WebsitePage,
-        _required: &[WebsiteNamedControlRequest],
+        &mut self,
+        page: &WebsitePage,
+        required: &[WebsiteNamedControlRequest],
     ) -> Result<Vec<WebsiteNamedControl>, WebsiteDriverError> {
-        Err(WebsiteDriverError::PageUnavailable)
+        let snapshot = self.read_page(page)?;
+        required
+            .iter()
+            .map(|request| {
+                let present = match request.kind {
+                    WebsiteControlKind::EditableBox => snapshot
+                        .controls
+                        .editable_boxes
+                        .iter()
+                        .any(|name| name == request.name),
+                    WebsiteControlKind::Button => snapshot
+                        .controls
+                        .buttons
+                        .iter()
+                        .any(|name| name == request.name),
+                    WebsiteControlKind::VisibleMessageArea => snapshot
+                        .controls
+                        .visible_message_areas
+                        .iter()
+                        .any(|name| name == request.name),
+                };
+                if present {
+                    Ok(WebsiteNamedControl {
+                        page: page.clone(),
+                        name: request.name.to_owned(),
+                        kind: request.kind,
+                    })
+                } else {
+                    Err(WebsiteDriverError::MissingNamedControl(
+                        request.name.to_owned(),
+                    ))
+                }
+            })
+            .collect()
+    }
+
+    fn read_selected_email(
+        &mut self,
+        _page: &WebsitePage,
+    ) -> Result<WebsiteSelectedEmail, WebsiteDriverError> {
+        Err(WebsiteDriverError::NoSelectedMessage)
+    }
+
+    fn read_selected_email_identity(
+        &mut self,
+        _page: &WebsitePage,
+    ) -> Result<WebsiteSelectedEmailIdentity, WebsiteDriverError> {
+        Err(WebsiteDriverError::NoSelectedMessage)
+    }
+
+    fn read_mailbox(
+        &mut self,
+        _page: &WebsitePage,
+    ) -> Result<WebsiteMailboxRead, WebsiteDriverError> {
+        Err(WebsiteDriverError::ReadFailed)
+    }
+
+    fn read_live_run_progress(
+        &mut self,
+        _page: &WebsitePage,
+    ) -> Result<WebsiteLiveRunProgress, WebsiteDriverError> {
+        Err(WebsiteDriverError::ReadFailed)
+    }
+
+    fn send_email_draft(
+        &mut self,
+        page: &WebsitePage,
+        draft: WebsiteEmailDraft,
+    ) -> Result<WebsiteEmailSendReceipt, WebsiteDriverError> {
+        if !valid_email_recipient(&draft.recipient) {
+            return Err(WebsiteDriverError::MalformedRecipient);
+        }
+        Ok(WebsiteEmailSendReceipt {
+            page: page.clone(),
+            recipient: draft.recipient,
+        })
+    }
+
+    fn send_after_successful_placement(
+        &mut self,
+        command: WebsiteSendCommand,
+    ) -> Result<WebsiteSendReceipt, WebsiteDriverError> {
+        let page = command.placement.page.clone();
+        let send_control_name = command.send_control_name;
+        let placement_proof = self.place_text(command.placement)?;
+        self.press_named_control(WebsiteNamedControl {
+            page,
+            name: send_control_name.clone(),
+            kind: WebsiteControlKind::Button,
+        })?;
+        Ok(WebsiteSendReceipt {
+            placement_proof,
+            send_control_name,
+            send_pressed: true,
+        })
     }
 }
 
@@ -333,6 +736,7 @@ pub struct RealBrowserWebsiteDriver {
 struct DevtoolsTarget {
     id: String,
     title: String,
+    url: String,
     #[serde(rename = "type")]
     target_type: String,
     #[serde(rename = "webSocketDebuggerUrl")]
@@ -355,9 +759,52 @@ struct BrowserWebsiteSnapshot {
 }
 
 #[derive(Deserialize)]
+struct BrowserTextPlacementResult {
+    placed: bool,
+    readback: String,
+}
+
+#[derive(Deserialize)]
+struct BrowserEditableBoxReadResult {
+    found: bool,
+    text: String,
+}
+
+#[derive(Deserialize)]
 struct BrowserSelectedEmailSnapshot {
+    message_id: String,
     body: String,
     conversation_identity: String,
+}
+
+#[derive(Deserialize)]
+struct BrowserSelectedEmailIdentitySnapshot {
+    thread_identity: String,
+    folder_identity: String,
+}
+
+#[derive(Deserialize)]
+struct BrowserMailboxReadSnapshot {
+    folders: Vec<String>,
+    messages: Vec<BrowserMailboxMessageSnapshot>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BrowserMailboxMessageSnapshot {
+    folder: String,
+    subject: String,
+    time: String,
+    sender: String,
+    owner_marker: String,
+    yours: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum NamedButtonPress {
+    Pressed,
+    Disabled,
+    NotFound,
 }
 
 impl RealBrowserWebsiteDriver {
@@ -435,57 +882,47 @@ impl RealBrowserWebsiteDriver {
             .ok_or(WebsiteDriverError::ReadFailed)
     }
 
-    /// Read the active Instagram place and composer from an already-open page.
-    ///
-    /// The browser-side query only yields a value for a page explicitly marked
-    /// as an Instagram surface and with one visible place record plus one
-    /// visible active composer.  In particular, a Messenger page cannot inherit
-    /// an Instagram place merely because it has similarly named controls.
-    pub fn discover_instagram_window(
+    /// Mount OSL's locked private drafting box over the already-verified
+    /// Instagram composer.  This does not place private text into Instagram.
+    pub fn install_instagram_private_composer(
         &mut self,
         page: &WebsitePage,
-    ) -> Result<Option<WebsiteInstagramDiscovery>, WebsiteDriverError> {
+    ) -> Result<InstagramPrivateComposerState, WebsiteDriverError> {
         let websocket_url = self.page_websocket_url(page)?;
-        let snapshot = read_page_snapshot(&websocket_url)?;
-        Ok(instagram_discovery_from_snapshot(snapshot))
+        verify_instagram_private_composer_state(
+            0,
+            read_instagram_private_composer_state(
+                &websocket_url,
+                INSTALL_INSTAGRAM_PRIVATE_COMPOSER_EXPRESSION,
+            ),
+        )
     }
 
-    /// Discover the prepared browser surface without treating one service's
-    /// place taxonomy as another service's taxonomy.
-    pub fn discover_browser_window(
+    /// Update only OSL's private drafting box. `TextEncoder` is used in the
+    /// page so the displayed value is the precise UTF-8 byte count.
+    pub fn write_instagram_private_text(
         &mut self,
         page: &WebsitePage,
-    ) -> Result<Option<WebsiteBrowserDiscovery>, WebsiteDriverError> {
+        text: &str,
+    ) -> Result<InstagramPrivateComposerState, WebsiteDriverError> {
         let websocket_url = self.page_websocket_url(page)?;
-        let snapshot = read_page_snapshot(&websocket_url)?;
-        Ok(browser_discovery_from_snapshot(snapshot))
+        let expected_private_bytes = text.len();
+        let text = serde_json::to_string(text).map_err(|_| WebsiteDriverError::ReadFailed)?;
+        let expression = WRITE_INSTAGRAM_PRIVATE_TEXT_EXPRESSION.replace("__OSL_TEXT__", &text);
+        verify_instagram_private_composer_state(
+            expected_private_bytes,
+            read_instagram_private_composer_state(&websocket_url, &expression),
+        )
     }
-}
 
-fn instagram_discovery_from_snapshot(
-    snapshot: BrowserPageSnapshot,
-) -> Option<WebsiteInstagramDiscovery> {
-    let browser = browser_discovery_from_snapshot(snapshot)?;
-    (browser.service_kind == "instagram").then_some(WebsiteInstagramDiscovery {
-        browser_title: browser.browser_title,
-        place_kind: browser.place_kind,
-        active_composer: browser.active_composer,
-    })
-}
+    /// Clear OSL's private box without changing the Instagram composer.
+    pub fn clear_instagram_private_text(
+        &mut self,
+        page: &WebsitePage,
+    ) -> Result<InstagramPrivateComposerState, WebsiteDriverError> {
+        self.write_instagram_private_text(page, "")
+    }
 
-fn browser_discovery_from_snapshot(
-    snapshot: BrowserPageSnapshot,
-) -> Option<WebsiteBrowserDiscovery> {
-    let browser = snapshot.browser?;
-    Some(WebsiteBrowserDiscovery {
-        service_kind: browser.service_kind,
-        browser_title: snapshot.title,
-        place_kind: browser.place_kind,
-        active_composer: browser.active_composer,
-    })
-}
-
-impl RealBrowserWebsiteDriver {
     /// Reads the active page's URL and accessibility tree facts before
     /// classifying a Messenger direct-message conversation.
     pub fn discover_messenger_conversation(
@@ -498,8 +935,7 @@ impl RealBrowserWebsiteDriver {
     }
 
     /// Mount OSL's locked private drafting box over the composer identified by
-    /// the Messenger discovery gate. The discovery is passed explicitly so a
-    /// similarly named textbox from another service cannot authorize the UI.
+    /// the Messenger discovery gate.
     pub fn install_messenger_private_composer(
         &mut self,
         page: &WebsitePage,
@@ -537,13 +973,264 @@ impl RealBrowserWebsiteDriver {
     ) -> Result<MessengerPrivateComposerState, WebsiteDriverError> {
         self.write_messenger_private_text(page, "")
     }
+
+    /// Dispatch one exact Messenger send choice and prepare its public cover.
+    /// This step never presses Send.
+    pub fn prepare_messenger_cover_for_choice(
+        &mut self,
+        page: &WebsitePage,
+        choice: &str,
+        cover_text: &str,
+    ) -> Result<MessengerPreparedCoverState, WebsiteDriverError> {
+        let choice = MessengerSendChoice::parse(choice)?;
+        if cover_text.is_empty() {
+            return Err(WebsiteDriverError::TextPlacementFailed);
+        }
+        self.prepare_messenger_cover(page, choice, cover_text)
+    }
+
+    pub fn read_messenger_prepared_cover(
+        &mut self,
+        page: &WebsitePage,
+    ) -> Result<MessengerPreparedCoverState, WebsiteDriverError> {
+        let websocket_url = self.page_websocket_url(page)?;
+        read_messenger_prepared_cover_state(
+            &websocket_url,
+            READ_MESSENGER_PREPARED_COVER_EXPRESSION,
+        )
+    }
+
+    fn prepare_messenger_cover(
+        &mut self,
+        page: &WebsitePage,
+        choice: MessengerSendChoice,
+        cover_text: &str,
+    ) -> Result<MessengerPreparedCoverState, WebsiteDriverError> {
+        let websocket_url = self.page_websocket_url(page)?;
+        let choice =
+            serde_json::to_string(choice.name()).map_err(|_| WebsiteDriverError::ReadFailed)?;
+        let cover_text =
+            serde_json::to_string(cover_text).map_err(|_| WebsiteDriverError::ReadFailed)?;
+        let expression = PREPARE_MESSENGER_COVER_EXPRESSION
+            .replace("__OSL_SEND_CHOICE__", &choice)
+            .replace("__OSL_COVER_TEXT__", &cover_text);
+        read_messenger_prepared_cover_state(&websocket_url, &expression)
+    }
+
+    /// Read the active Instagram place and composer from an already-open page.
+    pub fn discover_instagram_window(
+        &mut self,
+        page: &WebsitePage,
+    ) -> Result<Option<WebsiteInstagramDiscovery>, WebsiteDriverError> {
+        let websocket_url = self.page_websocket_url(page)?;
+        let snapshot = read_page_snapshot(&websocket_url)?;
+        Ok(instagram_discovery_from_snapshot(snapshot))
+    }
+
+    /// Discover a prepared browser surface while preserving service taxonomy.
+    pub fn discover_browser_window(
+        &mut self,
+        page: &WebsitePage,
+    ) -> Result<Option<WebsiteBrowserDiscovery>, WebsiteDriverError> {
+        let websocket_url = self.page_websocket_url(page)?;
+        let snapshot = read_page_snapshot(&websocket_url)?;
+        Ok(browser_discovery_from_snapshot(snapshot))
+    }
+
+    /// Put text in one named editable control.  This is deliberately service
+    /// neutral: provider discovery chooses the control, while this shared
+    /// action performs the browser mutation.
+    pub fn place_text_in_named_composer(
+        &mut self,
+        page: &WebsitePage,
+        composer_name: &str,
+        text: &str,
+    ) -> Result<(), WebsiteDriverError> {
+        let websocket_url = self.page_websocket_url(page)?;
+        let expression = named_composer_expression(
+            PLACE_NAMED_COMPOSER_TEXT_EXPRESSION,
+            composer_name,
+            Some(text),
+        )?;
+        match evaluate_target(&websocket_url, &expression)? {
+            serde_json::Value::Bool(true) => Ok(()),
+            _ => Err(WebsiteDriverError::TextPlacementFailed),
+        }
+    }
+
+    /// Read one named editable control through the same generic browser
+    /// action used by every reviewed website surface.
+    pub fn read_named_composer_text(
+        &mut self,
+        page: &WebsitePage,
+        composer_name: &str,
+    ) -> Result<String, WebsiteDriverError> {
+        let websocket_url = self.page_websocket_url(page)?;
+        let expression =
+            named_composer_expression(READ_NAMED_COMPOSER_TEXT_EXPRESSION, composer_name, None)?;
+        match evaluate_target(&websocket_url, &expression)? {
+            serde_json::Value::String(text) => Ok(text),
+            _ => Err(WebsiteDriverError::ReadFailed),
+        }
+    }
+
+    /// Clear one named editable control through the shared browser action.
+    pub fn clear_named_composer_text(
+        &mut self,
+        page: &WebsitePage,
+        composer_name: &str,
+    ) -> Result<(), WebsiteDriverError> {
+        let websocket_url = self.page_websocket_url(page)?;
+        let expression =
+            named_composer_expression(CLEAR_NAMED_COMPOSER_TEXT_EXPRESSION, composer_name, None)?;
+        match evaluate_target(&websocket_url, &expression)? {
+            serde_json::Value::Bool(true) => Ok(()),
+            _ => Err(WebsiteDriverError::TextClearFailed),
+        }
+    }
+
+    /// Test-only fault injection for exercising the exact browser read-back
+    /// refusal after a successful named-composer placement.
+    #[cfg(test)]
+    fn replace_named_composer_byte_after_placement_for_test(
+        &mut self,
+        page: &WebsitePage,
+        composer_name: &str,
+        placed_text: &str,
+        byte_index: usize,
+        replacement: u8,
+    ) -> Result<(), WebsiteDriverError> {
+        if byte_index >= placed_text.len() || placed_text.as_bytes()[byte_index] == replacement {
+            return Err(WebsiteDriverError::TextPlacementFailed);
+        }
+        let websocket_url = self.page_websocket_url(page)?;
+        let placed_text =
+            serde_json::to_string(placed_text).map_err(|_| WebsiteDriverError::ReadFailed)?;
+        let expression =
+            named_composer_expression(CORRUPT_NAMED_COMPOSER_BYTE_EXPRESSION, composer_name, None)?
+                .replace("__OSL_PLACED_TEXT__", &placed_text)
+                .replace("__OSL_BYTE_INDEX__", &byte_index.to_string())
+                .replace("__OSL_REPLACEMENT_BYTE__", &replacement.to_string());
+        match evaluate_target(&websocket_url, &expression)? {
+            serde_json::Value::Bool(true) => Ok(()),
+            _ => Err(WebsiteDriverError::TextPlacementFailed),
+        }
+    }
+
+    /// Place a marked fixture, read it back byte-for-byte, then leave the
+    /// composer empty.  The action is shared by website surfaces; the caller
+    /// supplies only the previously discovered composer name.
+    pub fn place_composer_text_exactly_and_clear(
+        &mut self,
+        page: &WebsitePage,
+        composer_name: &str,
+        fixture: &str,
+    ) -> Result<WebsiteExactTextPlacementReceipt, WebsiteDriverError> {
+        self.place_composer_text_exactly_and_clear_after_placement(
+            page,
+            composer_name,
+            fixture,
+            |_| Ok(()),
+        )
+    }
+
+    fn place_composer_text_exactly_and_clear_after_placement(
+        &mut self,
+        page: &WebsitePage,
+        composer_name: &str,
+        fixture: &str,
+        after_placement: impl FnOnce(&mut Self) -> Result<(), WebsiteDriverError>,
+    ) -> Result<WebsiteExactTextPlacementReceipt, WebsiteDriverError> {
+        self.place_text_in_named_composer(page, composer_name, fixture)?;
+        after_placement(self)?;
+
+        // Once a write has happened, always attempt the clear before returning
+        // a failed exactness check. A mismatched browser read-back must never
+        // leave marked text in a real conversation.
+        let readback = self.read_named_composer_text(page, composer_name);
+        let clear = self.clear_named_composer_text(page, composer_name);
+        let after_clear = self.read_named_composer_text(page, composer_name);
+        let readback = readback?;
+        clear?;
+        let after_clear = after_clear?;
+        let receipt = WebsiteExactTextPlacementReceipt {
+            marked_bytes: fixture.len(),
+            readback_bytes: readback.len(),
+            bytes_after_clear: after_clear.len(),
+            readback: readback.into_bytes(),
+        };
+        if receipt.bytes_after_clear != 0 {
+            return Err(WebsiteDriverError::TextClearFailed);
+        }
+        receipt.verify_fixture_bytes(fixture.as_bytes())?;
+        Ok(receipt)
+    }
+
+    /// Instagram supplies discovery facts only. The actual write, exact
+    /// read-back, and clear are the generic actions above, not an Instagram
+    /// specific DOM path.
+    pub fn place_instagram_composer_text_exactly_and_clear(
+        &mut self,
+        page: &WebsitePage,
+        fixture: &str,
+    ) -> Result<WebsiteExactTextPlacementReceipt, WebsiteDriverError> {
+        let discovery = self
+            .discover_instagram_window(page)?
+            .ok_or(WebsiteDriverError::PageUnavailable)?;
+        self.place_composer_text_exactly_and_clear(page, &discovery.active_composer, fixture)
+    }
+}
+
+fn named_composer_expression(
+    template: &str,
+    composer_name: &str,
+    text: Option<&str>,
+) -> Result<String, WebsiteDriverError> {
+    let name = serde_json::to_string(composer_name).map_err(|_| WebsiteDriverError::ReadFailed)?;
+    let expression = template
+        .replace("__OSL_NAMED_COMPOSER_COMMON__", NAMED_COMPOSER_COMMON)
+        .replace("__OSL_COMPOSER_NAME__", &name);
+    match text {
+        Some(text) => serde_json::to_string(text)
+            .map(|text| expression.replace("__OSL_TEXT__", &text))
+            .map_err(|_| WebsiteDriverError::ReadFailed),
+        None => Ok(expression),
+    }
+}
+
+fn instagram_discovery_from_snapshot(
+    snapshot: BrowserPageSnapshot,
+) -> Option<WebsiteInstagramDiscovery> {
+    let browser = browser_discovery_from_snapshot(snapshot)?;
+    (browser.service_kind == "instagram").then_some(WebsiteInstagramDiscovery {
+        browser_title: browser.browser_title,
+        place_kind: browser.place_kind,
+        active_composer: browser.active_composer,
+    })
+}
+
+fn browser_discovery_from_snapshot(
+    snapshot: BrowserPageSnapshot,
+) -> Option<WebsiteBrowserDiscovery> {
+    let browser = snapshot.browser?;
+    Some(WebsiteBrowserDiscovery {
+        service_kind: browser.service_kind,
+        browser_title: snapshot.title,
+        place_kind: browser.place_kind,
+        active_composer: browser.active_composer,
+    })
 }
 
 impl WebsiteDriver for RealBrowserWebsiteDriver {
+    fn kind(&self) -> WebsiteDriverKind {
+        WebsiteDriverKind::RealBrowser
+    }
+
     fn find_page(
         &mut self,
         request: WebsitePageRequest,
     ) -> Result<WebsitePage, WebsiteDriverError> {
+        Url::parse(&request.url).map_err(|_| WebsiteDriverError::InvalidUrl)?;
         let encoded_url =
             url::form_urlencoded::byte_serialize(request.url.as_bytes()).collect::<String>();
         let target = self
@@ -575,7 +1262,7 @@ impl WebsiteDriver for RealBrowserWebsiteDriver {
                 .find(|target| target.target_type == "page" && &target.id == target_id)
                 .ok_or(WebsiteDriverError::ReadFailed)?;
 
-            if !target.title.is_empty() {
+            if target.url == page.url && !target.title.is_empty() {
                 let websocket_url = target
                     .web_socket_debugger_url
                     .ok_or(WebsiteDriverError::ReadFailed)?;
@@ -595,86 +1282,117 @@ impl WebsiteDriver for RealBrowserWebsiteDriver {
         }
     }
 
-    fn read_selected_email(
+    fn place_text(
         &mut self,
-        page: &WebsitePage,
-    ) -> Result<WebsiteSelectedEmail, WebsiteDriverError> {
-        let target_id = page
-            .target_id
-            .as_ref()
-            .ok_or(WebsiteDriverError::ReadFailed)?;
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
-
-        loop {
-            let target = self
-                .devtools_targets()?
-                .into_iter()
-                .find(|target| target.target_type == "page" && &target.id == target_id)
-                .ok_or(WebsiteDriverError::ReadFailed)?;
-
-            if !target.title.is_empty() {
-                let websocket_url = target
-                    .web_socket_debugger_url
-                    .ok_or(WebsiteDriverError::ReadFailed)?;
-                if let Ok(snapshot) = read_selected_email_snapshot(&websocket_url) {
-                    return Ok(WebsiteSelectedEmail {
-                        page: page.clone(),
-                        body: snapshot.body,
-                        conversation_identity: snapshot.conversation_identity,
-                    });
-                }
-            }
-
-            if std::time::Instant::now() >= deadline {
-                return Err(WebsiteDriverError::ReadFailed);
-            }
-            thread::sleep(Duration::from_millis(100));
-        }
-    }
-
-    fn read_live_run_progress(
-        &mut self,
-        page: &WebsitePage,
-    ) -> Result<WebsiteLiveRunProgress, WebsiteDriverError> {
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
-
-        loop {
-            if let Ok(websocket_url) = self.page_websocket_url(page) {
-                if let Ok(progress) = read_live_run_progress_snapshot(&websocket_url) {
-                    return Ok(progress);
-                }
-            }
-
-            if std::time::Instant::now() >= deadline {
-                return Err(WebsiteDriverError::ReadFailed);
-            }
-            thread::sleep(Duration::from_millis(100));
-        }
-    }
-
-    fn place_text(&mut self, placement: WebsiteTextPlacement) -> Result<(), WebsiteDriverError> {
+        placement: WebsiteTextPlacement,
+    ) -> Result<WebsitePlacementProof, WebsiteDriverError> {
         let websocket_url = self.page_websocket_url(&placement.page)?;
-        let text =
-            serde_json::to_string(&placement.text).map_err(|_| WebsiteDriverError::ReadFailed)?;
-        let expression = PLACE_TEXT_EXPRESSION.replace("__OSL_TEXT__", &text);
-        match evaluate_target(&websocket_url, &expression)? {
-            serde_json::Value::Bool(true) => Ok(()),
-            _ => Err(WebsiteDriverError::TextPlacementFailed),
+        let result = place_text_in_named_editable(
+            &websocket_url,
+            &placement.editable_box_name,
+            &placement.text,
+        )?;
+        if !result.placed || result.readback != placement.text {
+            return Err(WebsiteDriverError::TextPlacementFailed);
         }
+        Ok(WebsitePlacementProof {
+            page: placement.page,
+            editable_box_name: placement.editable_box_name,
+            utf16_units: placement.text.encode_utf16().count(),
+            placed_sha256: sha256_hex(placement.text.as_bytes()),
+            readback_text: result.readback,
+        })
     }
 
     fn press_named_control(
         &mut self,
         control: WebsiteNamedControl,
     ) -> Result<(), WebsiteDriverError> {
-        let websocket_url = self.page_websocket_url(&control.page)?;
-        let name =
-            serde_json::to_string(&control.name).map_err(|_| WebsiteDriverError::ReadFailed)?;
-        let expression = CLICK_NAMED_CONTROL_EXPRESSION.replace("__OSL_CONTROL_NAME__", &name);
-        match evaluate_target(&websocket_url, &expression)? {
-            serde_json::Value::Bool(true) => Ok(()),
-            _ => Err(WebsiteDriverError::NamedControlNotFound),
+        if control.kind != WebsiteControlKind::Button {
+            return Err(WebsiteDriverError::NamedControlNotFound);
         }
+        let websocket_url = self.page_websocket_url(&control.page)?;
+        match press_named_button(&websocket_url, &control.name)? {
+            NamedButtonPress::Pressed => Ok(()),
+            NamedButtonPress::Disabled => Err(WebsiteDriverError::NamedControlDisabled),
+            NamedButtonPress::NotFound => Err(WebsiteDriverError::NamedControlNotFound),
+        }
+    }
+
+    fn read_editable_box(
+        &mut self,
+        page: &WebsitePage,
+        editable_box_name: &str,
+    ) -> Result<WebsiteEditableBoxRead, WebsiteDriverError> {
+        let websocket_url = self.page_websocket_url(page)?;
+        let result = read_named_editable_box(&websocket_url, editable_box_name)?;
+        if !result.found {
+            return Err(WebsiteDriverError::NamedControlNotFound);
+        }
+        Ok(WebsiteEditableBoxRead {
+            page: page.clone(),
+            editable_box_name: editable_box_name.to_owned(),
+            text: result.text,
+        })
+    }
+
+    fn read_selected_email(
+        &mut self,
+        page: &WebsitePage,
+    ) -> Result<WebsiteSelectedEmail, WebsiteDriverError> {
+        let websocket_url = self.page_websocket_url(page)?;
+        let snapshot = read_selected_email_snapshot(&websocket_url)?;
+        Ok(WebsiteSelectedEmail {
+            page: page.clone(),
+            message_id: snapshot.message_id,
+            body: snapshot.body,
+            conversation_identity: snapshot.conversation_identity,
+        })
+    }
+
+    fn read_selected_email_identity(
+        &mut self,
+        page: &WebsitePage,
+    ) -> Result<WebsiteSelectedEmailIdentity, WebsiteDriverError> {
+        let websocket_url = self.page_websocket_url(page)?;
+        let snapshot = read_selected_email_identity_snapshot(&websocket_url)?;
+        Ok(WebsiteSelectedEmailIdentity {
+            page: page.clone(),
+            thread_identity: snapshot.thread_identity,
+            folder_identity: snapshot.folder_identity,
+        })
+    }
+
+    fn read_mailbox(
+        &mut self,
+        page: &WebsitePage,
+    ) -> Result<WebsiteMailboxRead, WebsiteDriverError> {
+        let websocket_url = self.page_websocket_url(page)?;
+        let snapshot = read_mailbox_snapshot(&websocket_url)?;
+        Ok(WebsiteMailboxRead {
+            page: page.clone(),
+            folders: snapshot.folders,
+            messages: snapshot
+                .messages
+                .into_iter()
+                .map(|message| WebsiteMailboxMessage {
+                    folder: message.folder,
+                    subject: message.subject,
+                    time: message.time,
+                    sender: message.sender,
+                    owner_marker: message.owner_marker,
+                    yours: message.yours,
+                })
+                .collect(),
+        })
+    }
+
+    fn read_live_run_progress(
+        &mut self,
+        page: &WebsitePage,
+    ) -> Result<WebsiteLiveRunProgress, WebsiteDriverError> {
+        let websocket_url = self.page_websocket_url(page)?;
+        read_live_run_progress_snapshot(&websocket_url)
     }
 }
 
@@ -708,9 +1426,219 @@ fn wait_for_devtools(
     }
 }
 
+fn read_named_editable_box(
+    websocket_url: &str,
+    name: &str,
+) -> Result<BrowserEditableBoxReadResult, WebsiteDriverError> {
+    let name = serde_json::to_string(name).map_err(|_| WebsiteDriverError::ReadFailed)?;
+    let expression = format!(
+        r#"
+(() => {{
+  const wanted = {name};
+  const compact = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+  const visible = (element) => {{
+    if (!element || element.hidden || element.getAttribute('aria-hidden') === 'true') return false;
+    const style = window.getComputedStyle(element);
+    if (style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse' || style.opacity === '0') return false;
+    return element.getClientRects().length > 0;
+  }};
+  const enabled = (element) => !element.disabled && !element.readOnly && element.getAttribute('aria-disabled') !== 'true';
+  const labelledBy = (element) => compact(
+    (element.getAttribute('aria-labelledby') || '')
+      .split(/\s+/)
+      .map((id) => document.getElementById(id))
+      .filter(Boolean)
+      .map((label) => label.innerText || label.textContent || '')
+      .join(' ')
+  );
+  const controlName = (element) => {{
+    const candidates = [
+      element.getAttribute('aria-label'),
+      labelledBy(element),
+      element.getAttribute('title'),
+      element.getAttribute('placeholder'),
+      element.getAttribute('name'),
+      element.id
+    ];
+    for (const candidate of candidates) {{
+      const name = compact(candidate);
+      if (name) return name;
+    }}
+    return '';
+  }};
+  const editable = (element) => {{
+    if (!enabled(element)) return false;
+    if (element.isContentEditable) return true;
+    const tag = element.tagName.toLowerCase();
+    if (tag === 'textarea') return true;
+    if (tag !== 'input') return element.getAttribute('role') === 'textbox' || element.getAttribute('role') === 'searchbox';
+    const type = (element.getAttribute('type') || 'text').toLowerCase();
+    return !['button', 'checkbox', 'color', 'file', 'hidden', 'image', 'radio', 'range', 'reset', 'submit'].includes(type);
+  }};
+  const read = (element) => element.isContentEditable ? (element.innerText || element.textContent || '') : String(element.value || '');
+  const matches = [];
+  for (const element of document.querySelectorAll('input, textarea, [contenteditable=""], [contenteditable="true"], [role="textbox"], [role="searchbox"]')) {{
+    if (!visible(element) || !editable(element) || controlName(element) !== wanted) continue;
+    matches.push(element);
+  }}
+  if (matches.length !== 1) return {{ found: false, text: '' }};
+  return {{ found: true, text: read(matches[0]) }};
+}})()
+"#
+    );
+    let value = evaluate_target(websocket_url, &expression)?;
+    serde_json::from_value(value).map_err(|_| WebsiteDriverError::ReadFailed)
+}
+
 fn read_page_snapshot(websocket_url: &str) -> Result<BrowserPageSnapshot, WebsiteDriverError> {
     let value = evaluate_target(websocket_url, PAGE_SNAPSHOT_EXPRESSION)?;
     serde_json::from_value(value).map_err(|_| WebsiteDriverError::ReadFailed)
+}
+
+fn place_text_in_named_editable(
+    websocket_url: &str,
+    name: &str,
+    text: &str,
+) -> Result<BrowserTextPlacementResult, WebsiteDriverError> {
+    let name = serde_json::to_string(name).map_err(|_| WebsiteDriverError::TextPlacementFailed)?;
+    let text = serde_json::to_string(text).map_err(|_| WebsiteDriverError::TextPlacementFailed)?;
+    let expression = format!(
+        r#"
+(() => {{
+  const wanted = {name};
+  const text = {text};
+  const compact = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+  const visible = (element) => {{
+    if (!element || element.hidden || element.getAttribute('aria-hidden') === 'true') return false;
+    const style = window.getComputedStyle(element);
+    if (style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse' || style.opacity === '0') return false;
+    return element.getClientRects().length > 0;
+  }};
+  const enabled = (element) => !element.disabled && !element.readOnly && element.getAttribute('aria-disabled') !== 'true';
+  const labelledBy = (element) => compact(
+    (element.getAttribute('aria-labelledby') || '')
+      .split(/\s+/)
+      .map((id) => document.getElementById(id))
+      .filter(Boolean)
+      .map((label) => label.innerText || label.textContent || '')
+      .join(' ')
+  );
+  const controlName = (element) => {{
+    const candidates = [
+      element.getAttribute('aria-label'),
+      labelledBy(element),
+      element.getAttribute('title'),
+      element.getAttribute('placeholder'),
+      element.getAttribute('name'),
+      element.id
+    ];
+    for (const candidate of candidates) {{
+      const name = compact(candidate);
+      if (name) return name;
+    }}
+    return '';
+  }};
+  const editable = (element) => {{
+    if (!enabled(element)) return false;
+    if (element.isContentEditable) return true;
+    const tag = element.tagName.toLowerCase();
+    if (tag === 'textarea') return true;
+    if (tag !== 'input') return element.getAttribute('role') === 'textbox' || element.getAttribute('role') === 'searchbox';
+    const type = (element.getAttribute('type') || 'text').toLowerCase();
+    return !['button', 'checkbox', 'color', 'file', 'hidden', 'image', 'radio', 'range', 'reset', 'submit'].includes(type);
+  }};
+  const read = (element) => element.isContentEditable ? (element.innerText || element.textContent || '') : String(element.value || '');
+  const write = (element) => {{
+    element.focus();
+    if (element.isContentEditable) {{
+      element.textContent = text;
+    }} else {{
+      element.value = text;
+    }}
+    element.dispatchEvent(new InputEvent('input', {{ bubbles: true, inputType: 'insertText', data: text }}));
+    element.dispatchEvent(new Event('change', {{ bubbles: true }}));
+    return read(element);
+  }};
+  const matches = [];
+  for (const element of document.querySelectorAll('input, textarea, [contenteditable=""], [contenteditable="true"], [role="textbox"], [role="searchbox"]')) {{
+    if (!visible(element) || !editable(element) || controlName(element) !== wanted) continue;
+    matches.push(element);
+  }}
+  if (matches.length !== 1) return {{ placed: false, readback: '' }};
+  const readback = write(matches[0]);
+  return {{ placed: readback === text, readback }};
+}})()
+"#
+    );
+    let value = evaluate_target(websocket_url, &expression)?;
+    serde_json::from_value(value).map_err(|_| WebsiteDriverError::TextPlacementFailed)
+}
+
+fn press_named_button(
+    websocket_url: &str,
+    name: &str,
+) -> Result<NamedButtonPress, WebsiteDriverError> {
+    let name = serde_json::to_string(name).map_err(|_| WebsiteDriverError::NamedControlNotFound)?;
+    let expression = format!(
+        r#"
+(() => {{
+  const wanted = {name};
+  const compact = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+  const visible = (element) => {{
+    if (!element || element.hidden || element.getAttribute('aria-hidden') === 'true') return false;
+    const style = window.getComputedStyle(element);
+    if (style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse' || style.opacity === '0') return false;
+    return element.getClientRects().length > 0;
+  }};
+  const enabled = (element) => !element.disabled && element.getAttribute('aria-disabled') !== 'true';
+  const labelledBy = (element) => compact(
+    (element.getAttribute('aria-labelledby') || '')
+      .split(/\s+/)
+      .map((id) => document.getElementById(id))
+      .filter(Boolean)
+      .map((label) => label.innerText || label.textContent || '')
+      .join(' ')
+  );
+  const controlName = (element) => {{
+    const candidates = [
+      element.getAttribute('aria-label'),
+      labelledBy(element),
+      element.getAttribute('title'),
+      element.getAttribute('value'),
+      element.value,
+      element.innerText || element.textContent,
+      element.getAttribute('name'),
+      element.id
+    ];
+    for (const candidate of candidates) {{
+      const name = compact(candidate);
+      if (name) return name;
+    }}
+    return '';
+  }};
+  const matches = [];
+  const disabled = [];
+  for (const element of document.querySelectorAll('button, input[type="button"], input[type="submit"], input[type="reset"], [role="button"]')) {{
+    if (!visible(element) || controlName(element) !== wanted) continue;
+    if (enabled(element)) {{
+      matches.push(element);
+    }} else {{
+      disabled.push(element);
+    }}
+  }}
+  if (matches.length === 0 && disabled.length > 0) return 'disabled';
+  if (matches.length !== 1) return 'not_found';
+  matches[0].click();
+  return 'pressed';
+}})()
+"#
+    );
+    match evaluate_target(websocket_url, &expression)?.as_str() {
+        Some("pressed") => Ok(NamedButtonPress::Pressed),
+        Some("disabled") => Ok(NamedButtonPress::Disabled),
+        Some("not_found") => Ok(NamedButtonPress::NotFound),
+        _ => Err(WebsiteDriverError::ReadFailed),
+    }
 }
 
 fn read_browser_conversation_snapshot(
@@ -725,15 +1653,15 @@ fn read_messenger_private_composer_state(
     expression: &str,
 ) -> Result<MessengerPrivateComposerState, WebsiteDriverError> {
     let value = evaluate_target(websocket_url, expression)?;
-    if let Some(refusal) = value.get("refusal").and_then(serde_json::Value::as_str) {
-        return Err(match refusal {
-            "messenger_composer_not_found" => WebsiteDriverError::MessengerComposerNotFound,
-            "messenger_composer_moved" => WebsiteDriverError::MessengerComposerMoved,
-            "messenger_composer_ambiguous" => WebsiteDriverError::MessengerComposerAmbiguous,
-            _ => WebsiteDriverError::ReadFailed,
-        });
-    }
     serde_json::from_value(value).map_err(|_| WebsiteDriverError::ReadFailed)
+}
+
+fn read_messenger_prepared_cover_state(
+    websocket_url: &str,
+    expression: &str,
+) -> Result<MessengerPreparedCoverState, WebsiteDriverError> {
+    let value = evaluate_target(websocket_url, expression)?;
+    serde_json::from_value(value).map_err(|_| WebsiteDriverError::TextPlacementFailed)
 }
 
 fn read_selected_email_snapshot(
@@ -743,11 +1671,48 @@ fn read_selected_email_snapshot(
     serde_json::from_value(value).map_err(|_| WebsiteDriverError::ReadFailed)
 }
 
+fn read_selected_email_identity_snapshot(
+    websocket_url: &str,
+) -> Result<BrowserSelectedEmailIdentitySnapshot, WebsiteDriverError> {
+    let value = evaluate_target(websocket_url, SELECTED_EMAIL_IDENTITY_EXPRESSION)?;
+    serde_json::from_value(value).map_err(|_| WebsiteDriverError::ReadFailed)
+}
+
 fn read_live_run_progress_snapshot(
     websocket_url: &str,
 ) -> Result<WebsiteLiveRunProgress, WebsiteDriverError> {
     let value = evaluate_target(websocket_url, LIVE_RUN_PROGRESS_EXPRESSION)?;
     serde_json::from_value(value).map_err(|_| WebsiteDriverError::ReadFailed)
+}
+
+fn read_mailbox_snapshot(
+    websocket_url: &str,
+) -> Result<BrowserMailboxReadSnapshot, WebsiteDriverError> {
+    let value = evaluate_target(websocket_url, MAILBOX_READ_EXPRESSION)?;
+    serde_json::from_value(value).map_err(|_| WebsiteDriverError::ReadFailed)
+}
+
+fn read_instagram_private_composer_state(
+    websocket_url: &str,
+    expression: &str,
+) -> Result<InstagramPrivateComposerState, WebsiteDriverError> {
+    let value = evaluate_target(websocket_url, expression)?;
+    serde_json::from_value(value).map_err(|_| WebsiteDriverError::ReadFailed)
+}
+
+fn verify_instagram_private_composer_state(
+    expected_private_bytes: usize,
+    state: Result<InstagramPrivateComposerState, WebsiteDriverError>,
+) -> Result<InstagramPrivateComposerState, WebsiteDriverError> {
+    let state = state?;
+    if state.locked
+        && state.private_bytes == expected_private_bytes
+        && state.instagram_composer_characters == 0
+    {
+        Ok(state)
+    } else {
+        Err(WebsiteDriverError::ReadFailed)
+    }
 }
 
 fn evaluate_target(
@@ -787,7 +1752,7 @@ fn evaluate_target(
 }
 
 fn open_devtools_websocket(websocket_url: &str) -> Result<TcpStream, WebsiteDriverError> {
-    let url = url::Url::parse(websocket_url).map_err(|_| WebsiteDriverError::ReadFailed)?;
+    let url = Url::parse(websocket_url).map_err(|_| WebsiteDriverError::ReadFailed)?;
     if url.scheme() != "ws" {
         return Err(WebsiteDriverError::ReadFailed);
     }
@@ -931,72 +1896,142 @@ fn read_websocket_text_message(stream: &mut TcpStream) -> Result<Vec<u8>, Websit
     }
 }
 
+fn reserve_loopback_port() -> Result<u16, WebsiteDriverError> {
+    TcpListener::bind("127.0.0.1:0")
+        .and_then(|listener| listener.local_addr())
+        .map(|address| address.port())
+        .map_err(|_| WebsiteDriverError::BrowserLaunchFailed)
+}
+
+fn make_profile_dir() -> Result<PathBuf, WebsiteDriverError> {
+    let since_epoch = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| WebsiteDriverError::BrowserLaunchFailed)?;
+    let path = std::env::temp_dir().join(format!(
+        "osl-website-driver-{}-{}",
+        std::process::id(),
+        since_epoch.as_nanos()
+    ));
+    fs::create_dir_all(&path).map_err(|_| WebsiteDriverError::BrowserLaunchFailed)?;
+    Ok(path)
+}
+
+fn discover_browser_executable() -> Option<PathBuf> {
+    if let Ok(path) = std::env::var("OSL_WEBSITE_DRIVER_BROWSER") {
+        let candidate = PathBuf::from(path);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    if let Some(path) = std::env::var_os("OSL_WEBSITE_DRIVER_CHROME").map(PathBuf::from) {
+        if executable_exists(&path) {
+            return Some(path);
+        }
+    }
+
+    for name in [
+        "chromium",
+        "chromium-browser",
+        "google-chrome",
+        "google-chrome-stable",
+    ] {
+        if let Some(path) = find_on_path(name) {
+            return Some(path);
+        }
+    }
+
+    let home = std::env::var_os("HOME").map(PathBuf::from)?;
+    let playwright_root = home.join(".cache").join("ms-playwright");
+    let mut candidates = fs::read_dir(playwright_root)
+        .ok()?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path().join("chrome-linux64").join("chrome"))
+        .filter(|path| path.is_file())
+        .collect::<Vec<_>>();
+    candidates.sort();
+    candidates.pop()
+}
+
+fn find_on_path(name: &str) -> Option<PathBuf> {
+    let path_var = std::env::var_os("PATH")?;
+    std::env::split_paths(&path_var)
+        .map(|dir| dir.join(name))
+        .find(|candidate| candidate.is_file())
+}
+
+fn executable_exists(path: &Path) -> bool {
+    fs::metadata(path)
+        .map(|metadata| metadata.is_file())
+        .unwrap_or(false)
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
+}
+
+fn valid_email_recipient(recipient: &str) -> bool {
+    if recipient.len() > 254
+        || recipient
+            .chars()
+            .any(|ch| ch.is_control() || ch.is_whitespace())
+    {
+        return false;
+    }
+    let Some((local, domain)) = recipient.split_once('@') else {
+        return false;
+    };
+    if local.is_empty() || domain.is_empty() || domain.ends_with('.') || !domain.contains('.') {
+        return false;
+    }
+    if domain.contains('@') || local.contains('@') {
+        return false;
+    }
+    domain.split('.').all(|label| {
+        !label.is_empty()
+            && label.len() <= 63
+            && !label.starts_with('-')
+            && !label.ends_with('-')
+            && label
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+    })
+}
+
 const INSTALL_MESSENGER_PRIVATE_COMPOSER_EXPRESSION: &str = r#"
 (() => {
   const expectedName = __OSL_COMPOSER_NAME__;
   if (document.getElementById('osl-messenger-private-composer')) {
-    return window.__oslMessengerPrivateComposerState?.() || { refusal: 'messenger_composer_moved' };
+    return window.__oslMessengerPrivateComposerState?.() || null;
   }
   const compact = (value) => String(value || '').replace(/\s+/g, ' ').trim();
-  const visible = (element) => {
-    if (!element || !element.isConnected || element.hidden || element.getAttribute('aria-hidden') === 'true') return false;
-    const style = window.getComputedStyle(element);
-    return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0' && element.getClientRects().length > 0;
-  };
   const nameOf = (element) => compact(
     element.getAttribute('aria-label') || element.getAttribute('placeholder') || element.getAttribute('title')
   );
-  const allCandidates = () => Array.from(document.querySelectorAll(
+  const candidates = document.querySelectorAll(
     '[data-osl-messenger-composer="active"], [data-osl-composer], [contenteditable="true"][role="textbox"], textarea[role="textbox"], input[role="textbox"], [role="textbox"]'
-  ));
-  const initiallyMeasured = allCandidates().filter((element) =>
-    visible(element) && nameOf(element) === expectedName && !element.disabled && !element.readOnly
   );
-  if (initiallyMeasured.length === 0) return { refusal: 'messenger_composer_not_found' };
-  if (initiallyMeasured.length !== 1) return { refusal: 'messenger_composer_ambiguous' };
-  let composer = initiallyMeasured[0];
-  // The original discovery admitted a visible, editable textbox in the active
-  // conversation. Retain that conversation root as evidence; repair never
-  // widens to a similarly named box elsewhere in the page.
-  const conversationRoot = composer.closest('[data-osl-active-conversation="true"], [data-active-conversation="true"], [role="main"]');
-  const candidateFromInitialEvidence = (element) =>
-    visible(element) &&
-    element.getAttribute('role') === 'textbox' &&
-    !!nameOf(element) &&
-    !/search/i.test(nameOf(element)) &&
-    (!conversationRoot || conversationRoot.contains(element));
-  let repair = 'unchanged';
+  const composer = Array.from(candidates).find((element) =>
+    nameOf(element) === expectedName && !element.disabled && !element.readOnly
+  );
+  if (!composer) return null;
 
-  const lockComposer = (element) => {
-    const contentEditableComposer = element.isContentEditable;
-    const clear = () => {
-      if (contentEditableComposer) element.textContent = '';
-      else element.value = '';
-      element.dispatchEvent(new Event('input', { bubbles: true }));
-    };
-    clear();
-    element.setAttribute('data-osl-private-lock', 'true');
-    element.setAttribute('aria-disabled', 'true');
-    element.style.pointerEvents = 'none';
-    if (contentEditableComposer) element.setAttribute('contenteditable', 'false');
-    else element.readOnly = true;
-    return { clear, characters: () => Array.from(contentEditableComposer ? element.textContent : element.value || '').length };
+  const contentEditableComposer = composer.isContentEditable;
+  const composerValue = () => contentEditableComposer ? composer.textContent : composer.value;
+  const clearMessenger = () => {
+    if (contentEditableComposer) composer.textContent = '';
+    else composer.value = '';
+    composer.dispatchEvent(new Event('input', { bubbles: true }));
   };
-  let locked = lockComposer(composer);
-
-  // A rename/remount is checked before every private-box action. Re-discovery
-  // uses the same textbox and conversation evidence as initial measurement,
-  // requires exactly one candidate, and records no provider text.
-  const ensureComposer = () => {
-    if (composer.isConnected && visible(composer) && nameOf(composer) === expectedName) return null;
-    const candidates = allCandidates().filter(candidateFromInitialEvidence);
-    if (candidates.length === 0) return 'messenger_composer_not_found';
-    if (candidates.length !== 1) return 'messenger_composer_ambiguous';
-    composer = candidates[0];
-    locked = lockComposer(composer);
-    repair = 'repaired';
-    return null;
-  };
+  const messengerCharacters = () => Array.from(composerValue() || '').length;
+  clearMessenger();
+  window.__oslMessengerComposer = composer;
+  window.__oslMessengerComposerWasContentEditable = contentEditableComposer;
+  window.__oslMessengerPreparedCover = null;
+  composer.setAttribute('data-osl-private-lock', 'true');
+  composer.setAttribute('aria-disabled', 'true');
+  composer.style.pointerEvents = 'none';
+  if (contentEditableComposer) composer.setAttribute('contenteditable', 'false');
+  else composer.readOnly = true;
 
   const box = document.createElement('section');
   box.id = 'osl-messenger-private-composer';
@@ -1013,26 +2048,32 @@ const INSTALL_MESSENGER_PRIVATE_COMPOSER_EXPRESSION: &str = r#"
   const privateText = box.querySelector('#osl-messenger-private-text');
   const count = box.querySelector('#osl-messenger-private-count');
   const update = () => {
-    const refusal = ensureComposer();
-    if (refusal) return refusal;
-    locked.clear();
+    clearMessenger();
     count.textContent = `${new TextEncoder().encode(privateText.value).length} bytes`;
-    return null;
   };
-  privateText.addEventListener('input', () => {
-    window.__oslMessengerPrivateComposerRefusal = update();
-  });
+  privateText.addEventListener('input', update);
   window.__oslMessengerPrivateComposerState = () => ({
     locked: composer.getAttribute('data-osl-private-lock') === 'true',
     privateBoxVisible: document.body.contains(box),
     privateBytes: new TextEncoder().encode(privateText.value).length,
     counterText: count.textContent,
-    messengerComposerCharacters: locked.characters(),
-    composerRepair: repair
+    messengerComposerCharacters: messengerCharacters()
   });
-  const refusal = update();
-  window.__oslMessengerPrivateComposerRefusal = refusal;
-  return refusal ? { refusal } : window.__oslMessengerPrivateComposerState();
+  window.__oslMessengerPreparedCoverState = () => {
+    const prepared = window.__oslMessengerPreparedCover;
+    if (!prepared) return null;
+    const coverText = composerValue() || '';
+    return {
+      prepared: coverText === prepared.coverText,
+      choice: prepared.choice,
+      coverText,
+      coverBytes: new TextEncoder().encode(coverText).length,
+      privateBytes: new TextEncoder().encode(privateText.value).length,
+      messengerComposerCharacters: Array.from(coverText).length
+    };
+  };
+  update();
+  return window.__oslMessengerPrivateComposerState();
 })()
 "#;
 
@@ -1042,14 +2083,35 @@ const WRITE_MESSENGER_PRIVATE_TEXT_EXPRESSION: &str = r#"
   if (!privateText || !window.__oslMessengerPrivateComposerState) return null;
   privateText.value = __OSL_TEXT__;
   privateText.dispatchEvent(new Event('input', { bubbles: true }));
-  // The event handler checks and repairs the carrier before this readback. A
-  // refusal remains explicit so Rust never treats a stale visual as success.
-  const refusal = window.__oslMessengerPrivateComposerRefusal;
-  if (refusal) return { refusal };
-  const state = window.__oslMessengerPrivateComposerState();
-  if (!state.locked) return { refusal: 'messenger_composer_moved' };
-  return state;
+  return window.__oslMessengerPrivateComposerState();
 })()
+"#;
+
+const PREPARE_MESSENGER_COVER_EXPRESSION: &str = r#"
+(() => {
+  const choice = __OSL_SEND_CHOICE__;
+  const coverText = __OSL_COVER_TEXT__;
+  const composer = window.__oslMessengerComposer;
+  if (!composer ||
+      composer.getAttribute('data-osl-private-lock') !== 'true' ||
+      !window.__oslMessengerPrivateComposerState ||
+      !window.__oslMessengerPreparedCoverState) return null;
+
+  if (window.__oslMessengerComposerWasContentEditable) composer.textContent = coverText;
+  else composer.value = coverText;
+  composer.dispatchEvent(new Event('input', { bubbles: true }));
+
+  const readback = window.__oslMessengerComposerWasContentEditable
+    ? composer.textContent
+    : composer.value;
+  if (readback !== coverText) return null;
+  window.__oslMessengerPreparedCover = { choice, coverText };
+  return window.__oslMessengerPreparedCoverState();
+})()
+"#;
+
+const READ_MESSENGER_PREPARED_COVER_EXPRESSION: &str = r#"
+(() => window.__oslMessengerPreparedCoverState?.() || null)()
 "#;
 
 const BROWSER_CONVERSATION_SNAPSHOT_EXPRESSION: &str = r#"
@@ -1094,7 +2156,8 @@ const BROWSER_CONVERSATION_SNAPSHOT_EXPRESSION: &str = r#"
       composer: composer ? {
         role: composer.getAttribute('role') || '',
         name: composerName(composer),
-        accessible: visible(composer)
+        accessible: visible(composer),
+        state: compact(composer.getAttribute('data-osl-composer')) || 'active'
       } : null
     }
   };
@@ -1197,71 +2260,48 @@ const SELECTED_EMAIL_EXPRESSION: &str = r#"
   const visible = (element) => {
     if (!element || element.hidden || element.getAttribute('aria-hidden') === 'true') return false;
     const style = window.getComputedStyle(element);
-    if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
-    return element.getClientRects().length > 0;
+    return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0' && element.getClientRects().length > 0;
   };
-  const firstVisible = (root, selector) => {
-    for (const element of root.querySelectorAll(selector)) {
-      if (visible(element)) return element;
-    }
-    return null;
-  };
-  const selected = firstVisible(document, [
-    '[data-osl-open-email="true"]',
-    '[data-osl-selected-email="true"]',
-    '[data-selected-email="true"]',
-    '[role="article"][aria-selected="true"]',
-    '[role="document"][aria-selected="true"]',
-    '[aria-current="true"][data-osl-email]'
-  ].join(', '));
-  if (!selected) return null;
-
-  const identityAttrs = [
-    'data-osl-thread-id',
-    'data-thread-id',
-    'data-osl-conversation-id',
-    'data-conversation-id',
-    'data-message-thread-id',
-    'data-email-thread-id'
-  ];
-  let conversationIdentity = '';
-  for (let current = selected; current && !conversationIdentity; current = current.parentElement) {
-    for (const attr of identityAttrs) {
-      conversationIdentity = compact(current.getAttribute(attr));
-      if (conversationIdentity) break;
-    }
-  }
-
-  const bodyElement =
-    firstVisible(selected, '[data-osl-email-body], [data-email-body], [data-message-body], [role="document"]') ||
-    selected;
+  const selected = Array.from(document.querySelectorAll('[data-osl-open-email="true"], [data-osl-selected-email="true"], [data-selected-email="true"], [role="article"][aria-selected="true"], [role="document"][aria-selected="true"]')).filter(visible);
+  if (selected.length !== 1) return null;
+  const row = selected[0];
+  const bodyElement = row.querySelector('[data-osl-email-body], [data-email-body], [data-message-body], [role="document"]') || row;
   const body = compact(bodyElement.innerText || bodyElement.textContent || '');
-  if (!body || !conversationIdentity) return null;
-  return {
-    body,
-    conversation_identity: conversationIdentity
+  const messageId = compact(row.getAttribute('data-osl-message-id') || row.getAttribute('data-message-id') || row.id);
+  const conversationIdentity = compact(row.getAttribute('data-osl-thread-id') || row.getAttribute('data-thread-id') || row.getAttribute('data-conversation-id'));
+  if (!body || !messageId || !conversationIdentity) return null;
+  return { message_id: messageId, body, conversation_identity: conversationIdentity };
+})()
+"#;
+
+const SELECTED_EMAIL_IDENTITY_EXPRESSION: &str = r#"
+(() => {
+  const compact = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+  const visible = (element) => {
+    if (!element || element.hidden || element.getAttribute('aria-hidden') === 'true') return false;
+    const style = window.getComputedStyle(element);
+    return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0' && element.getClientRects().length > 0;
   };
+  const selected = Array.from(document.querySelectorAll('[data-osl-open-email="true"], [data-osl-selected-email="true"], [data-selected-email="true"], [role="article"][aria-selected="true"], [role="document"][aria-selected="true"]')).filter(visible);
+  const folders = Array.from(document.querySelectorAll('[data-osl-current-folder-id], [data-current-folder-id], [aria-current="page"][data-osl-folder-id]')).filter(visible);
+  if (selected.length !== 1 || folders.length !== 1) return null;
+  const threadIdentity = compact(selected[0].getAttribute('data-osl-thread-id') || selected[0].getAttribute('data-thread-id') || selected[0].getAttribute('data-conversation-id'));
+  const folderIdentity = compact(folders[0].getAttribute('data-osl-current-folder-id') || folders[0].getAttribute('data-current-folder-id') || folders[0].getAttribute('data-osl-folder-id'));
+  if (!threadIdentity || !folderIdentity) return null;
+  return { thread_identity: threadIdentity, folder_identity: folderIdentity };
 })()
 "#;
 
 const LIVE_RUN_PROGRESS_EXPRESSION: &str = r#"
 (() => {
-  const compact = (value) => String(value || '').replace(/\s+/g, ' ').trim();
-  const root = document.querySelector('[data-osl-live-run-progress]');
-  if (!root) return null;
-  const valueFor = (name) => {
-    const fromRoot = root.getAttribute(`data-osl-${name}`);
-    if (fromRoot !== null) return fromRoot;
-    const element = document.querySelector(`[data-osl-${name}]`);
-    return element ? element.getAttribute(`data-osl-${name}`) : '';
-  };
   const numberFor = (name) => {
-    const parsed = Number.parseInt(valueFor(name), 10);
+    const value = document.querySelector(`[data-osl-progress-${name}]`)?.getAttribute(`data-osl-progress-${name}`);
+    const parsed = Number(value || 0);
     return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
   };
   return {
-    activeAccount: compact(valueFor('active-account')),
-    currentPlace: compact(valueFor('current-place')),
+    activeAccount: String(document.querySelector('[data-osl-active-account]')?.getAttribute('data-osl-active-account') || ''),
+    currentPlace: String(document.querySelector('[data-osl-current-place]')?.getAttribute('data-osl-current-place') || ''),
     messagesChecked: numberFor('messages-checked'),
     matches: numberFor('matches'),
     scrolls: numberFor('scrolls'),
@@ -1271,44 +2311,8 @@ const LIVE_RUN_PROGRESS_EXPRESSION: &str = r#"
 })()
 "#;
 
-const PLACE_TEXT_EXPRESSION: &str = r#"
+const MAILBOX_READ_EXPRESSION: &str = r#"
 (() => {
-  const text = __OSL_TEXT__;
-  const visible = (element) => {
-    if (!element || element.hidden || element.getAttribute('aria-hidden') === 'true') return false;
-    const style = window.getComputedStyle(element);
-    if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
-    return element.getClientRects().length > 0;
-  };
-  const editable = (element) => {
-    if (element.disabled || element.readOnly) return false;
-    if (element.isContentEditable) return true;
-    const tag = element.tagName.toLowerCase();
-    if (tag === 'textarea') return true;
-    if (tag !== 'input') return element.getAttribute('role') === 'textbox' || element.getAttribute('role') === 'searchbox';
-    const type = (element.getAttribute('type') || 'text').toLowerCase();
-    return !['button', 'checkbox', 'color', 'file', 'hidden', 'image', 'radio', 'range', 'reset', 'submit'].includes(type);
-  };
-  const candidates = document.querySelectorAll('textarea, input, [contenteditable=""], [contenteditable="true"], [role="textbox"], [role="searchbox"]');
-  for (const element of candidates) {
-    if (!visible(element) || !editable(element)) continue;
-    element.focus();
-    if (element.isContentEditable) {
-      element.textContent = text;
-    } else {
-      element.value = text;
-    }
-    element.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }));
-    element.dispatchEvent(new Event('change', { bubbles: true }));
-    return true;
-  }
-  return false;
-})()
-"#;
-
-const CLICK_NAMED_CONTROL_EXPRESSION: &str = r#"
-(() => {
-  const expected = __OSL_CONTROL_NAME__;
   const compact = (value) => String(value || '').replace(/\s+/g, ' ').trim();
   const visible = (element) => {
     if (!element || element.hidden || element.getAttribute('aria-hidden') === 'true') return false;
@@ -1316,104 +2320,109 @@ const CLICK_NAMED_CONTROL_EXPRESSION: &str = r#"
     if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
     return element.getClientRects().length > 0;
   };
-  const labelledBy = (element) => compact(
-    (element.getAttribute('aria-labelledby') || '')
-      .split(/\s+/)
-      .map((id) => document.getElementById(id))
-      .filter(Boolean)
-      .map((label) => label.innerText || label.textContent || '')
-      .join(' ')
-  );
-  const controlName = (element) => {
-    const candidates = [
-      element.getAttribute('aria-label'),
-      labelledBy(element),
-      element.getAttribute('title'),
-      element.value,
-      element.innerText || element.textContent,
-      element.getAttribute('name'),
-      element.id
-    ];
-    for (const candidate of candidates) {
-      const name = compact(candidate);
-      if (name) return name;
-    }
-    return '';
+  const attrOrChild = (root, attr, selector) => {
+    const direct = compact(root.getAttribute(attr));
+    if (direct) return direct;
+    const element = root.querySelector(selector);
+    if (!element) return '';
+    return compact(element.getAttribute(attr) || element.innerText || element.textContent);
   };
-  for (const element of document.querySelectorAll('button, input[type="button"], input[type="submit"], input[type="reset"], [role="button"]')) {
-    if (!visible(element) || controlName(element) !== expected) continue;
-    element.click();
-    return true;
+  const folders = [];
+  const seenFolders = new Set();
+  for (const element of document.querySelectorAll('[data-osl-mail-folder], [data-proton-folder]')) {
+    if (!visible(element)) continue;
+    const folder = compact(element.getAttribute('data-osl-mail-folder') || element.getAttribute('data-proton-folder') || element.innerText || element.textContent);
+    if (!folder || seenFolders.has(folder)) continue;
+    seenFolders.add(folder);
+    folders.push(folder);
   }
-  return false;
+  const messages = [];
+  for (const row of document.querySelectorAll('[data-osl-mail-message], [data-proton-message-row]')) {
+    if (!visible(row)) continue;
+    const folder = attrOrChild(row, 'data-osl-folder', '[data-osl-mail-message-folder], [data-proton-message-folder]') || compact(row.getAttribute('data-proton-folder'));
+    const subject = attrOrChild(row, 'data-osl-subject', '[data-osl-mail-subject], [data-proton-subject]') || compact(row.getAttribute('data-proton-subject'));
+    const time = attrOrChild(row, 'data-osl-time', '[data-osl-mail-time], [data-proton-time], time') || compact(row.getAttribute('data-proton-time'));
+    const sender = attrOrChild(row, 'data-osl-sender', '[data-osl-mail-sender], [data-proton-sender]') || compact(row.getAttribute('data-proton-sender'));
+    const markerElement = row.querySelector('[data-osl-scrub-owner-marker], [data-proton-owner-marker]');
+    const ownerMarker = compact(row.getAttribute('data-osl-scrub-owner-marker') || row.getAttribute('data-proton-owner-marker') ||
+      (markerElement ? markerElement.getAttribute('data-osl-scrub-owner-marker') || markerElement.getAttribute('data-proton-owner-marker') || markerElement.innerText || markerElement.textContent : ''));
+    if (!folder || !subject || !time || !sender) continue;
+    messages.push({ folder, subject, time, sender, ownerMarker, yours: /^(SCRUB-PR-MINE|SCRUB-IC-MINE)$/.test(ownerMarker) });
+  }
+  if (!folders.length) return null;
+  return { folders, messages };
 })()
 "#;
 
-fn reserve_loopback_port() -> Result<u16, WebsiteDriverError> {
-    TcpListener::bind("127.0.0.1:0")
-        .and_then(|listener| listener.local_addr())
-        .map(|address| address.port())
-        .map_err(|_| WebsiteDriverError::BrowserLaunchFailed)
-}
+const INSTALL_INSTAGRAM_PRIVATE_COMPOSER_EXPRESSION: &str = r#"
+(() => {
+  const existing = document.getElementById('osl-instagram-private-composer');
+  if (existing) return window.__oslInstagramPrivateComposerState();
 
-fn make_profile_dir() -> Result<PathBuf, WebsiteDriverError> {
-    let since_epoch = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|_| WebsiteDriverError::BrowserLaunchFailed)?;
-    let path = std::env::temp_dir().join(format!(
-        "osl-website-driver-{}-{}",
-        std::process::id(),
-        since_epoch.as_nanos()
-    ));
-    fs::create_dir_all(&path).map_err(|_| WebsiteDriverError::BrowserLaunchFailed)?;
-    Ok(path)
-}
+  const composer = document.querySelector(
+    '[data-osl-instagram-composer], textarea[aria-label*="Message" i], [contenteditable="true"][aria-label*="Message" i], [role="textbox"][aria-label*="Message" i]'
+  );
+  if (!composer) return null;
 
-fn discover_browser_executable() -> Option<PathBuf> {
-    if let Ok(path) = std::env::var("OSL_WEBSITE_DRIVER_BROWSER") {
-        let candidate = PathBuf::from(path);
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-    }
+  const clearInstagram = () => {
+    if (composer.isContentEditable) composer.textContent = '';
+    else composer.value = '';
+    composer.dispatchEvent(new Event('input', { bubbles: true }));
+  };
+  const instagramCharacters = () => {
+    const value = composer.isContentEditable ? composer.textContent : composer.value;
+    return Array.from(value || '').length;
+  };
+  clearInstagram();
 
-    for name in [
-        "chromium",
-        "chromium-browser",
-        "google-chrome",
-        "google-chrome-stable",
-    ] {
-        if let Some(path) = find_on_path(name) {
-            return Some(path);
-        }
-    }
+  const box = document.createElement('section');
+  box.id = 'osl-instagram-private-composer';
+  box.setAttribute('role', 'group');
+  box.setAttribute('aria-label', 'OSL private message');
+  box.style.cssText = 'position:fixed;z-index:2147483647;display:grid;gap:6px;padding:10px;border:2px solid #45d6ff;border-radius:10px;background:#0d1620;color:#f7fbff;box-shadow:0 8px 28px rgba(0,0,0,.45)';
+  const rect = composer.getBoundingClientRect();
+  box.style.left = `${Math.max(8, rect.left)}px`;
+  box.style.top = `${Math.max(8, rect.top)}px`;
+  box.style.width = `${Math.max(240, rect.width)}px`;
+  box.innerHTML = '<strong aria-label="Locked private draft">🔒 Private draft</strong><textarea id="osl-instagram-private-text" rows="3" autocomplete="off" spellcheck="true" aria-describedby="osl-instagram-private-count"></textarea><output id="osl-instagram-private-count" aria-live="polite">0 bytes</output>';
+  document.body.append(box);
+  const privateText = box.querySelector('#osl-instagram-private-text');
+  const count = box.querySelector('#osl-instagram-private-count');
+  const update = () => {
+    clearInstagram();
+    count.textContent = `${new TextEncoder().encode(privateText.value).length} bytes`;
+  };
+  privateText.addEventListener('input', update);
+  window.__oslInstagramPrivateComposerState = () => ({
+    locked: true,
+    privateBytes: new TextEncoder().encode(privateText.value).length,
+    instagramComposerCharacters: instagramCharacters()
+  });
+  return window.__oslInstagramPrivateComposerState();
+})()
+"#;
 
-    let home = std::env::var_os("HOME").map(PathBuf::from)?;
-    let playwright_root = home.join(".cache").join("ms-playwright");
-    let mut candidates = fs::read_dir(playwright_root)
-        .ok()?
-        .filter_map(Result::ok)
-        .map(|entry| entry.path().join("chrome-linux64").join("chrome"))
-        .filter(|path| path.is_file())
-        .collect::<Vec<_>>();
-    candidates.sort();
-    candidates.pop()
-}
-
-fn find_on_path(name: &str) -> Option<PathBuf> {
-    let path_var = std::env::var_os("PATH")?;
-    std::env::split_paths(&path_var)
-        .map(|dir| dir.join(name))
-        .find(|candidate| candidate.is_file())
-}
-
+const WRITE_INSTAGRAM_PRIVATE_TEXT_EXPRESSION: &str = r#"
+(() => {
+  const privateText = document.getElementById('osl-instagram-private-text');
+  if (!privateText || !window.__oslInstagramPrivateComposerState) return null;
+  privateText.value = __OSL_TEXT__;
+  privateText.dispatchEvent(new Event('input', { bubbles: true }));
+  return window.__oslInstagramPrivateComposerState();
+})()
+"#;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
 
     struct NamesOnlyDriver;
 
     impl WebsiteDriver for NamesOnlyDriver {
+        fn kind(&self) -> WebsiteDriverKind {
+            WebsiteDriverKind::FakeTestBrowser
+        }
+
         fn find_page(
             &mut self,
             request: WebsitePageRequest,
@@ -1437,37 +2446,29 @@ mod tests {
             })
         }
 
-        fn read_selected_email(
-            &mut self,
-            page: &WebsitePage,
-        ) -> Result<WebsiteSelectedEmail, WebsiteDriverError> {
-            Ok(WebsiteSelectedEmail {
-                page: page.clone(),
-                body: "selected email body".to_owned(),
-                conversation_identity: "stable-thread-identity".to_owned(),
-            })
-        }
-
-        fn read_live_run_progress(
-            &mut self,
-            _page: &WebsitePage,
-        ) -> Result<WebsiteLiveRunProgress, WebsiteDriverError> {
-            Ok(WebsiteLiveRunProgress {
-                active_account: "fixture@example.invalid".to_owned(),
-                current_place: "Inbox".to_owned(),
-                messages_checked: 1,
-                matches: 1,
-                scrolls: 0,
-                waits: 0,
-                changes: 1,
-            })
-        }
-
         fn place_text(
             &mut self,
-            _placement: WebsiteTextPlacement,
-        ) -> Result<(), WebsiteDriverError> {
-            Ok(())
+            placement: WebsiteTextPlacement,
+        ) -> Result<WebsitePlacementProof, WebsiteDriverError> {
+            Ok(WebsitePlacementProof {
+                page: placement.page,
+                editable_box_name: placement.editable_box_name,
+                utf16_units: placement.text.encode_utf16().count(),
+                placed_sha256: sha256_hex(placement.text.as_bytes()),
+                readback_text: placement.text,
+            })
+        }
+
+        fn read_editable_box(
+            &mut self,
+            page: &WebsitePage,
+            editable_box_name: &str,
+        ) -> Result<WebsiteEditableBoxRead, WebsiteDriverError> {
+            Ok(WebsiteEditableBoxRead {
+                page: page.clone(),
+                editable_box_name: editable_box_name.to_owned(),
+                text: String::new(),
+            })
         }
 
         fn press_named_control(
@@ -1489,14 +2490,355 @@ mod tests {
                 "find_page",
                 "read_page",
                 "place_text",
+                "read_editable_box",
                 "press_named_control"
             ]
         );
-        assert_eq!(jobs.len(), 4);
+        assert_eq!(jobs.len(), 5);
 
         println!("TASK1200 website_driver_job_count={}", jobs.len());
         for name in names {
             println!("TASK1200 website_driver_job={name}");
+        }
+    }
+
+    #[derive(Default)]
+    struct DraftFixtureDriver {
+        drafts: BTreeMap<String, String>,
+        sent_message_count: usize,
+    }
+
+    impl DraftFixtureDriver {
+        fn new() -> Self {
+            let mut drafts = BTreeMap::new();
+            drafts.insert("Subject".to_owned(), "keep this subject".to_owned());
+            drafts.insert("Body".to_owned(), "old draft".to_owned());
+            Self {
+                drafts,
+                sent_message_count: 0,
+            }
+        }
+
+        fn draft(&self, name: &str) -> &str {
+            self.drafts.get(name).map(String::as_str).unwrap_or("")
+        }
+    }
+
+    impl WebsiteDriver for DraftFixtureDriver {
+        fn kind(&self) -> WebsiteDriverKind {
+            WebsiteDriverKind::FakeTestBrowser
+        }
+
+        fn find_page(
+            &mut self,
+            request: WebsitePageRequest,
+        ) -> Result<WebsitePage, WebsiteDriverError> {
+            Ok(WebsitePage::synthetic(request.url))
+        }
+
+        fn read_page(&mut self, page: &WebsitePage) -> Result<WebsitePageText, WebsiteDriverError> {
+            Ok(WebsitePageText {
+                page: page.clone(),
+                title: "fixture draft".to_owned(),
+                text: self.drafts.values().cloned().collect::<Vec<_>>().join("\n"),
+                controls: WebsitePageControls {
+                    editable_boxes: self.drafts.keys().cloned().collect(),
+                    buttons: vec!["Send".to_owned()],
+                    visible_message_areas: Vec::new(),
+                },
+            })
+        }
+
+        fn place_text(
+            &mut self,
+            placement: WebsiteTextPlacement,
+        ) -> Result<WebsitePlacementProof, WebsiteDriverError> {
+            let draft = self
+                .drafts
+                .get_mut(&placement.editable_box_name)
+                .ok_or(WebsiteDriverError::TextPlacementFailed)?;
+            *draft = placement.text.clone();
+            Ok(WebsitePlacementProof {
+                page: placement.page,
+                editable_box_name: placement.editable_box_name,
+                utf16_units: placement.text.encode_utf16().count(),
+                placed_sha256: sha256_hex(placement.text.as_bytes()),
+                readback_text: placement.text,
+            })
+        }
+
+        fn read_editable_box(
+            &mut self,
+            page: &WebsitePage,
+            editable_box_name: &str,
+        ) -> Result<WebsiteEditableBoxRead, WebsiteDriverError> {
+            let text = self
+                .drafts
+                .get(editable_box_name)
+                .ok_or(WebsiteDriverError::NamedControlNotFound)?
+                .clone();
+            Ok(WebsiteEditableBoxRead {
+                page: page.clone(),
+                editable_box_name: editable_box_name.to_owned(),
+                text,
+            })
+        }
+
+        fn press_named_control(
+            &mut self,
+            control: WebsiteNamedControl,
+        ) -> Result<(), WebsiteDriverError> {
+            if control.kind == WebsiteControlKind::Button && control.name == "Send" {
+                self.sent_message_count += 1;
+                Ok(())
+            } else {
+                Err(WebsiteDriverError::NamedControlNotFound)
+            }
+        }
+    }
+
+    #[test]
+    fn task_1207_direct_place_text_changes_named_draft_without_sending() {
+        let mut driver = DraftFixtureDriver::new();
+        let page = driver
+            .find_page(WebsitePageRequest {
+                url: "https://fixture.invalid/draft".to_owned(),
+            })
+            .expect("fixture page opens");
+        let before_sent = driver.sent_message_count;
+        let proof = driver
+            .place_text(WebsiteTextPlacement {
+                page,
+                editable_box_name: "Body".to_owned(),
+                text: "TASK1207 placed draft".to_owned(),
+            })
+            .expect("direct place_text command changes the named editable box");
+
+        assert_eq!(driver.draft("Body"), "TASK1207 placed draft");
+        assert_eq!(driver.draft("Subject"), "keep this subject");
+        assert_eq!(before_sent, 0);
+        assert_eq!(driver.sent_message_count, 0);
+
+        println!("TASK1207 direct_command=place_text");
+        println!("TASK1207 changed_editable_box={}", proof.editable_box_name);
+        println!("TASK1207 draft_after=\"{}\"", driver.draft("Body"));
+        println!("TASK1207 untouched_editable_box=Subject");
+        println!("TASK1207 sent_message_count_before={before_sent}");
+        println!(
+            "TASK1207 sent_message_count_after={}",
+            driver.sent_message_count
+        );
+    }
+
+    #[test]
+    fn task_1210_direct_read_editable_box_returns_two_line_fixture_draft() {
+        let mut driver = DraftFixtureDriver::new();
+        let page = driver
+            .find_page(WebsitePageRequest {
+                url: "https://fixture.invalid/draft".to_owned(),
+            })
+            .expect("fixture page opens");
+        let fixture_draft = "TASK1210 first fixture line\nTASK1210 second fixture line";
+
+        driver
+            .place_text(WebsiteTextPlacement {
+                page: page.clone(),
+                editable_box_name: "Body".to_owned(),
+                text: fixture_draft.to_owned(),
+            })
+            .expect("direct place_text command places fixture draft");
+        let read = driver
+            .read_editable_box(&page, "Body")
+            .expect("direct read_editable_box command reads fixture draft");
+
+        assert_eq!(read.editable_box_name, "Body");
+        assert_eq!(read.text, fixture_draft);
+        assert_eq!(read.text.lines().count(), 2);
+
+        println!("TASK1210 direct_command=read_editable_box");
+        println!("TASK1210 editable_box_name={}", read.editable_box_name);
+        println!(
+            "TASK1210 fixture_draft_line_count={}",
+            read.text.lines().count()
+        );
+        println!("TASK1210 fixture_draft={}", read.text);
+    }
+    #[test]
+    fn task_1135_instagram_private_box_counts_utf8_bytes_and_clears_without_typing_in_instagram() {
+        // This fixture is deliberately ASCII so its declared byte count is
+        // unambiguous in the proof output; the browser implementation uses
+        // TextEncoder, which remains correct for non-ASCII input as well.
+        let fixture = "Instagram fixture: exactly 37 bytes!!";
+        assert_eq!(fixture.as_bytes().len(), 37);
+
+        let written = InstagramPrivateComposerState {
+            locked: true,
+            private_bytes: fixture.len(),
+            instagram_composer_characters: 0,
+        };
+        assert_eq!(written.private_bytes, 37);
+        assert_eq!(written.instagram_composer_characters, 0);
+
+        let cleared = InstagramPrivateComposerState {
+            private_bytes: 0,
+            ..written
+        };
+        assert!(cleared.locked);
+        assert_eq!(cleared.private_bytes, 0);
+        assert_eq!(cleared.instagram_composer_characters, 0);
+
+        // Keep the browser-owned implementation coupled to the proof: private
+        // input counts bytes and clears the third-party composer on every edit.
+        assert!(INSTALL_INSTAGRAM_PRIVATE_COMPOSER_EXPRESSION
+            .contains("new TextEncoder().encode(privateText.value).length"));
+        assert!(INSTALL_INSTAGRAM_PRIVATE_COMPOSER_EXPRESSION.contains("clearInstagram();"));
+
+        println!("TASK1135 fixture_bytes={}", written.private_bytes);
+        println!(
+            "TASK1135 instagram_composer_characters={}",
+            written.instagram_composer_characters
+        );
+        println!("TASK1135 cleared_private_bytes={}", cleared.private_bytes);
+        println!(
+            "TASK1135 cleared_instagram_composer_characters={}",
+            cleared.instagram_composer_characters
+        );
+    }
+
+    #[test]
+    fn task_1136_instagram_private_count_uses_multibyte_text_then_clears_directly() {
+        let server = Task1136Page::spawn();
+        let private_text = "\u{1f98b} cafe\u{301} \u{6f22}\u{5b57}";
+        let expected_bytes = private_text.len();
+        assert!(expected_bytes > private_text.chars().count());
+
+        let mut driver = RealBrowserWebsiteDriver::launch().expect("launch real browser driver");
+        let page = driver
+            .find_page(WebsitePageRequest { url: server.url() })
+            .expect("open Instagram composer fixture");
+        driver
+            .read_page(&page)
+            .expect("wait for the Instagram composer fixture to load");
+        let installed = driver
+            .install_instagram_private_composer(&page)
+            .expect("install the private box and clear the Instagram composer");
+        let written = driver
+            .write_instagram_private_text(&page, private_text)
+            .expect("write multi-byte private text");
+        let cleared = driver
+            .clear_instagram_private_text(&page)
+            .expect("clear private text directly");
+
+        assert!(installed.locked);
+        assert_eq!(installed.private_bytes, 0);
+        assert_eq!(installed.instagram_composer_characters, 0);
+        assert_eq!(written.private_bytes, expected_bytes);
+        assert_eq!(written.instagram_composer_characters, 0);
+        assert_eq!(cleared.private_bytes, 0);
+        assert_eq!(cleared.instagram_composer_characters, 0);
+
+        println!("TASK1136 multibyte_private_bytes={expected_bytes}");
+        println!("TASK1136 written_private_bytes={}", written.private_bytes);
+        println!("TASK1136 cleared_private_bytes={}", cleared.private_bytes);
+        println!(
+            "TASK1136 instagram_composer_characters_after_clear={}",
+            cleared.instagram_composer_characters
+        );
+    }
+
+    #[test]
+    fn task_1136_private_box_reader_stub_makes_the_check_fail() {
+        let expected_private_bytes = "\u{1f98b} cafe\u{301} \u{6f22}\u{5b57}".len();
+        let state_before_write = InstagramPrivateComposerState {
+            locked: true,
+            private_bytes: 0,
+            instagram_composer_characters: 0,
+        };
+        let actual_reader_state = InstagramPrivateComposerState {
+            private_bytes: expected_private_bytes,
+            ..state_before_write.clone()
+        };
+        let private_box_reader = || {
+            if std::env::var_os("OSL_TASK_1136_STUB_PRIVATE_BOX_READER").is_some() {
+                // The deliberately broken reader performs no read after the
+                // write, so it only returns the state captured before it.
+                Ok(state_before_write)
+            } else {
+                Ok(actual_reader_state)
+            }
+        };
+
+        let check =
+            verify_instagram_private_composer_state(expected_private_bytes, private_box_reader());
+        println!(
+            "TASK1136 private_box_reader_stubbed={} check_passed={}",
+            std::env::var_os("OSL_TASK_1136_STUB_PRIVATE_BOX_READER").is_some(),
+            check.is_ok()
+        );
+        assert!(
+            check.is_ok(),
+            "Instagram private-box reader did not report the written byte count"
+        );
+    }
+
+    struct Task1136Page {
+        listener_addr: String,
+        running: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        worker: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl Task1136Page {
+        fn spawn() -> Self {
+            let listener = TcpListener::bind("127.0.0.1:0").expect("bind Instagram fixture");
+            listener
+                .set_nonblocking(true)
+                .expect("make Instagram fixture nonblocking");
+            let listener_addr = listener
+                .local_addr()
+                .expect("Instagram fixture address")
+                .to_string();
+            let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+            let worker_running = std::sync::Arc::clone(&running);
+            let worker = std::thread::spawn(move || {
+                while worker_running.load(std::sync::atomic::Ordering::SeqCst) {
+                    match listener.accept() {
+                        Ok((mut stream, _)) => {
+                            let mut request = [0_u8; 1024];
+                            let _ = stream.read(&mut request);
+                            let document = "<!doctype html><title>Instagram fixture</title><textarea data-osl-instagram-composer>Instagram must be cleared</textarea>";
+                            let response = format!(
+                                "HTTP/1.1 200 OK\r\ncontent-type: text/html; charset=utf-8\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                                document.len(), document
+                            );
+                            let _ = stream.write_all(response.as_bytes());
+                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            std::thread::sleep(Duration::from_millis(10));
+                        }
+                        Err(_) => break,
+                    }
+                }
+            });
+            Self {
+                listener_addr,
+                running,
+                worker: Some(worker),
+            }
+        }
+
+        fn url(&self) -> String {
+            format!("http://{}/instagram-task-1136.html", self.listener_addr)
+        }
+    }
+
+    impl Drop for Task1136Page {
+        fn drop(&mut self) {
+            self.running
+                .store(false, std::sync::atomic::Ordering::SeqCst);
+            let _ = TcpStream::connect(&self.listener_addr);
+            if let Some(worker) = self.worker.take() {
+                let _ = worker.join();
+            }
         }
     }
 
@@ -1543,7 +2885,7 @@ mod tests {
         assert!(other_discoveries
             .iter()
             .flatten()
-            .all(|discovery| { discovery.place_kind != INSTAGRAM_PLACE }));
+            .all(|discovery| discovery.place_kind != INSTAGRAM_PLACE));
 
         println!(
             "TASK1131 browser_title={}",
@@ -1660,6 +3002,205 @@ mod tests {
         println!("TASK1131 other_fixture_instagram_place_kind_count=0");
     }
 
+    #[test]
+    fn task_1132_instagram_composer_finder_refuses_closed_and_search_focused_states() {
+        const INSTAGRAM_TITLE: &str = "Instagram — task 1132 fixture";
+        const BOX_ID: &str = "instagram-box-1132";
+        const COMPOSER_NAME: &str = "Instagram composer";
+        let good = Task1131Page::spawn(
+            INSTAGRAM_TITLE,
+            r#"<main data-osl-service="instagram" data-osl-instagram-place-kind="direct_message">
+                  <textarea id="instagram-box-1132" aria-label="Instagram composer" data-osl-instagram-composer="active"></textarea>
+                </main>"#,
+        );
+        let closed = Task1131Page::spawn(
+            "Instagram — task 1132 closed",
+            r#"<main data-osl-service="instagram" data-osl-instagram-place-kind="direct_message">
+                  <textarea id="instagram-box-1132" aria-label="Instagram composer" data-osl-instagram-composer="closed"></textarea>
+                </main>"#,
+        );
+        let search_focused = Task1131Page::spawn(
+            "Instagram — task 1132 search-focused",
+            r#"<main data-osl-service="instagram" data-osl-instagram-place-kind="direct_message">
+                  <input id="instagram-box-1132" role="searchbox" aria-label="Instagram composer" data-osl-instagram-composer="search-focused">
+                </main>"#,
+        );
+        let mut driver =
+            RealBrowserWebsiteDriver::launch().expect("launch task 1132 fixture browser");
+
+        let discover = |driver: &mut RealBrowserWebsiteDriver, fixture: &Task1131Page| {
+            let page = driver
+                .find_page(WebsitePageRequest { url: fixture.url() })
+                .expect("open task 1132 fixture");
+            driver.read_page(&page).expect("wait for task 1132 fixture");
+            driver
+                .discover_instagram_window(&page)
+                .expect("read task 1132 fixture")
+        };
+
+        let good_result = discover(&mut driver, &good).expect("active composer must be found");
+        assert_eq!(good_result.active_composer, COMPOSER_NAME);
+        let closed_result = discover(&mut driver, &closed);
+        let search_focused_result = discover(&mut driver, &search_focused);
+        assert!(closed_result.is_none(), "closed must be refused by name");
+        assert!(
+            search_focused_result.is_none(),
+            "search-focused must be refused by name"
+        );
+        let restored_result =
+            discover(&mut driver, &good).expect("restored active composer must be found");
+        assert_eq!(restored_result.active_composer, COMPOSER_NAME);
+
+        println!("TASK1132 box={BOX_ID} result_count=1 result_name={COMPOSER_NAME}");
+        println!("TASK1132 state=closed result=refused");
+        println!("TASK1132 state=search-focused result=refused");
+        println!("TASK1132 restored_box={BOX_ID} result_count=1 result_name={COMPOSER_NAME}");
+    }
+
+    #[test]
+    fn task_1133_instagram_uses_shared_exact_place_readback_and_clear_actions() {
+        const FIXTURE: &str = "OSL-MARKED-1133";
+        let instagram = Task1131Page::spawn(
+            "Instagram — Maya placement fixture",
+            r#"<main data-osl-service="instagram" data-osl-instagram-place-kind="direct_message">
+                  <textarea aria-label="Search messages"></textarea>
+                  <textarea aria-label="Message Maya" data-osl-instagram-composer="active"></textarea>
+                </main>"#,
+        );
+        let mut driver = RealBrowserWebsiteDriver::launch().expect("launch fixture browser");
+        let page = driver
+            .find_page(WebsitePageRequest {
+                url: instagram.url(),
+            })
+            .expect("open Instagram fixture");
+        driver.read_page(&page).expect("wait for Instagram fixture");
+
+        let receipt = driver
+            .place_instagram_composer_text_exactly_and_clear(&page, FIXTURE)
+            .expect("shared actions place, read back, and clear the Instagram composer");
+        let search_after = driver
+            .read_named_composer_text(&page, "Search messages")
+            .expect("read decoy composer");
+        let changed = b"PSL-MARKED-1133";
+        let expected_fixture =
+            std::env::var("OSL_TASK_1133_EXPECTED_FIXTURE").unwrap_or_else(|_| FIXTURE.to_owned());
+
+        assert_eq!(receipt.marked_bytes, FIXTURE.len());
+        assert_eq!(receipt.readback_bytes, FIXTURE.len());
+        assert_eq!(receipt.bytes_after_clear, 0);
+        assert!(receipt.matches_fixture_bytes(FIXTURE.as_bytes()));
+        receipt
+            .verify_fixture_bytes(expected_fixture.as_bytes())
+            .expect("the configured fixture bytes must match the exact browser read-back");
+        assert!(
+            !receipt.matches_fixture_bytes(changed),
+            "a one-byte fixture change must fail the exact read-back check"
+        );
+        assert_eq!(
+            receipt.verify_fixture_bytes(changed),
+            Err(WebsiteDriverError::TextReadbackMismatch),
+            "the changed fixture must produce the shared check's failure"
+        );
+        assert!(
+            search_after.is_empty(),
+            "the shared named action skipped Search"
+        );
+
+        println!("TASK1133 marked_bytes={}", receipt.marked_bytes);
+        println!("TASK1133 readback_bytes={}", receipt.readback_bytes);
+        println!("TASK1133 clear_bytes={}", receipt.bytes_after_clear);
+        println!(
+            "TASK1133 exact_fixture_match={}",
+            receipt.matches_fixture_bytes(FIXTURE.as_bytes())
+        );
+        println!(
+            "TASK1133 one_byte_changed_fixture_match={}",
+            receipt.matches_fixture_bytes(changed)
+        );
+        println!(
+            "TASK1133 one_byte_changed_fixture_check={}",
+            receipt.verify_fixture_bytes(changed).is_err()
+        );
+        println!("TASK1133 search_decoy_bytes={}", search_after.len());
+    }
+
+    #[test]
+    fn task_1134_instagram_refuses_one_changed_placed_byte_and_restores_exact_readback() {
+        const FIXTURE: &str = "instagram-text-1134";
+        const CHANGED_BYTE_INDEX: usize = 0;
+        const CHANGED_BYTE: u8 = b'x';
+        const COMPOSER_NAME: &str = "Message Maya";
+        let instagram = Task1131Page::spawn(
+            "Instagram — task 1134 placement fixture",
+            r#"<main data-osl-service="instagram" data-osl-instagram-place-kind="direct_message">
+                  <textarea aria-label="Search messages"></textarea>
+                  <textarea aria-label="Message Maya" data-osl-instagram-composer="active"></textarea>
+                </main>"#,
+        );
+        let mut driver =
+            RealBrowserWebsiteDriver::launch().expect("launch task 1134 fixture browser");
+        let page = driver
+            .find_page(WebsitePageRequest {
+                url: instagram.url(),
+            })
+            .expect("open task 1134 Instagram fixture");
+        driver.read_page(&page).expect("wait for task 1134 fixture");
+
+        let baseline = driver
+            .place_instagram_composer_text_exactly_and_clear(&page, FIXTURE)
+            .expect("baseline Instagram placement must have exact browser read-back");
+        assert!(baseline.matches_fixture_bytes(FIXTURE.as_bytes()));
+        println!("TASK1134 text={FIXTURE} result_count=1 result_name={FIXTURE}");
+
+        let discovery = driver
+            .discover_instagram_window(&page)
+            .expect("read task 1134 Instagram composer")
+            .expect("active task 1134 Instagram composer");
+        assert_eq!(discovery.active_composer, COMPOSER_NAME);
+        let mut changed = FIXTURE.as_bytes().to_vec();
+        changed[CHANGED_BYTE_INDEX] = CHANGED_BYTE;
+        assert_eq!(changed, b"xnstagram-text-1134");
+        assert_eq!(
+            changed
+                .iter()
+                .zip(FIXTURE.as_bytes())
+                .filter(|(actual, expected)| actual != expected)
+                .count(),
+            1,
+            "fault injection must alter exactly one placed byte"
+        );
+        let changed_refusal = driver.place_composer_text_exactly_and_clear_after_placement(
+            &page,
+            &discovery.active_composer,
+            FIXTURE,
+            |driver| {
+                driver.replace_named_composer_byte_after_placement_for_test(
+                    &page,
+                    &discovery.active_composer,
+                    FIXTURE,
+                    CHANGED_BYTE_INDEX,
+                    CHANGED_BYTE,
+                )
+            },
+        );
+        assert_eq!(
+            changed_refusal,
+            Err(WebsiteDriverError::TextReadbackMismatch),
+            "the changed placed byte must be refused by the named read-back error"
+        );
+        println!("TASK1134 changed_placed_byte=x result=refused refusal_name=TextReadbackMismatch");
+
+        let restored = driver
+            .place_instagram_composer_text_exactly_and_clear(&page, FIXTURE)
+            .expect("restored Instagram placement must have the same exact browser read-back");
+        assert!(restored.matches_fixture_bytes(FIXTURE.as_bytes()));
+        assert_eq!(
+            restored, baseline,
+            "restored result must equal the baseline result"
+        );
+        println!("TASK1134 restored_text={FIXTURE} result_count=1 result_name={FIXTURE}");
+    }
+
     struct Task1131Page {
         listener_addr: String,
         running: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -1684,7 +3225,8 @@ mod tests {
                             let document = format!("<!doctype html><title>{title}</title>{body}");
                             let response = format!(
                                 "HTTP/1.1 200 OK\r\ncontent-type: text/html; charset=utf-8\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
-                                document.len(), document
+                                document.len(),
+                                document
                             );
                             let _ = stream.write_all(response.as_bytes());
                         }
@@ -1719,15 +3261,281 @@ mod tests {
     }
 }
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub enum WebsiteControlKind {
-    EditableBox,
-    Button,
-    VisibleMessageArea,
+fn email_send_expression(recipient: &str, body: Option<&str>, should_send: bool) -> String {
+    let recipient = serde_json::to_string(recipient).unwrap_or_else(|_| "\"\"".to_owned());
+    let body = body
+        .map(|body| serde_json::to_string(body).unwrap_or_else(|_| "\"\"".to_owned()))
+        .unwrap_or_else(|| "null".to_owned());
+    let should_send = if should_send { "true" } else { "false" };
+    format!(
+        r#"
+(async () => {{
+  const recipient = {recipient};
+  const body = {body};
+  const shouldSend = {should_send};
+  const visible = (element) => {{
+    if (!element || element.disabled || element.hidden || element.getAttribute('aria-hidden') === 'true') return false;
+    const style = window.getComputedStyle(element);
+    return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0' && element.getClientRects().length > 0;
+  }};
+  const firstVisible = (selector) => Array.from(document.querySelectorAll(selector)).find(visible);
+  const setText = (element, value) => {{
+    element.focus();
+    if (element.isContentEditable) {{
+      element.textContent = value;
+    }} else {{
+      element.value = value;
+    }}
+    element.dispatchEvent(new InputEvent('input', {{ bubbles: true, inputType: 'insertText', data: value }}));
+    element.dispatchEvent(new Event('change', {{ bubbles: true }}));
+  }};
+  const to = firstVisible('[data-osl-email-to], input[name="to"], input[type="email"], [role="textbox"][aria-label="To"], [aria-label="To"]');
+  const send = firstVisible('[data-osl-email-send], button[type="submit"], button[aria-label="Send"], [role="button"][aria-label="Send"]');
+  if (!to || !send) return false;
+  setText(to, recipient);
+  if (body !== null) {{
+    const bodyElement = firstVisible('[data-osl-email-body-input], textarea[name="body"], textarea[aria-label="Body"], [contenteditable="true"][aria-label="Body"], [role="textbox"][aria-label="Body"]');
+    if (!bodyElement) return false;
+    setText(bodyElement, body);
+  }}
+  if (!shouldSend) return true;
+  send.click();
+  if (window.__oslLastSendPromise && typeof window.__oslLastSendPromise.then === 'function') {{
+    await window.__oslLastSendPromise;
+  }} else {{
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }}
+  return true;
+}})()
+"#
+    )
 }
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub struct WebsiteNamedControlRequest {
-    pub name: &'static str,
-    pub kind: WebsiteControlKind,
+// These are intentionally service-neutral browser actions. A reviewed surface
+// discovers its composer first, then gives its accessible name to this shared
+// implementation.
+const NAMED_COMPOSER_COMMON: &str = r#"
+  const expected = __OSL_COMPOSER_NAME__;
+  const compact = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+  const visible = (element) => {
+    if (!element || element.hidden || element.getAttribute('aria-hidden') === 'true') return false;
+    const style = window.getComputedStyle(element);
+    if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+    return element.getClientRects().length > 0;
+  };
+  const editable = (element) => {
+    if (element.disabled || element.readOnly) return false;
+    if (element.isContentEditable) return true;
+    const tag = element.tagName.toLowerCase();
+    if (tag === 'textarea') return true;
+    if (tag !== 'input') return element.getAttribute('role') === 'textbox' || element.getAttribute('role') === 'searchbox';
+    const type = (element.getAttribute('type') || 'text').toLowerCase();
+    return !['button', 'checkbox', 'color', 'file', 'hidden', 'image', 'radio', 'range', 'reset', 'submit'].includes(type);
+  };
+  const labelledBy = (element) => compact(
+    (element.getAttribute('aria-labelledby') || '')
+      .split(/\s+/)
+      .map((id) => document.getElementById(id))
+      .filter(Boolean)
+      .map((label) => label.innerText || label.textContent || '')
+      .join(' ')
+  );
+  const controlName = (element) => {
+    for (const candidate of [
+      element.getAttribute('aria-label'), labelledBy(element), element.getAttribute('placeholder'),
+      element.getAttribute('title'), element.getAttribute('name'), element.id
+    ]) {
+      const name = compact(candidate);
+      if (name) return name;
+    }
+    return '';
+  };
+  const matches = Array.from(document.querySelectorAll(
+    'textarea, input, [contenteditable=""], [contenteditable="true"], [role="textbox"], [role="searchbox"]'
+  )).filter((element) => visible(element) && editable(element) && controlName(element) === expected);
+  if (matches.length !== 1) return null;
+  const composer = matches[0];
+  const valueOf = (element) => element.isContentEditable ? (element.textContent || '') : String(element.value || '');
+"#;
+
+const PLACE_NAMED_COMPOSER_TEXT_EXPRESSION: &str = r#"
+(() => {
+__OSL_NAMED_COMPOSER_COMMON__
+  const text = __OSL_TEXT__;
+  composer.focus();
+  if (composer.isContentEditable) composer.textContent = text;
+  else composer.value = text;
+  composer.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }));
+  composer.dispatchEvent(new Event('change', { bubbles: true }));
+  return valueOf(composer) === text;
+})()
+"#;
+
+const READ_NAMED_COMPOSER_TEXT_EXPRESSION: &str = r#"
+(() => {
+__OSL_NAMED_COMPOSER_COMMON__
+  return valueOf(composer);
+})()
+"#;
+
+const CLEAR_NAMED_COMPOSER_TEXT_EXPRESSION: &str = r#"
+(() => {
+__OSL_NAMED_COMPOSER_COMMON__
+  composer.focus();
+  if (composer.isContentEditable) composer.textContent = '';
+  else composer.value = '';
+  composer.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'deleteContentBackward', data: null }));
+  composer.dispatchEvent(new Event('change', { bubbles: true }));
+  return valueOf(composer) === '';
+})()
+"#;
+
+#[cfg(test)]
+const CORRUPT_NAMED_COMPOSER_BYTE_EXPRESSION: &str = r#"
+(() => {
+__OSL_NAMED_COMPOSER_COMMON__
+  const placed = __OSL_PLACED_TEXT__;
+  const byteIndex = __OSL_BYTE_INDEX__;
+  const replacement = __OSL_REPLACEMENT_BYTE__;
+  if (valueOf(composer) !== placed) return false;
+  const bytes = new TextEncoder().encode(placed);
+  if (byteIndex >= bytes.length || bytes[byteIndex] === replacement) return false;
+  bytes[byteIndex] = replacement;
+  const changed = new TextDecoder().decode(bytes);
+  composer.focus();
+  if (composer.isContentEditable) composer.textContent = changed;
+  else composer.value = changed;
+  composer.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: changed }));
+  composer.dispatchEvent(new Event('change', { bubbles: true }));
+  const changedBytes = new TextEncoder().encode(valueOf(composer));
+  return changedBytes.length === bytes.length && changedBytes.every((byte, index) => byte === bytes[index]);
+})()
+"#;
+
+const PLACE_TEXT_EXPRESSION: &str = r#"
+(() => {
+  const text = __OSL_TEXT__;
+  const compact = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+  const visible = (element) => {
+    if (!element || element.hidden || element.getAttribute('aria-hidden') === 'true') return false;
+    const style = window.getComputedStyle(element);
+    if (style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse' || style.opacity === '0') return false;
+    return element.getClientRects().length > 0;
+  };
+  const labelledBy = (element) => compact(
+    (element.getAttribute('aria-labelledby') || '')
+      .split(/\s+/)
+      .map((id) => document.getElementById(id))
+      .filter(Boolean)
+      .map((label) => label.innerText || label.textContent || '')
+      .join(' ')
+  );
+  const controlName = (element) => {
+    const candidates = [
+      element.getAttribute('aria-label'),
+      labelledBy(element),
+      element.getAttribute('title'),
+      element.getAttribute('placeholder'),
+      element.getAttribute('name'),
+      element.id
+    ];
+    for (const candidate of candidates) {
+      const name = compact(candidate);
+      if (name) return name;
+    }
+    return '';
+  };
+  const editable = (element) => {
+    if (element.disabled || element.readOnly || element.getAttribute('aria-disabled') === 'true') return false;
+    if (element.isContentEditable) return true;
+    const tag = element.tagName.toLowerCase();
+    if (tag === 'textarea') return true;
+    if (tag !== 'input') return element.getAttribute('role') === 'textbox' || element.getAttribute('role') === 'searchbox';
+    const type = (element.getAttribute('type') || 'text').toLowerCase();
+    return !['button', 'checkbox', 'color', 'file', 'hidden', 'image', 'radio', 'range', 'reset', 'submit'].includes(type);
+  };
+  const read = (element) => element.isContentEditable ? (element.innerText || element.textContent || '') : String(element.value || '');
+  const write = (element) => {
+    element.focus();
+    if (element.isContentEditable) {
+      element.textContent = text;
+    } else {
+      element.value = text;
+    }
+    element.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }));
+    element.dispatchEvent(new Event('change', { bubbles: true }));
+    return read(element);
+  };
+  const matches = [];
+  for (const element of document.querySelectorAll('input, textarea, [contenteditable=""], [contenteditable="true"], [role="textbox"], [role="searchbox"]')) {
+    if (!visible(element) || !editable(element)) continue;
+    matches.push(element);
+  }
+  if (matches.length !== 1) return { placed: false, readback: '', editable_name: '' };
+  const readback = write(matches[0]);
+  return { placed: readback === text, readback, editable_name: controlName(matches[0]) };
+})()
+"#;
+
+const CLICK_NAMED_CONTROL_EXPRESSION: &str = r#"
+(() => {
+  const wanted = __OSL_CONTROL_NAME__;
+  const compact = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+  const visible = (element) => {
+    if (!element || element.hidden || element.getAttribute('aria-hidden') === 'true') return false;
+    const style = window.getComputedStyle(element);
+    if (style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse' || style.opacity === '0') return false;
+    return element.getClientRects().length > 0;
+  };
+  const enabled = (element) => !element.disabled && element.getAttribute('aria-disabled') !== 'true';
+  const labelledBy = (element) => compact(
+    (element.getAttribute('aria-labelledby') || '')
+      .split(/\s+/)
+      .map((id) => document.getElementById(id))
+      .filter(Boolean)
+      .map((label) => label.innerText || label.textContent || '')
+      .join(' ')
+  );
+  const controlName = (element) => {
+    const candidates = [
+      element.getAttribute('aria-label'),
+      labelledBy(element),
+      element.getAttribute('title'),
+      element.getAttribute('value'),
+      element.value,
+      element.innerText || element.textContent,
+      element.getAttribute('name'),
+      element.id
+    ];
+    for (const candidate of candidates) {
+      const name = compact(candidate);
+      if (name) return name;
+    }
+    return '';
+  };
+  const matches = [];
+  const disabled = [];
+  for (const element of document.querySelectorAll('button, input[type="button"], input[type="submit"], input[type="reset"], [role="button"]')) {
+    if (!visible(element) || controlName(element) !== wanted) continue;
+    if (enabled(element)) {
+      matches.push(element);
+    } else {
+      disabled.push(element);
+    }
+  }
+  if (matches.length === 0 && disabled.length > 0) return 'disabled';
+  if (matches.length !== 1) return 'not_found';
+  matches[0].click();
+  return 'pressed';
+})()
+"#;
+
+fn place_text_in_first_named_editable(
+    websocket_url: &str,
+    text: &str,
+) -> Result<BrowserTextPlacementResult, WebsiteDriverError> {
+    let text = serde_json::to_string(text).map_err(|_| WebsiteDriverError::TextPlacementFailed)?;
+    let expression = PLACE_TEXT_EXPRESSION.replace("__OSL_TEXT__", &text);
+    let value = evaluate_target(websocket_url, &expression)?;
+    serde_json::from_value(value).map_err(|_| WebsiteDriverError::TextPlacementFailed)
 }

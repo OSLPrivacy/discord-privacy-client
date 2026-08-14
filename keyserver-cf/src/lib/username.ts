@@ -4,10 +4,10 @@ import { analyzeIdentifier } from "./unicode-identifier/runtime.js";
 
 export const USERNAME_CLAIM_DOMAIN = "OSL-USERNAME-CLAIM-v1";
 export const USERNAME_MOVE_DOMAIN = "OSL-USERNAME-MOVE-v1";
-export const USERNAME_RE = /^[A-Za-z0-9_]{1,16}$/;
-export const USERNAME_MIN = 1;
-export const USERNAME_MAX = 16;
-export const USERNAME_RULES_MESSAGE = "username must use only letters, digits, and underscores and be 1 to 16 characters";
+export const USERNAME_RELEASE_DOMAIN = "OSL-USERNAME-RELEASE-v1";
+export const USERNAME_RE = /^[a-z0-9](?:[a-z0-9_]{1,28}[a-z0-9])?$/;
+export const USERNAME_MIN = 3;
+export const USERNAME_MAX = 30;
 export const USERNAME_FRESHNESS_MS = 5 * 60 * 1000;
 const FRIEND_CODE_PREFIX = "OSLFR1.";
 
@@ -48,6 +48,9 @@ export class UsernameNotAnalyzable extends Error {
 /// REFUSED rather than silently stored under a name nobody typed.
 export function usernameSkeleton(username: string): string {
   const analysis = analyzeIdentifier(username);
+  if (analysis.normalized !== username) {
+    throw new UsernameNotAnalyzable("not canonical under UTS #39 normalization");
+  }
   if (!analysis.identifierAllowed) {
     throw new UsernameNotAnalyzable("outside the UTS #39 identifier profile");
   }
@@ -58,8 +61,8 @@ export function usernameSkeleton(username: string): string {
     throw new UsernameNotAnalyzable("empty skeleton");
   }
   // D-248b. UTS #39 confusable prototypes are NOT case-folded, and this
-  // identifier space is case-insensitive (`analyze_identifier` lowercases before
-  // it skeletons). Measured over the
+  // identifier space IS case-insensitive (`USERNAME_RE` admits no uppercase, and
+  // `analyze_identifier` lowercases before it skeletons). Measured over the
   // whole shipping alphabet `[a-z0-9_]`, exactly three characters are not their
   // own skeleton -- `m -> rn`, `1 -> l`, and `0 -> O` -- so without a final
   // fold the raw skeleton leaves `supp0rt` and `support` in DIFFERENT classes.
@@ -100,6 +103,17 @@ export function usernameMoveMessage(input: {
 }): Uint8Array {
   return new TextEncoder().encode(
     `${USERNAME_MOVE_DOMAIN}\n${input.username}\n${input.user_id}\n${input.prev_ik_ed25519_pub}\n${input.new_ik_ed25519_pub}\n${input.request_id}\n${input.timestamp_ms}`,
+  );
+}
+
+export function usernameReleaseMessage(input: {
+  username: string;
+  user_id: string;
+  request_id: string;
+  timestamp_ms: number;
+}): Uint8Array {
+  return new TextEncoder().encode(
+    `${USERNAME_RELEASE_DOMAIN}\n${input.username}\n${input.user_id}\n${input.request_id}\n${input.timestamp_ms}`,
   );
 }
 

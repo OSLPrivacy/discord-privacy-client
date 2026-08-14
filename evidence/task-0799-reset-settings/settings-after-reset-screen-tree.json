@@ -1,0 +1,67 @@
+{
+  "image": {
+    "bytes": 49191,
+    "colors": 816,
+    "height": 768,
+    "sha256": "179c42be9ffe23524ce6786b3301c73fb9f624dd47327ed1a755086bb9a2a037",
+    "width": 1024
+  },
+  "reset": "completed",
+  "schema": "osl-task-0799-settings-after-reset-v1",
+  "screen": "1024x768x24",
+  "states": [
+    {
+      "name": "Privacy",
+      "value": "balanced"
+    },
+    {
+      "name": "Chat suggestions",
+      "value": "on"
+    },
+    {
+      "name": "App notifications",
+      "value": "false"
+    },
+    {
+      "name": "Next generation",
+      "value": "off"
+    },
+    {
+      "name": "Verification warning",
+      "value": "every time"
+    },
+    {
+      "name": "Message scope",
+      "value": "message"
+    },
+    {
+      "name": "Message timer",
+      "value": "300"
+    },
+    {
+      "name": "View once",
+      "value": "10"
+    },
+    {
+      "name": "Message writer",
+      "value": "plaintext"
+    },
+    {
+      "name": "Friend picture",
+      "value": "image-absent"
+    },
+    {
+      "name": "Friend account reach",
+      "value": "approved_chats_only"
+    },
+    {
+      "name": "Friend auto rule",
+      "value": "never"
+    },
+    {
+      "name": "Friend warnings",
+      "value": "always"
+    }
+  ],
+  "title": "Settings"
+}

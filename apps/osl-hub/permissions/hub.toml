@@ -4,11 +4,6 @@ description = "Read the local, non-sensitive OSL Privacy preview preferences."
 commands.allow = ["get_onboarding_preferences"]
 
 [[permission]]
-identifier = "allow-export-hub-account-data"
-description = "Reauthorize the signed-in account, choose separate native archive and key destinations, and return only a full-readback verification receipt."
-commands.allow = ["export_hub_account_data"]
-
-[[permission]]
 identifier = "allow-ai-carrier-status"
 description = "Read only whether the optional local AI carrier is ready; this exposes no model, cover, message, capability, or conversation data."
 commands.allow = ["ai_carrier_status"]
@@ -17,6 +12,11 @@ commands.allow = ["ai_carrier_status"]
 identifier = "allow-set-ai-carrier-preview-enabled"
 description = "Set the session-only, per-conversation opt-in for optional AI carrier preview; it never types text or bypasses the native trusted-process check."
 commands.allow = ["set_ai_carrier_preview_enabled"]
+
+[[permission]]
+identifier = "allow-set-ai-covertext-selected"
+description = "Choose the verified on-device AI cover writer for subsequent protected carriers; no message text crosses this command."
+commands.allow = ["set_ai_covertext_selected"]
 
 [[permission]]
 identifier = "allow-build-integrity-status"
@@ -37,6 +37,26 @@ commands.allow = ["osl_mail_get_status"]
 identifier = "allow-osl-mail-provision"
 description = "Provision the unlocked identity's claimed OSL Mail username through the signed OSL Mail endpoint."
 commands.allow = ["osl_mail_provision"]
+
+[[permission]]
+identifier = "allow-osl-mail-agree-to-sender"
+description = "Allow the unlocked OSL Mail identity to explicitly allow or remove one normalized sender username."
+commands.allow = ["osl_mail_agree_to_sender"]
+
+[[permission]]
+identifier = "allow-osl-mail-list-threads"
+description = "List capped OSL Mail thread summaries for the unlocked identity's active mailbox."
+commands.allow = ["osl_mail_list_threads"]
+
+[[permission]]
+identifier = "allow-osl-mail-retrieve-thread"
+description = "Retrieve one selected OSL Mail thread body for the unlocked identity by opaque thread id."
+commands.allow = ["osl_mail_retrieve_thread"]
+
+[[permission]]
+identifier = "allow-osl-mail-acknowledge-retrieval"
+description = "Acknowledge deletion of one retrieved OSL Mail batch by opaque retrieval and message ids after the trusted UI has displayed it."
+commands.allow = ["osl_mail_acknowledge_retrieval"]
 
 [[permission]]
 identifier = "allow-osl-mail-send"
@@ -189,6 +209,11 @@ description = "Allow only the trusted OSL header to enable or disable the fixed 
 commands.allow = ["set_native_discord_covertext_enabled"]
 
 [[permission]]
+identifier = "allow-select-native-discord-covertext-writer"
+description = "Allow only the trusted OSL header Covertext button to select the existing layered local wordbank writer."
+commands.allow = ["select_native_discord_covertext_writer"]
+
+[[permission]]
 identifier = "allow-set-hub-screenshot-protection"
 description = "Apply or remove Windows capture resistance for the trusted OSL Privacy window and its child service surface."
 commands.allow = ["set_hub_screenshot_protection"]
@@ -319,6 +344,11 @@ description = "Read the static demo service and account registry."
 commands.allow = ["list_linked_services"]
 
 [[permission]]
+identifier = "allow-list-detected-accounts"
+description = "Read the current owner's detected accounts and their local opening choices."
+commands.allow = ["list_detected_accounts"]
+
+[[permission]]
 identifier = "allow-create-service-account"
 description = "Create local metadata for one fresh isolated service profile; stores no credentials or cookies."
 commands.allow = ["create_service_account"]
@@ -374,6 +404,11 @@ description = "Remove the locally sealed activation code from the trusted bundle
 commands.allow = ["clear_hub_activation_code"]
 
 [[permission]]
+identifier = "allow-get-realtime-wakeup-status"
+description = "Read the local lifecycle status of the realtime wake-up pipe without exposing account identifiers or bearer material."
+commands.allow = ["get_realtime_wakeup_status"]
+
+[[permission]]
 identifier = "allow-unlock-hub-password-gate"
 description = "Verify the original constant-time main, stealth, and burn password gate and execute exactly the role's trusted local consequence."
 commands.allow = ["unlock_hub_password_gate"]
@@ -412,16 +447,6 @@ commands.allow = ["get_hub_recovery_kit_unsaved"]
 identifier = "allow-set-recovery-kit-unsaved"
 description = "Update only the encrypted, account-scoped recovery-kit saved acknowledgement. Split from the read permission: one permission per command is the rule here, and bundling a read with a write grants more than a reader needs."
 commands.allow = ["set_hub_recovery_kit_unsaved"]
-
-[[permission]]
-identifier = "allow-get-coach-tip-state"
-description = "Read only the fixed, encrypted, account-scoped coach-tip dismissal document."
-commands.allow = ["get_coach_tip_state"]
-
-[[permission]]
-identifier = "allow-save-coach-tip-state"
-description = "Save only a strictly validated coach-tip dismissal document after an explicit owner action."
-commands.allow = ["save_coach_tip_state"]
 
 [[permission]]
 identifier = "allow-lock-hub-session"
@@ -835,17 +860,12 @@ commands.allow = ["create_hub_private_contact_link"]
 
 [[permission]]
 identifier = "allow-get-hub-private-contact-link-status"
-description = "Read deployed-service expiry and terminal status for one issuer-controlled private contact link without touching the username directory."
+description = "Read the encrypted local use count for one private contact link without touching the username directory."
 commands.allow = ["get_hub_private_contact_link_status"]
 
 [[permission]]
-identifier = "allow-revoke-hub-private-contact-link"
-description = "Immediately and authoritatively revoke one still-live private contact link using its issuer-only revocation capability."
-commands.allow = ["revoke_hub_private_contact_link"]
-
-[[permission]]
 identifier = "allow-add-hub-private-contact-link"
-description = "Atomically consume one deployed-service private contact link and import its signed friend code through the normal People path."
+description = "Consume one encrypted local private contact link and import its signed friend code through the normal People path."
 commands.allow = ["add_hub_private_contact_link"]
 
 [[permission]]
@@ -1048,6 +1068,16 @@ description = "Return the fixed terms address for one supported service; this do
 commands.allow = ["get_service_terms_address"]
 
 [[permission]]
+identifier = "allow-read-messaging-service-risk-agreement"
+description = "Read whether one signed-in service account has already agreed to that messaging service's risk, so the risk page is shown before the first action and not again for that account; it returns no credential, message or conversation data."
+commands.allow = ["read_messaging_service_risk_agreement"]
+
+[[permission]]
+identifier = "allow-agree-messaging-service-risk"
+description = "Record that the owner ticked the messaging risk page for one exact signed-in service account; the agreement is stored against that service and account only."
+commands.allow = ["agree_messaging_service_risk"]
+
+[[permission]]
 identifier = "allow-create-one-use-invite-link"
 description = "Create one fresh one-use invite link for a locally labelled person with no OSL username; the record is saved unused in encrypted device-local state."
 commands.allow = ["create_one_use_invite_link"]
@@ -1148,16 +1178,6 @@ description = "Persist only the explicit on/off choice for whether the trusted O
 commands.allow = ["set_follow_active_app_choice"]
 
 [[permission]]
-identifier = "allow-get-discovery-replies-switch"
-description = "Read the native discovery reply master transition without exposing account or card data."
-commands.allow = ["get_discovery_replies_switch"]
-
-[[permission]]
-identifier = "allow-set-discovery-replies-switch"
-description = "Run the native discovery reply master transition, including release-keyserver withdrawal before off is returned."
-commands.allow = ["set_discovery_replies_switch"]
-
-[[permission]]
 identifier = "allow-create-hub-named-server"
 description = "Create one owner-bound named launch server record with explicit member identifiers."
 commands.allow = ["create_hub_named_server"]
@@ -1213,19 +1233,14 @@ description = "List the saved bounded local OSL visual look choices for this dev
 commands.allow = ["list_hub_look_choices"]
 
 [[permission]]
+identifier = "allow-reset-hub-setting-group"
+description = "Reset only the persisted settings owned by one exact named Settings screen from the trusted local OSL window."
+commands.allow = ["reset_hub_setting_group"]
+
+[[permission]]
 identifier = "allow-save-scrub-setup"
 description = "Save the local Scrub setup account count, automatic schedule, and notice setting selected during trusted setup."
 commands.allow = ["save_scrub_setup"]
-
-[[permission]]
-identifier = "allow-pick-hub-recovery-kit-file"
-description = "Open the installed native file picker for one OSL recovery kit from the trusted bundled OSL Privacy UI and return only that one selection's frozen path, length, SHA-256 digest and bytes; it browses nothing, reads no other file, and writes nothing."
-commands.allow = ["pick_hub_recovery_kit_file"]
-
-[[permission]]
-identifier = "allow-derive-hub-recovery-kit-identity"
-description = "Return only the public osl_ routing label a recovery kit's twelve-word identity phrase reconstructs, so a kit belonging to another account is refused before its phrase reaches the authenticated importer; it installs nothing and writes nothing."
-commands.allow = ["derive_hub_recovery_kit_identity"]
 
 [[permission]]
 identifier = "allow-check-hub-password-reset-phrase"
@@ -1303,6 +1318,6 @@ description = "Allow only the trusted main OSL window to ask for selected recove
 commands.allow = ["check_hub_recovery_word_retype"]
 
 [[permission]]
-identifier = "allow-resolve-english-catalogue-string"
-description = "Resolve one registered stable key through the startup-validated English catalogue without a literal fallback."
-commands.allow = ["resolve_english_catalogue_string"]
+identifier = "allow-reset-every-setting"
+description = "Allow only the trusted main OSL window to restore every safe Settings, Look, Friends, and Behaviour choice to its documented default."
+commands.allow = ["reset_every_setting"]

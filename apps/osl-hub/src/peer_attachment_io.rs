@@ -85,37 +85,6 @@ impl StagedAttachment {
     }
 }
 
-/// TASK 5166: take RAII ownership of a plaintext file the protected-download
-/// quarantine just released into `root`'s staging directory by one atomic
-/// rename. The path shape is re-validated here, so a release that landed
-/// anywhere but the staging directory under a legal `opened-*` name cannot be
-/// adopted and handed to an external reader.
-pub fn adopt_released_plaintext(
-    root: &Path,
-    path: PathBuf,
-    original_filename: &str,
-    declared_mime: &str,
-    plaintext_len: u64,
-) -> Result<StagedPlaintext, String> {
-    let mime_type = validate_metadata(original_filename, declared_mime)?;
-    validate_staging_path_in_root(root, &path)?;
-    let metadata = std::fs::symlink_metadata(&path)
-        .map_err(|_| "released attachment could not be checked".to_owned())?;
-    if metadata.file_type().is_symlink() || !metadata.is_file() {
-        return Err("released attachment is not a regular file".to_owned());
-    }
-    if metadata.len() != plaintext_len {
-        return Err("released attachment has an invalid plaintext size".to_owned());
-    }
-    Ok(StagedPlaintext::new(StagedAttachment {
-        root: root.to_owned(),
-        path,
-        original_filename: original_filename.to_owned(),
-        mime_type,
-        plaintext_len,
-    }))
-}
-
 struct PartialFile(PathBuf);
 
 impl Drop for PartialFile {
@@ -206,36 +175,6 @@ pub fn encrypt_file(
         mime_type,
         plaintext_len,
     })
-}
-
-/// Tier-aware shipping entry point. Admission is completed before
-/// [`encrypt_file`] creates the first OSL-owned staging path; both tiers then
-/// converge on the exact same streaming AEAD implementation.
-pub fn encrypt_file_for_account_tier(
-    app_local_data_dir: &Path,
-    source: &mut File,
-    original_filename: &str,
-    declared_mime: &str,
-    tier: crate::attachment_limits::AttachmentAccountTier,
-    key: aead::Key,
-    content_id: Vec<u8>,
-    attachment_index: u32,
-) -> Result<StagedAttachment, String> {
-    let plaintext_len = source
-        .metadata()
-        .map_err(|_| "attachment metadata could not be read".to_owned())?
-        .len();
-    crate::attachment_limits::check_attachment_size(plaintext_len, tier)
-        .map_err(|_| format!("attachment is outside the {} account limit", tier.label()))?;
-    encrypt_file(
-        app_local_data_dir,
-        source,
-        original_filename,
-        declared_mime,
-        key,
-        content_id,
-        attachment_index,
-    )
 }
 
 /// Decrypt to an OSL-owned plaintext staging file, for the non-image path where
@@ -530,6 +469,8 @@ pub enum TransportOutcome {
     ServerFault,
     MalformedResponse,
     LocalIo,
+    /// The local owner stopped the upload before another part was sent.
+    Cancelled,
     Refused,
     /// Tor is selected and its tunnel is unavailable. Nothing was sent, and
     /// nothing fell back to a direct route.
@@ -554,8 +495,12 @@ pub fn classify_cipher_store_error(
         Raw::RateLimited => TransportOutcome::RateLimited,
         Raw::ParseError(_) => TransportOutcome::MalformedResponse,
         Raw::Io(_) => TransportOutcome::LocalIo,
+        // A message burn is a local, intentional refusal to let the owning
+        // multipart upload produce a completed object.
+        Raw::AttachmentUploadCancelled => TransportOutcome::Refused,
         Raw::RouteUnavailable(_) => TransportOutcome::RouteUnavailable,
         Raw::ConfigOverrideRefused { .. } => TransportOutcome::Refused,
+        Raw::UploadCancelled => TransportOutcome::Cancelled,
         // B0-01 phase 2's storage grants. All three are the store refusing the
         // credential we presented, which is exactly `CapabilityRejected` -- the
         // same outcome as a 401/403 above, and deliberately NOT `Refused`: the
@@ -592,39 +537,46 @@ pub fn classify_cipher_store_error(
 /// Render one outcome for the user. Server-supplied response bodies are never
 /// included, so no remote text can reach a toast.
 pub fn describe_transport_outcome(outcome: TransportOutcome, phase: TransportPhase) -> String {
-    let phase_code = match phase {
-        TransportPhase::Upload => "upload",
-        TransportPhase::Fetch => "fetch",
-        TransportPhase::Delete => "delete",
+    let subject = match phase {
+        TransportPhase::Upload => "This private attachment could not be uploaded",
+        TransportPhase::Fetch => "This private attachment could not be retrieved",
+        TransportPhase::Delete => "OSL could not delete this private attachment from its storage",
     };
-    let outcome_code = match outcome {
-        TransportOutcome::Unreachable => "unreachable",
-        TransportOutcome::TimedOut => "timed_out",
-        TransportOutcome::RateLimited => "rate_limited",
-        TransportOutcome::CapabilityRejected => "capability_rejected",
-        TransportOutcome::Gone => "gone",
-        TransportOutcome::TooLarge => "too_large",
-        TransportOutcome::UnsupportedLifetime => "unsupported_lifetime",
-        TransportOutcome::ServerFault => "server_fault",
-        TransportOutcome::MalformedResponse => "malformed_response",
-        TransportOutcome::LocalIo => "local_io",
-        TransportOutcome::Refused => "refused",
-        TransportOutcome::RouteUnavailable => "route_unavailable",
+    let reason = match outcome {
+        TransportOutcome::Unreachable => "OSL could not reach its encrypted attachment storage",
+        TransportOutcome::TimedOut => "the encrypted attachment storage did not answer in time",
+        TransportOutcome::RateLimited => {
+            "the encrypted attachment storage is rate limiting this device, so wait and retry"
+        }
+        TransportOutcome::CapabilityRejected => {
+            "the encrypted attachment storage rejected this device's capability for it"
+        }
+        TransportOutcome::Gone => "it has already expired or been burned",
+        TransportOutcome::TooLarge => "it exceeds the encrypted attachment size limit",
+        TransportOutcome::UnsupportedLifetime => {
+            "its requested lifetime is not one OSL storage accepts"
+        }
+        TransportOutcome::ServerFault => {
+            "the encrypted attachment storage reported a fault on its side"
+        }
+        TransportOutcome::MalformedResponse => {
+            "the encrypted attachment storage returned an unexpected response"
+        }
+        TransportOutcome::LocalIo => "OSL could not read the sealed copy on this device",
+        TransportOutcome::Cancelled => "the upload was cancelled on this device",
+        TransportOutcome::Refused => "the encrypted attachment storage refused the request",
+        TransportOutcome::RouteUnavailable => {
+            "Tor is selected and its tunnel is unavailable, so OSL refused rather than \
+             using a direct connection"
+        }
     };
-    crate::service_result_words::render_service_reason_without_parameters(&format!(
-        "storage_{phase_code}_{outcome_code}"
-    ))
+    format!("{subject}: {reason}.")
 }
 
 pub fn describe_cipher_store_error(
     error: &ipc::cipher_store_client::CipherStoreError,
     phase: TransportPhase,
 ) -> String {
-    if let ipc::cipher_store_client::CipherStoreError::Status { body, .. } = error {
-        if let Some(rendered) = crate::service_result_words::render_service_response_body(body) {
-            return rendered;
-        }
-    }
     describe_transport_outcome(classify_cipher_store_error(error), phase)
 }
 
@@ -1074,6 +1026,29 @@ pub fn remove_staging_path_in_root(root: &Path, path: &Path) -> Result<(), Strin
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(_) => Err("staged attachment could not be removed".to_owned()),
     }
+}
+
+/// Return the validated, root-relative name of one OSL attachment staging
+/// file without opening or removing it.
+///
+/// The timed-attachment expiry ledger stores this name rather than an absolute
+/// path.  Re-validating it against the caller's current app-local-data root on
+/// every sweep prevents a copied ledger, symlink, or path traversal from
+/// turning expiry cleanup into an arbitrary-file deletion primitive.
+pub fn staging_file_name_in_root(root: &Path, path: &Path) -> Result<String, String> {
+    validate_staging_path_in_root(root, path)?;
+    let staging = path
+        .parent()
+        .ok_or_else(|| "staged attachment path is invalid".to_owned())?;
+    let metadata = std::fs::symlink_metadata(staging)
+        .map_err(|_| "OSL attachment staging directory could not be checked".to_owned())?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err("OSL attachment staging directory is unsafe".to_owned());
+    }
+    path.file_name()
+        .and_then(|value| value.to_str())
+        .map(str::to_owned)
+        .ok_or_else(|| "staged attachment path is invalid".to_owned())
 }
 
 fn validate_staging_path_in_root(root: &Path, path: &Path) -> Result<(), String> {
@@ -1732,6 +1707,7 @@ mod tests {
             TransportOutcome::ServerFault,
             TransportOutcome::MalformedResponse,
             TransportOutcome::LocalIo,
+            TransportOutcome::Cancelled,
             TransportOutcome::Refused,
         ];
         for phase in [

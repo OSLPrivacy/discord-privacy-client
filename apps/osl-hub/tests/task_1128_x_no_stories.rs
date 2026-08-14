@@ -1,6 +1,8 @@
 use osl_privacy_hub::{
     adapters::{AdapterRefusal, CapabilitySet},
-    web_surface_adapter::x::{XNamedControl, XSurfaceDriver, XSurfaceSnapshot, XWebBackend},
+    web_surface_adapter::x::{
+        XNamedControl, XSurfaceDriver, XSurfaceSnapshot, XWebBackend,
+    },
 };
 use std::sync::{Arc, Mutex};
 
@@ -34,10 +36,9 @@ impl XSurfaceDriver for PreparedXDriver {
     }
 
     fn named_controls(&self, names: &[&str]) -> Result<Vec<XNamedControl>, AdapterRefusal> {
-        self.requests
-            .lock()
-            .expect("requests lock")
-            .push(names.iter().map(|name| (*name).to_owned()).collect());
+        self.requests.lock().expect("requests lock").push(
+            names.iter().map(|name| (*name).to_owned()).collect(),
+        );
         if names == [X_COMPOSER] {
             Ok(vec![XNamedControl {
                 name: X_COMPOSER.to_owned(),

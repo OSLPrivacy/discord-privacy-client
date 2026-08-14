@@ -7,6 +7,9 @@
 
 use serde::Serialize;
 use std::collections::BTreeMap;
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 
 const MAX_SIGNAL_MESSAGE_BYTES: usize = 4_096;
 
@@ -48,6 +51,144 @@ pub trait SignalLinkedDeviceTransport {
         recipient_account_name: &str,
         words: &str,
     ) -> Result<(), SignalSendRefusal>;
+}
+
+/// The command line needed to operate a linked Signal device.
+///
+/// Keeping the executable and arguments as data makes the production route
+/// reviewable: it is a direct `signal-cli` invocation, never a shell string,
+/// desktop accessibility operation, keyboard event, or foreground window.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SignalCliCommand {
+    executable: PathBuf,
+    arguments: Vec<OsString>,
+}
+
+impl SignalCliCommand {
+    pub fn executable(&self) -> &Path {
+        &self.executable
+    }
+
+    pub fn arguments(&self) -> &[OsString] {
+        &self.arguments
+    }
+}
+
+/// A real linked-device transport backed by `signal-cli`.
+///
+/// Pair this data directory using [`Self::link_command`], render the returned
+/// `sgnl://linkdevice` URI as a QR code, and let the account holder scan it in
+/// Signal exactly as they would scan the Signal Desktop pairing code.  Once
+/// linked, [`SignalLinkedDeviceTransport::deliver_exact_words`] uses the
+/// linked-device keys held by `signal-cli`; it does not open or drive Signal
+/// Desktop.
+///
+/// `signal-cli` is an external, account-holder-provisioned dependency.  A
+/// missing executable, failed command, or response without the Signal-issued
+/// timestamp is a refusal, never a claimed send.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SignalCliLinkedDeviceTransport {
+    executable: PathBuf,
+    data_directory: PathBuf,
+}
+
+impl SignalCliLinkedDeviceTransport {
+    pub fn new(executable: impl Into<PathBuf>, data_directory: impl Into<PathBuf>) -> Self {
+        Self {
+            executable: executable.into(),
+            data_directory: data_directory.into(),
+        }
+    }
+
+    /// Start Signal's normal linked-device pairing flow.  The caller owns QR
+    /// rendering and must wait for the user's scan before storing a pairing.
+    pub fn link_command(
+        &self,
+        linked_device_name: &str,
+    ) -> Result<SignalCliCommand, SignalSendRefusal> {
+        if !valid_name(linked_device_name) {
+            return Err(SignalSendRefusal::InvalidPairing);
+        }
+        Ok(self.command(["link", "--name", linked_device_name]))
+    }
+
+    /// Build the exact non-interactive send command.  This is public for the
+    /// live QA harness so its emitted command can be audited without revealing
+    /// the linked-device data directory or message contents in ordinary logs.
+    pub fn send_command(
+        &self,
+        linked_device: &SignalLinkedDevicePairing,
+        recipient_account_name: &str,
+        words: &str,
+    ) -> Result<SignalCliCommand, SignalSendRefusal> {
+        if !valid_name(&linked_device.owner_account_name)
+            || !valid_name(recipient_account_name)
+            || !valid_message(words)
+        {
+            return Err(SignalSendRefusal::InvalidMessage);
+        }
+        Ok(self.command([
+            "--account",
+            linked_device.owner_account_name.as_str(),
+            "send",
+            "--message",
+            words,
+            recipient_account_name,
+        ]))
+    }
+
+    fn command<const N: usize>(&self, command_arguments: [&str; N]) -> SignalCliCommand {
+        let mut arguments = vec![
+            OsString::from("--data-dir"),
+            self.data_directory.as_os_str().to_owned(),
+            OsString::from("--output"),
+            OsString::from("json"),
+        ];
+        arguments.extend(command_arguments.into_iter().map(OsString::from));
+        SignalCliCommand {
+            executable: self.executable.clone(),
+            arguments,
+        }
+    }
+}
+
+impl SignalLinkedDeviceTransport for SignalCliLinkedDeviceTransport {
+    fn deliver_exact_words(
+        &mut self,
+        linked_device: &SignalLinkedDevicePairing,
+        recipient_account_name: &str,
+        words: &str,
+    ) -> Result<(), SignalSendRefusal> {
+        let command = self.send_command(linked_device, recipient_account_name, words)?;
+        let output = Command::new(command.executable)
+            .args(command.arguments)
+            .output()
+            .map_err(|_| SignalSendRefusal::TransportUnavailable)?;
+        if !output.status.success() || !signal_cli_issued_timestamp(&output.stdout) {
+            return Err(SignalSendRefusal::TransportUnavailable);
+        }
+        Ok(())
+    }
+}
+
+/// A successful `signal-cli --output json send` response carries a Signal
+/// server timestamp.  Require that evidence as well as process success: a
+/// local process exit alone is not a send receipt.
+fn signal_cli_issued_timestamp(stdout: &[u8]) -> bool {
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(stdout) else {
+        return false;
+    };
+    let Some(object) = value.as_object() else {
+        return false;
+    };
+    if object.contains_key("error") {
+        return false;
+    }
+    object
+        .get("timestamp")
+        .or_else(|| object.get("result")?.get("timestamp"))
+        .and_then(serde_json::Value::as_u64)
+        .is_some_and(|timestamp| timestamp > 0)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -262,6 +403,120 @@ mod tests {
             refused.refused_by_name.as_deref().unwrap(),
             refused.sent_count,
             network.sent_total
+        );
+    }
+
+    #[test]
+    fn task1037a_signal_cli_route_is_noninteractive_and_requires_signal_timestamp() {
+        let transport = SignalCliLinkedDeviceTransport::new(
+            "/opt/osl/signal-cli/bin/signal-cli",
+            "/var/lib/osl/signal-extra-device",
+        );
+        let pairing = SignalLinkedDevicePairing {
+            owner_account_name: "+15550001037".to_owned(),
+            linked_device_name: "OSL extra linked device TASK1037a".to_owned(),
+            scan_marker: "phone-scan-same-as-signal-desktop TASK1037a".to_owned(),
+        };
+        let link = transport
+            .link_command(&pairing.linked_device_name)
+            .expect("a named linked-device pairing command");
+        let command = transport
+            .send_command(&pairing, "+15550002037", "OSL-1037a-MARKED-CLI")
+            .expect("a direct linked-device command");
+
+        let link_arguments: Vec<_> = link
+            .arguments()
+            .iter()
+            .map(|argument| argument.to_string_lossy())
+            .collect();
+        let arguments: Vec<_> = command
+            .arguments()
+            .iter()
+            .map(|argument| argument.to_string_lossy())
+            .collect();
+        assert_eq!(
+            link_arguments,
+            [
+                "--data-dir",
+                "/var/lib/osl/signal-extra-device",
+                "--output",
+                "json",
+                "link",
+                "--name",
+                "OSL extra linked device TASK1037a",
+            ]
+        );
+        assert_eq!(
+            arguments,
+            [
+                "--data-dir",
+                "/var/lib/osl/signal-extra-device",
+                "--output",
+                "json",
+                "--account",
+                "+15550001037",
+                "send",
+                "--message",
+                "OSL-1037a-MARKED-CLI",
+                "+15550002037",
+            ]
+        );
+        assert!(!arguments.iter().any(|argument| {
+            argument.contains("stdin")
+                || argument.contains("window")
+                || argument.contains("keyboard")
+                || argument.contains("desktop")
+        }));
+        assert!(signal_cli_issued_timestamp(
+            br#"{"result":{"timestamp":1037}}"#
+        ));
+        assert!(!signal_cli_issued_timestamp(br#"{"result":{}}"#));
+        assert!(!signal_cli_issued_timestamp(
+            br#"{"error":{"timestamp":1037}}"#
+        ));
+        assert!(!signal_cli_issued_timestamp(b"not Signal JSON"));
+        println!(
+            "TASK1037a signal_cli route=signal-extra-device link_args={} send_args={} signal_timestamp=true no_ui_arguments=true",
+            link_arguments.len(),
+            arguments.len()
+        );
+    }
+
+    #[test]
+    fn task1037a_signal_cli_missing_transport_refuses_without_counting_a_send() {
+        let owner = "+15550001037";
+        let mut sender = SignalExtraDeviceSender::default();
+        sender
+            .pair_from_user_scan(SignalLinkedDevicePairing {
+                owner_account_name: owner.to_owned(),
+                linked_device_name: "OSL extra linked device TASK1037a".to_owned(),
+                scan_marker: "phone-scan-same-as-signal-desktop TASK1037a".to_owned(),
+            })
+            .expect("the pairing record is present before the transport check");
+        let mut missing_transport = SignalCliLinkedDeviceTransport::new(
+            "/definitely-not-installed/osl-signal-cli",
+            "/var/lib/osl/signal-extra-device",
+        );
+
+        let receipt = sender.send_direct_command(
+            &mut missing_transport,
+            SignalDirectSendRequest {
+                owner_account_name: owner.to_owned(),
+                recipient_account_name: "+15550002037".to_owned(),
+                marked_message: "OSL-1037a-MARKED-MISSING-TRANSPORT".to_owned(),
+            },
+        );
+
+        assert!(!receipt.ok);
+        assert_eq!(receipt.sent_count, 0);
+        assert_eq!(
+            receipt.refused_by_name.as_deref(),
+            Some("Signal extra-device transport is unavailable")
+        );
+        println!(
+            "TASK1037a missing_signal_cli refused_by_name=\"{}\" sent_count={}",
+            receipt.refused_by_name.as_deref().unwrap(),
+            receipt.sent_count
         );
     }
 }

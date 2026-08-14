@@ -23,6 +23,13 @@ const ENTRYPOINT = join(SOURCE_ROOT, "main.ts");
 // of the shipping graph until the native authority, consent spend, and
 // provider-specific reviewed-run path exist.
 //
+// `scrub-what-to-find.ts` (TASK 1413) is here for the opposite reason: it is
+// not deletion, it is the Scrub SETUP page that asks what counts as a bad
+// message. It has no shipping entry point yet because the setup host that
+// walks accounts (TASK 1402) → consent (TASK 1408) → this page → ready to scan
+// (TASK 1418) does not exist in this tree. It leaves this list when that host
+// renders it, not when anything about the page itself changes.
+//
 // `autoscrub-progress.ts` stays for a narrower reason: its completion counter
 // only advances through `runNext(remove)`, the destructive step. Nothing in
 // this build can start a run, so the only ways to render it would be to call
@@ -46,6 +53,7 @@ const KNOWN_ORPHANS = [
   "scrub-provider-policy.ts",
   "scrub-provider-preloads.ts",
   "scrub-receipt-view.ts",
+  "scrub-what-to-find.ts",
 ] as const;
 
 function scrubModules(): string[] {

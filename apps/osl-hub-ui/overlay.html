@@ -8,17 +8,23 @@
   </head>
   <body>
     <main class="overlay-shell" aria-label="OSL protected Discord conversation">
+      <!-- The OSL Strip band. Empty until overlay.ts mounts the chip bar into
+           it; display:none below 102px of window height (strip.css), so inside
+           the natively sized 736x58 composer window it occupies no pixel. -->
       <div id="osl-strip" class="osl-strip-band"></div>
       <strong id="friend-label" class="sr-only">Private message</strong>
       <div id="osl-message-list" class="transcript-mount" aria-label="Messages prepared or opened in this OSL panel" hidden></div>
       <section id="write-pane" aria-label="Private message composer">
         <div class="composer-box">
+          <svg class="composer-protection-trace" aria-hidden="true" focusable="false">
+            <rect pathLength="1"></rect>
+          </svg>
           <span class="trust-mark" title="This composer belongs to OSL, not Discord" aria-label="OSL-owned composer">OSL</span>
           <div class="native-composer-backdrop" aria-hidden="true"></div>
           <!-- The seen half of the failed-send signal. #overlay-send-warning below is
                announced but lives in .composer-toolbar, which has no room (and under
-               data-native-composer-capture no display at all) in the 736x58 native
-               composer track. This banner is a child of .composer-box on
+               data-native-composer-capture no display at all) in the natively sized
+               736x58 protected window. This banner is a child of .composer-box on
                purpose: that rectangle is the only thing OSL paints, so the notice
                needs no window height that does not exist and adds no opaque pixel
                outside OSL's own composer. It is not a second live region -- the
@@ -36,7 +42,6 @@
             <span id="draft-bytes" class="draft-status" role="status" aria-live="polite" aria-atomic="true"></span>
             <button id="choose-attachment" class="composer-action" type="button" aria-label="Attach a protected file" title="Attach a protected file" disabled>+</button>
             <button id="prepare-protected" class="send-action" type="button" disabled>Send</button>
-            <small>View Once applies to protected text only; files and images are not view-once.</small>
           </div>
         </div>
       </section>
@@ -52,8 +57,10 @@
         <select id="protected-placement-mode" disabled><option value="atomic">Instant</option><option value="compatibility">Match typing · Pro</option></select>
         <select id="protected-ttl" disabled><option value="3600">1 hour</option><option value="86400">1 day</option><option value="259200">3 days</option><option value="604800">7 days</option></select>
         <span id="current-expiry">Current: checking…</span>
-        <input id="protected-view-once" type="checkbox" disabled/>
-        <input id="protected-decrypt-display" type="checkbox" disabled/>
+        <!-- TASK 0594. Ships off, because until the native state says this
+             account has Pro the honest answer is that it cannot make one. The
+             reason travels with the control; overlay.ts clears it on Pro. -->
+        <label class="overlay-view-once" data-osl-view-once-control="protected-view-once" data-osl-view-once-state="off" data-osl-view-once-off-reason="tier"><span>View once</span><input id="protected-view-once" type="checkbox" disabled/><small id="protected-view-once-reason" class="view-once-tier-note" data-osl-view-once-tier-note="1">Making one needs Pro. Opening one is free, always, on any account.</small></label>
       </div>
       <footer class="sr-only">Discord stays separate. When OSL can verify its composer, Covertext can place a local OSL decoy line there; otherwise the message travels only through OSL. AI Covertext is unavailable until a verified local model pack is installed, and no cloud AI is used. Ordinary Windows capture sees a black composer area instead of this private panel.</footer>
     </main>

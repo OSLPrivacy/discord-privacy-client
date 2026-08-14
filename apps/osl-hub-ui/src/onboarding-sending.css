@@ -1,3 +1,6 @@
+/* Colour values are the canonical OSL design tokens duplicated from
+   src/osl-tokens.ts (CSS cannot import TypeScript). osl-tokens.ts is the
+   authority; token names are noted beside each hex. */
 /* ---------------------------------------------------------------------------
    Sending behavior. 2026-08-06 restyle.
 
@@ -21,10 +24,10 @@
 }
 
 .snd-onboarding {
-  --snd-quiet-line: #4a555b;
-  --snd-warn: #e59f3b;
-  --snd-danger: #e5383b;
-  --snd-card-line: #1e2326;
+  --snd-quiet-line: #4a555b; /* colour.muted5 */
+  --snd-warn: #f0a93a; /* colour.warning */
+  --snd-danger: #e5383b; /* colour.dangerAlt */
+  --snd-card-line: #1e2326; /* colour.borderQuiet */
 
   width: 880px;
   max-width: 100%;
@@ -106,7 +109,7 @@
 .snd-bubble { fill: var(--osl-setup-card); stroke: var(--osl-setup-muted); stroke-width: 1.5; }
 .snd-key { fill: transparent; stroke: var(--osl-setup-muted); stroke-width: 1.5; }
 .snd-key-mark { stroke: var(--osl-setup-muted); stroke-width: 1.3; fill: none; stroke-linecap: round; stroke-linejoin: round; }
-.snd-cursor { fill: var(--osl-setup-text); stroke: #080c0d; stroke-width: .6; }
+.snd-cursor { fill: var(--osl-setup-text); stroke: #080c0d; /* colour.background — cursor outline against the ground */ stroke-width: .6; }
 
 /* MANUAL: nothing moves until a hand moves it. The cursor arrives, dips, and
    only then does the message go. */
@@ -227,7 +230,7 @@
 .snd-check-box { stroke: var(--osl-setup-line); fill: transparent; transition: stroke .2s, fill .2s; }
 .snd-check-mark { stroke: transparent; transition: stroke .2s; }
 .snd-risk.accepted .snd-check-box { stroke: var(--osl-setup-accent); fill: var(--osl-setup-accent); }
-.snd-risk.accepted .snd-check-mark { stroke: #04181c; }
+.snd-risk.accepted .snd-check-mark { stroke: #071013; /* checkbox.onCheck — dark ink on the cyan fill */ }
 .snd-risk:has(input:focus-visible) .snd-check-box { stroke: var(--osl-setup-accent); }
 
 /* Needs a rule of its own, not just rules for its children: the coverage gate
@@ -341,7 +344,7 @@
   font-family: inherit;
   font-size: 14px;
   font-weight: 400;
-  color: #8a969c;
+  color: #8d989e; /* colour.muted2 */
   text-align: center;
   cursor: pointer;
   transition: color .2s;

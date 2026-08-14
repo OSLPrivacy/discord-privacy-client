@@ -95,12 +95,9 @@ export async function handleMailConsent(request: Request, env: Env): Promise<Res
   if (!body) return badRequest("malformed JSON body");
   const auth = await authorizeMailRequest(env, "CONSENT", body);
   if (!auth) return unauthorized("registered signed identity required");
-  if (!isProtocolId(body.sender_user_id) || typeof body.allowed !== "boolean") {
-    return badRequest("sender_user_id or allowed invalid");
-  }
-  const sender = await env.DB.prepare("SELECT 1 ok FROM users WHERE user_id = ?")
-    .bind(body.sender_user_id).first<{ ok: number }>();
-  if (!sender) return notFound("sender identity not found");
+  if (typeof body.allowed !== "boolean") return badRequest("allowed invalid");
+  const sender = await resolveConsentSender(env, body);
+  if (sender instanceof Response) return sender;
   const receipt = await insertControlReceipt(env, auth, "consent");
   if (!receipt) return conflict("consent request replayed");
   await env.DB.prepare(
@@ -108,8 +105,13 @@ export async function handleMailConsent(request: Request, env: Env): Promise<Res
      VALUES (?, ?, ?, ?)
      ON CONFLICT(recipient_user_id, sender_user_id) DO UPDATE SET
        allowed = excluded.allowed, updated_at = excluded.updated_at`,
-  ).bind(auth.userId, body.sender_user_id, body.allowed ? 1 : 0, new Date().toISOString()).run();
-  return json({ sender_user_id: body.sender_user_id, allowed: body.allowed });
+  ).bind(auth.userId, sender.userId, body.allowed ? 1 : 0, new Date().toISOString()).run();
+  return json({
+    sender_user_id: sender.userId,
+    sender_username: sender.username,
+    sender_address: sender.address,
+    allowed: body.allowed,
+  });
 }
 
 export async function handleMailSendOsl(request: Request, env: Env): Promise<Response> {
@@ -197,11 +199,13 @@ export async function handleMailRead(request: Request, env: Env, operation: "LIS
   }
   if (operation === "ACK" || operation === "DELETE") {
     if (!isProtocolId(body.message_id)) return badRequest("message_id invalid");
-    const result = await box.ack(auth.userId, auth.requestId, body.message_id, Date.now());
-    if ("refused" in result && result.refused === "never_opened") {
-      return conflict(`message was never opened: ${result.message_id}`);
+    try {
+      return json(await box.ack(auth.userId, auth.requestId, body.message_id, Date.now()));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.startsWith("message was never opened: ")) return conflict(message);
+      throw error;
     }
-    return json(result);
   }
   const result = await box.deleteAll(auth.userId, auth.requestId, Date.now());
   await env.DB.prepare(
@@ -231,6 +235,46 @@ async function activeAddressForUser(env: Env, userId: string): Promise<AddressRo
   return await env.DB.prepare(
     "SELECT address, username, user_id, address_epoch, state FROM mail_address_epochs WHERE user_id = ? AND state = 'active'",
   ).bind(userId).first<AddressRow>();
+}
+
+async function resolveConsentSender(
+  env: Env,
+  body: Record<string, unknown>,
+): Promise<{ userId: string; username: string | null; address: string | null } | Response> {
+  const selectors = [
+    body.sender_user_id !== undefined,
+    body.sender_username !== undefined,
+    body.sender_address !== undefined,
+  ].filter(Boolean).length;
+  if (selectors !== 1) {
+    return badRequest("exactly one sender_user_id, sender_username, or sender_address required");
+  }
+  if (body.sender_user_id !== undefined) {
+    if (!isProtocolId(body.sender_user_id)) return badRequest("sender_user_id invalid");
+    const sender = await env.DB.prepare("SELECT 1 ok FROM users WHERE user_id = ?")
+      .bind(body.sender_user_id).first<{ ok: number }>();
+    return sender
+      ? { userId: body.sender_user_id, username: null, address: null }
+      : notFound("sender identity not found");
+  }
+  if (body.sender_username !== undefined) {
+    if (!validNormalizedUsername(body.sender_username)) return badRequest("sender_username invalid");
+    const sender = await env.DB.prepare(
+      "SELECT address, username, user_id FROM mail_address_epochs WHERE username = ? AND state = 'active'",
+    ).bind(body.sender_username).first<{ address: string; username: string; user_id: string }>();
+    return sender
+      ? { userId: sender.user_id, username: sender.username, address: sender.address }
+      : notFound("sender mailbox not found");
+  }
+  if (typeof body.sender_address !== "string" || body.sender_address !== body.sender_address.toLowerCase()) {
+    return badRequest("sender_address must already be normalized");
+  }
+  const sender = await env.DB.prepare(
+    "SELECT address, username, user_id FROM mail_address_epochs WHERE address = ? AND state = 'active'",
+  ).bind(body.sender_address).first<{ address: string; username: string; user_id: string }>();
+  return sender
+    ? { userId: sender.user_id, username: sender.username, address: sender.address }
+    : notFound("sender mailbox not found");
 }
 
 async function insertControlReceipt(

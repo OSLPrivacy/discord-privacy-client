@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark" />
+    <title>Service status</title>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module">
+      import "/src/styles.css";
+      const { loadNativeApps } = await import("/src/services.ts");
+      const { tileStatusPageMarkup, tileStatusPageFor, tileStatusCapabilityLabel, tileStatusCapabilityFacts } =
+        await import("/src/tile-status-page.ts");
+
+      // The catalog, not a hand-written fixture object. Outside Tauri
+      // loadNativeApps() answers with the shipped fallback catalog, which is the
+      // same list `services.test.ts` holds against claim_state.rs. Every word on
+      // screen is therefore either generated from that catalog or comes out of
+      // the two closed tables in tile-status-page.ts.
+      const catalog = await loadNativeApps();
+      const find = (tileId) => {
+        const app = catalog.find((candidate) => candidate.id === tileId);
+        if (!app) throw new Error(`no connected app called ${tileId}`);
+        return app;
+      };
+
+      // TASK 0858 renders the real page, then — for the negative control only —
+      // renders a THROWAWAY copy of that same markup with one named control
+      // removed. The copy is never written to disk and never replaces the real
+      // page; it exists so the check can be shown to go red when a control the
+      // finish line names is missing.
+      window.task0858Render = (tileId) => {
+        const app = find(tileId);
+        document.querySelector("#app").innerHTML = tileStatusPageMarkup(app);
+        document.documentElement.dataset.task0858 = "ready";
+        document.documentElement.dataset.task0858Tile = tileId;
+        document.documentElement.dataset.task0858Copy = "none";
+      };
+
+      window.task0858RenderWithoutControl = (tileId, selector) => {
+        const app = find(tileId);
+        const holder = document.createElement("div");
+        holder.innerHTML = tileStatusPageMarkup(app);
+        const doomed = holder.querySelector(selector);
+        if (!doomed) throw new Error(`the page has no control matching ${selector}`);
+        doomed.remove();
+        document.querySelector("#app").innerHTML = holder.innerHTML;
+        document.documentElement.dataset.task0858 = "ready";
+        document.documentElement.dataset.task0858Tile = tileId;
+        document.documentElement.dataset.task0858Copy = selector;
+      };
+
+      // A second kind of throwaway copy: the control is still in the markup and
+      // still in the screen tree, but nothing is drawn where it stands. This is
+      // the copy that proves the IMAGE half of the check can go red, which a
+      // removed element cannot — a removed element fails on being absent long
+      // before any pixel is read.
+      window.task0858RenderWithControlHidden = (tileId, selector) => {
+        const app = find(tileId);
+        document.querySelector("#app").innerHTML = tileStatusPageMarkup(app);
+        const hidden = document.querySelector(`#app ${selector}`);
+        if (!hidden) throw new Error(`the page has no control matching ${selector}`);
+        hidden.style.visibility = "hidden";
+        document.documentElement.dataset.task0858 = "ready";
+        document.documentElement.dataset.task0858Tile = tileId;
+        document.documentElement.dataset.task0858Copy = `hidden:${selector}`;
+      };
+
+      window.task0858Catalog = () => catalog.map((app) => ({
+        id: app.id,
+        capabilityLabel: tileStatusCapabilityLabel(tileStatusCapabilityFacts(app)),
+        page: tileStatusPageFor(app),
+      }));
+
+      window.task0858Render("telegram");
+    </script>
+  </body>
+</html>

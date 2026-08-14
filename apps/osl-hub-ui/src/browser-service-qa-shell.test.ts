@@ -110,7 +110,7 @@ describe("browser service QA shell", () => {
       }),
     });
 
-    const state = await createBrowserServiceQaShell(adapter).open("tuta");
+    const state = await createBrowserServiceQaShell(adapter).open("proton");
 
     expect(state).toMatchObject({ phase: "failed", browserId: null, error: "hostRejected" });
   });
@@ -127,7 +127,7 @@ describe("browser service QA shell", () => {
     shell.subscribe((state) => transitions.push(state.phase));
 
     const opening = shell.open("gmail");
-    const overlapping = await shell.open("tuta");
+    const overlapping = await shell.open("proton");
     expect(overlapping).toMatchObject({ phase: "checking", serviceId: "gmail", error: "operationInProgress" });
 
     resolveStatus?.(firefoxStatus);

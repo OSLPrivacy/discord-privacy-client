@@ -1,3 +1,6 @@
+/* Colour values are the canonical OSL design tokens duplicated from
+   src/osl-tokens.ts (CSS cannot import TypeScript). osl-tokens.ts is the
+   authority; token names are noted beside each hex. */
 /* ---------------------------------------------------------------------------
    Choose how OSL connects. 2026-08-06 restyle.
 
@@ -14,21 +17,21 @@
   margin: 0;
   padding: 0;
   border: 0;
-  background: #080c0d;
+  background: #080c0d; /* colour.background */
   display: grid;
   place-items: center;
   align-content: center;
 }
 
 .tor-onboarding {
-  --tor-bg: #080c0d;
-  --tor-card: #0d1114;
-  --tor-line: #2a343a;
-  --tor-text: #f4f7f8;
-  --tor-second: #b8c2c7;
-  --tor-muted: #97a3a9;
-  --tor-caption: #66727a;
-  --tor-accent: #2ac0f0;
+  --tor-bg: #080c0d; /* colour.background */
+  --tor-card: #0a0e10; /* colour.surface */
+  --tor-line: #2a343a; /* colour.border */
+  --tor-text: #f4f7f8; /* colour.text */
+  --tor-second: #97a3a9; /* colour.muted1 */
+  --tor-muted: #8d989e; /* colour.muted2 */
+  --tor-caption: #66727a; /* colour.muted3 */
+  --tor-accent: #2ac0f0; /* colour.accent */
 
   width: 700px;
   max-width: 100%;
@@ -161,22 +164,27 @@
   text-align: center;
 }
 
-.tor-bridge-control {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  min-height: 28px;
+.tor-mullvad-status {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: baseline;
+  gap: 12px;
+  margin-top: 14px;
+  padding: 12px 14px;
+  border: 1px solid var(--tor-line);
+  background: var(--tor-card);
   color: var(--tor-second);
-  font-family: "Source Sans 3 Variable", "Source Sans 3", var(--font-ui);
+  text-align: left;
+}
+
+.tor-mullvad-status strong {
+  color: var(--tor-text);
   font-size: 14px;
 }
 
-.tor-bridge-control input {
-  width: 16px;
-  height: 16px;
-  margin: 0;
-  accent-color: var(--tor-accent);
+.tor-mullvad-status span {
+  font-family: "Source Sans 3 Variable", "Source Sans 3", var(--font-ui);
+  font-size: 13px;
 }
 
 /* Continue and Back stack. The global Back is prepended into this row by
@@ -235,6 +243,13 @@
   margin: 24px 0 0;
   font-variant-numeric: tabular-nums;
   color: var(--tor-second, #b8c2c7);
+}
+
+.tor-first-run-scope {
+  margin: 16px auto 0;
+  max-width: 48ch;
+  color: var(--tor-second, #b8c2c7);
+  line-height: 1.5;
 }
 
 .tor-first-run-actions {

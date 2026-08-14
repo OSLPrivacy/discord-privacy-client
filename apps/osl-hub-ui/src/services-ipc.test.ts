@@ -52,7 +52,7 @@ import {
 
 const discordApp: HomeAppCatalogEntry = {
   id: "discord", displayName: "Discord", serviceId: "discord", provider: null,
-  visibility: "launch", section: "social", launchState: "available", linked: false,
+  visibility: "launch", section: "social", launchState: "available", unavailableReason: null, generatedLabel: "Ready", linked: false,
   accountCount: 0, setupEligible: true,
 };
 
@@ -91,7 +91,7 @@ describe("embedded service IPC", () => {
   it("resumes one exact configured profile and never accepts a path-like id", async () => {
     const services = [{
       id: "discord", displayName: "Discord", sidebarGlyph: "DC", sidebarOrder: 1,
-      category: "consumer", launchState: "available", supportsNativePreview: true,
+      category: "consumer", launchState: "available", generatedLabel: "Ready", supportsNativePreview: true,
       supportsProtectedPreview: false,
       accounts: [{ id: "acct-a", label: "A", displayHandle: "Sign in", state: "notLinked", provider: null }],
     }] as LinkedService[];
@@ -104,7 +104,7 @@ describe("embedded service IPC", () => {
   it("opens the exact locally selected profile when more than one exists", async () => {
     const services = [{
       id: "discord", displayName: "Discord", sidebarGlyph: "DC", sidebarOrder: 1,
-      category: "consumer", launchState: "available", supportsNativePreview: true,
+      category: "consumer", launchState: "available", generatedLabel: "Ready", supportsNativePreview: true,
       supportsProtectedPreview: false,
       accounts: [
         { id: "acct-a", label: "Personal", displayHandle: "Sign in", state: "notLinked", provider: null },
@@ -274,10 +274,16 @@ describe("native window host IPC", () => {
   });
 
   it("uses argument-free fixed Mullvad commands", async () => {
+    const installResult = {
+      started: true,
+      version: "2026.3",
+      installerSha256: "e335507b948083100b54f8000ef5bb733e3ee959f8df6a573e9404c506cb139a",
+      installerSource: "vendor",
+    };
     mocks.invoke
       .mockResolvedValueOnce({ availability: "installed" })
       .mockResolvedValueOnce({ started: true })
-      .mockResolvedValueOnce({ started: true });
+      .mockResolvedValueOnce(installResult);
     await expect(loadMullvadStatus()).resolves.toEqual({
       availability: "installed",
       integrationState: "availableToOpen",
@@ -285,7 +291,7 @@ describe("native window host IPC", () => {
       connectionState: "notObserved",
     });
     await expect(openMullvad()).resolves.toEqual({ started: true });
-    await expect(installMullvad()).resolves.toEqual({ started: true });
+    await expect(installMullvad()).resolves.toEqual(installResult);
     expect(mocks.invoke.mock.calls).toEqual([
       ["get_mullvad_status"],
       ["open_mullvad"],
@@ -489,15 +495,15 @@ describe("browser-owned import IPC", () => {
     mocks.invoke
       .mockResolvedValueOnce({ availability: "installed" })
       .mockResolvedValueOnce({ started: true, packageId: "Mozilla.Firefox" })
-      .mockResolvedValueOnce({ serviceId: "tuta", started: true });
+      .mockResolvedValueOnce({ serviceId: "proton", started: true });
 
     await expect(loadFirefoxStatus()).resolves.toEqual({ availability: "installed" });
     await expect(installFirefox()).resolves.toBeUndefined();
-    await expect(launchFirefoxService("tuta")).resolves.toBeUndefined();
+    await expect(launchFirefoxService("proton")).resolves.toBeUndefined();
     expect(mocks.invoke.mock.calls).toEqual([
       ["get_firefox_status"],
       ["install_firefox"],
-      ["launch_firefox_service", { serviceId: "tuta" }],
+      ["launch_firefox_service", { serviceId: "proton" }],
     ]);
   });
 

@@ -41,6 +41,7 @@ describe("D111 forward-secrecy onboarding choice", () => {
     // someone steals your phone", which describes a product that does not exist.
     const markup = onboardingForwardSecrecyMarkup(initialForwardSecrecyOnboardingState());
     expect(markup).not.toMatch(/phone/iu);
+    expect(markup).toContain("Forward secrecy");
     expect(markup).toContain("If someone gets into this computer");
   });
 

@@ -1,0 +1,227 @@
+{
+  "recordedFrom": "cargo run -p osl-hub --no-default-features --features core,task-1256-only --example task_1450_marked_deletion_bridge",
+  "command": "run_pro_marked_deletion_command (apps/osl-hub/src/pro_marked_deletion.rs, TASK 1449)",
+  "fixtureMessages": [
+    {
+      "accountId": "discord-account-alpha-1444",
+      "messageLocator": "discord-account-alpha-1444 0",
+      "decision": "markedForDeletion",
+      "reviewed": true
+    },
+    {
+      "accountId": "discord-account-alpha-1444",
+      "messageLocator": "discord-account-alpha-1444 1",
+      "decision": "kept",
+      "reviewed": true
+    },
+    {
+      "accountId": "telegram-account-beta-1444",
+      "messageLocator": "telegram-account-beta-1444 0",
+      "decision": "markedForDeletion",
+      "reviewed": true
+    },
+    {
+      "accountId": "telegram-account-beta-1444",
+      "messageLocator": "telegram-account-beta-1444 1",
+      "decision": "pending",
+      "reviewed": false
+    }
+  ],
+  "exchanges": [
+    {
+      "command": "count",
+      "request": {
+        "plan": "free",
+        "messages": [
+          {
+            "accountId": "discord-account-alpha-1444",
+            "messageLocator": "discord-account-alpha-1444 0",
+            "decision": "markedForDeletion",
+            "reviewed": true
+          },
+          {
+            "accountId": "discord-account-alpha-1444",
+            "messageLocator": "discord-account-alpha-1444 1",
+            "decision": "kept",
+            "reviewed": true
+          },
+          {
+            "accountId": "telegram-account-beta-1444",
+            "messageLocator": "telegram-account-beta-1444 0",
+            "decision": "markedForDeletion",
+            "reviewed": true
+          },
+          {
+            "accountId": "telegram-account-beta-1444",
+            "messageLocator": "telegram-account-beta-1444 1",
+            "decision": "pending",
+            "reviewed": false
+          }
+        ]
+      },
+      "reply": {
+        "command": "count",
+        "error": "Deleting marked messages is a Pro feature. Your plan is Free, so nothing was deleted.",
+        "errorCode": "pro_required",
+        "ok": false
+      }
+    },
+    {
+      "command": "count",
+      "request": {
+        "plan": "pro",
+        "messages": [
+          {
+            "accountId": "discord-account-alpha-1444",
+            "messageLocator": "discord-account-alpha-1444 0",
+            "decision": "markedForDeletion",
+            "reviewed": true
+          },
+          {
+            "accountId": "discord-account-alpha-1444",
+            "messageLocator": "discord-account-alpha-1444 1",
+            "decision": "kept",
+            "reviewed": true
+          },
+          {
+            "accountId": "telegram-account-beta-1444",
+            "messageLocator": "telegram-account-beta-1444 0",
+            "decision": "markedForDeletion",
+            "reviewed": true
+          },
+          {
+            "accountId": "telegram-account-beta-1444",
+            "messageLocator": "telegram-account-beta-1444 1",
+            "decision": "pending",
+            "reviewed": false
+          }
+        ]
+      },
+      "reply": {
+        "command": "count",
+        "ok": true,
+        "result": {
+          "accountCounts": [
+            {
+              "accountId": "discord-account-alpha-1444",
+              "markedCount": 1
+            },
+            {
+              "accountId": "telegram-account-beta-1444",
+              "markedCount": 1
+            }
+          ],
+          "confirmationPrompt": "Delete 2 marked messages? This cannot be undone.",
+          "confirmationRequired": true,
+          "confirmationToken": "fc4a99a2458bf0fd123b562330fb301cb42765cf86567227dc36ee6a00993242",
+          "keptCount": 1,
+          "markedCount": 2,
+          "messages": [
+            {
+              "accountId": "discord-account-alpha-1444",
+              "messageLocator": "discord-account-alpha-1444 0"
+            },
+            {
+              "accountId": "telegram-account-beta-1444",
+              "messageLocator": "telegram-account-beta-1444 0"
+            }
+          ],
+          "pendingCount": 1
+        }
+      }
+    },
+    {
+      "command": "delete",
+      "request": {
+        "plan": "free",
+        "messages": [
+          {
+            "accountId": "discord-account-alpha-1444",
+            "messageLocator": "discord-account-alpha-1444 0",
+            "decision": "markedForDeletion",
+            "reviewed": true
+          },
+          {
+            "accountId": "discord-account-alpha-1444",
+            "messageLocator": "discord-account-alpha-1444 1",
+            "decision": "kept",
+            "reviewed": true
+          },
+          {
+            "accountId": "telegram-account-beta-1444",
+            "messageLocator": "telegram-account-beta-1444 0",
+            "decision": "markedForDeletion",
+            "reviewed": true
+          },
+          {
+            "accountId": "telegram-account-beta-1444",
+            "messageLocator": "telegram-account-beta-1444 1",
+            "decision": "pending",
+            "reviewed": false
+          }
+        ],
+        "confirmationToken": "fc4a99a2458bf0fd123b562330fb301cb42765cf86567227dc36ee6a00993242",
+        "confirmed": true
+      },
+      "reply": {
+        "command": "delete",
+        "error": "Deleting marked messages is a Pro feature. Your plan is Free, so nothing was deleted.",
+        "errorCode": "pro_required",
+        "ok": false
+      }
+    },
+    {
+      "command": "delete",
+      "request": {
+        "plan": "pro",
+        "messages": [
+          {
+            "accountId": "discord-account-alpha-1444",
+            "messageLocator": "discord-account-alpha-1444 0",
+            "decision": "markedForDeletion",
+            "reviewed": true
+          },
+          {
+            "accountId": "discord-account-alpha-1444",
+            "messageLocator": "discord-account-alpha-1444 1",
+            "decision": "kept",
+            "reviewed": true
+          },
+          {
+            "accountId": "telegram-account-beta-1444",
+            "messageLocator": "telegram-account-beta-1444 0",
+            "decision": "markedForDeletion",
+            "reviewed": true
+          },
+          {
+            "accountId": "telegram-account-beta-1444",
+            "messageLocator": "telegram-account-beta-1444 1",
+            "decision": "pending",
+            "reviewed": false
+          }
+        ],
+        "confirmationToken": "fc4a99a2458bf0fd123b562330fb301cb42765cf86567227dc36ee6a00993242",
+        "confirmed": true
+      },
+      "reply": {
+        "command": "delete",
+        "ok": true,
+        "result": {
+          "confirmationToken": "fc4a99a2458bf0fd123b562330fb301cb42765cf86567227dc36ee6a00993242",
+          "deleted": [
+            {
+              "accountId": "discord-account-alpha-1444",
+              "messageLocator": "discord-account-alpha-1444 0"
+            },
+            {
+              "accountId": "telegram-account-beta-1444",
+              "messageLocator": "telegram-account-beta-1444 0"
+            }
+          ],
+          "deletedCount": 2,
+          "keptUntouchedCount": 2
+        }
+      }
+    }
+  ]
+}

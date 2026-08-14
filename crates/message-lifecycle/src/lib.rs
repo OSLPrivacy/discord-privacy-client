@@ -10,6 +10,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
+/// The Pro marked-message deletion executor for mail accounts: it deletes a
+/// reviewed message the requester marked, and refuses an unmarked one.
+pub mod marked_mail_deletion;
 pub mod monotonic;
 
 /// Bumped to v2 when the manifest began binding the relative open clock as

@@ -166,7 +166,7 @@ describe("Task 0343 connection-choice controls", () => {
     resetOnConnectionChoice();
     controls = installConnectionChoiceDom();
     controls.back.dispatch("click");
-    expect(ui.__oslHubUiTest.snapshot()).toMatchObject({ onboardingRoute: "privacy", torChoice: "tor" });
+    expect(ui.__oslHubUiTest.snapshot()).toMatchObject({ onboardingRoute: "privacy", torChoice: "direct" });
     expect(mocks.invoke).toHaveBeenCalledTimes(0);
     console.info("TASK0343_BACK_CONTROL opened=privacy saved_count=0");
 

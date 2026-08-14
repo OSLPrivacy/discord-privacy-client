@@ -28,9 +28,7 @@ use crate::native_discord_adapter::{
 };
 use crate::scrub_erasure::{self, ComposedErasureRequest, ErasureRequestInput};
 use crate::service_host::ActiveServiceHost;
-use serde::Deserialize;
-#[cfg(feature = "discord-qa-shell")]
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::sync::Mutex;
 
@@ -164,6 +162,7 @@ where
 struct DiscordGuidedDeletionPlanProducer {
     scan: Option<guided_deletion::DeletionScan>,
     preview: Option<guided_deletion::DeletionPreview>,
+    saved_state: Option<GuidedDeletionSavedStateKind>,
 }
 
 /// Native-held step-4 state for one Discord guided-deletion route.
@@ -188,6 +187,28 @@ pub struct GuidedDeletionRunAuthorityInput {
     pub mode: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GuidedDeletionSavedStateKind {
+    PauseAfterCurrentScreen,
+    StopAfterCurrentSafeStep,
+}
+
+impl GuidedDeletionSavedStateKind {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::PauseAfterCurrentScreen => "pause_after_current_screen",
+            Self::StopAfterCurrentSafeStep => "stop_after_current_safe_step",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GuidedDeletionSavedStateDto {
+    pub saved_state: &'static str,
+    pub match_count: usize,
+}
+
 impl DiscordGuidedDeletionPlanState {
     pub fn record_scan(
         &self,
@@ -199,7 +220,40 @@ impl DiscordGuidedDeletionPlanState {
             .map_err(|_| "Discord guided-deletion plan state is unavailable".to_owned())?;
         producer.scan = Some(scan.clone());
         producer.preview = None;
+        producer.saved_state = None;
         Ok(scan)
+    }
+
+    pub fn pause_after_current_screen(&self) -> Result<GuidedDeletionSavedStateDto, String> {
+        self.save_state(GuidedDeletionSavedStateKind::PauseAfterCurrentScreen)
+    }
+
+    pub fn stop_after_current_safe_step(&self) -> Result<GuidedDeletionSavedStateDto, String> {
+        self.save_state(GuidedDeletionSavedStateKind::StopAfterCurrentSafeStep)
+    }
+
+    fn save_state(
+        &self,
+        saved_state: GuidedDeletionSavedStateKind,
+    ) -> Result<GuidedDeletionSavedStateDto, String> {
+        let mut producer = self
+            .inner
+            .lock()
+            .map_err(|_| "Discord guided-deletion plan state is unavailable".to_owned())?;
+        let match_count = producer
+            .scan
+            .as_ref()
+            .ok_or_else(|| "Run and review a Discord scan before saving run state".to_owned())?
+            .candidates
+            .len();
+        producer.saved_state = Some(saved_state);
+        let saved_state = producer
+            .saved_state
+            .ok_or_else(|| "Discord guided-deletion saved state was not retained".to_owned())?;
+        Ok(GuidedDeletionSavedStateDto {
+            saved_state: saved_state.label(),
+            match_count,
+        })
     }
 
     pub fn build_preview(
@@ -247,6 +301,30 @@ impl DiscordGuidedDeletionPlanState {
         .map_err(|refusal| refusal.reason().to_owned())?;
         producer.preview = None;
         Ok(confirmed)
+    }
+}
+
+impl crate::shared_conversation_scroll::SharedConversationScrollGate
+    for DiscordGuidedDeletionPlanState
+{
+    fn state_between_pages(
+        &self,
+    ) -> Result<crate::shared_conversation_scroll::SharedConversationScrollGateState, String> {
+        let producer = self
+            .inner
+            .lock()
+            .map_err(|_| "Discord guided-deletion plan state is unavailable".to_owned())?;
+        Ok(match producer.saved_state {
+            Some(GuidedDeletionSavedStateKind::PauseAfterCurrentScreen) => {
+                crate::shared_conversation_scroll::SharedConversationScrollGateState::PauseAfterCurrentPage
+            }
+            Some(GuidedDeletionSavedStateKind::StopAfterCurrentSafeStep) => {
+                crate::shared_conversation_scroll::SharedConversationScrollGateState::StopAfterCurrentPage
+            }
+            None => {
+                crate::shared_conversation_scroll::SharedConversationScrollGateState::Running
+            }
+        })
     }
 }
 
@@ -588,9 +666,12 @@ pub fn service_kind_id(kind: ServiceKind) -> &'static str {
     match kind {
         ServiceKind::Discord => "discord",
         ServiceKind::Telegram => "telegram",
+        ServiceKind::Instagram => "instagram",
         ServiceKind::WhatsApp => "whatsapp",
+        ServiceKind::Messenger => "messenger",
         ServiceKind::Email => "email",
         ServiceKind::Signal => "signal",
+        ServiceKind::X => "x",
     }
 }
 
@@ -604,18 +685,23 @@ macro_rules! hub_tauri_commands {
             get_onboarding_preferences,
             ai_carrier_status,
             set_ai_carrier_preview_enabled,
-            get_discovery_replies_switch,
-            set_discovery_replies_switch,
+            set_ai_covertext_selected,
             build_integrity_status,
-            resolve_english_catalogue_string,
             list_hub_app_notifications,
             set_hub_notifications_enabled,
             get_hub_chat_approval_suggestion_choice,
             set_hub_chat_approval_suggestion_choice,
+            reset_every_setting,
             answer_hub_chat_approval_suggestion,
+            reset_hub_setting_group,
             set_hub_screenshot_protection,
             save_onboarding_preferences,
+            save_burn_review_state,
+            get_burn_review_state,
+            back_burn_review,
             set_tor_preference,
+            get_follow_active_app_choice,
+            set_follow_active_app_choice,
             scan_local_privacy,
             open_hosted_session_scan,
             request_hosted_session_scan,
@@ -627,11 +713,16 @@ macro_rules! hub_tauri_commands {
             get_scrub_index_status,
             cancel_scrub_index,
             list_linked_services,
+            list_detected_accounts,
             get_core_readiness,
             list_core_features,
             get_hub_license_state,
             osl_mail_get_status,
             osl_mail_provision,
+            osl_mail_agree_to_sender,
+            osl_mail_list_threads,
+            osl_mail_retrieve_thread,
+            osl_mail_acknowledge_retrieval,
             osl_mail_send,
             osl_mail_burn,
             get_mass_cleanup_capabilities,
@@ -643,6 +734,7 @@ macro_rules! hub_tauri_commands {
             compose_scrub_erasure_request,
             validate_hub_activation_code,
             clear_hub_activation_code,
+            get_realtime_wakeup_status,
             unlock_hub_password_gate,
             create_hub_osl_identity,
             import_hub_osl_identity_phrase,
@@ -650,14 +742,10 @@ macro_rules! hub_tauri_commands {
             reset_hub_main_password_after_recovery,
             view_hub_recovery_phrase,
             check_hub_password_reset_phrase,
-            pick_hub_recovery_kit_file,
-            derive_hub_recovery_kit_identity,
+            check_hub_recovery_word_retype,
             get_hub_recovery_kit_unsaved,
             set_hub_recovery_kit_unsaved,
-            get_coach_tip_state,
-            save_coach_tip_state,
             lock_hub_session,
-            export_hub_account_data,
             emit_active_session_reset,
             get_hub_password_role_status,
             set_hub_stealth_password,
@@ -694,6 +782,8 @@ macro_rules! hub_tauri_commands {
             resize_default_browser_companion,
             focus_default_browser_companion,
             detach_default_browser_companion,
+            agree_messaging_service_risk,
+            read_messaging_service_risk_agreement,
             host_native_app_window,
             native_app_takeover_requires_consent,
             discord_marker_available,
@@ -739,6 +829,7 @@ macro_rules! hub_tauri_commands {
             burn_native_discord_overlay_chat,
             set_native_discord_overlay_security,
             set_native_discord_covertext_enabled,
+            select_native_discord_covertext_writer,
             host_mullvad_window,
             resize_mullvad_window,
             focus_mullvad_window,
@@ -770,9 +861,6 @@ macro_rules! hub_tauri_commands {
             copy_hub_friend_invite,
             add_hub_friend,
             create_hub_private_contact_link,
-            get_hub_private_contact_link_status,
-            revoke_hub_private_contact_link,
-            add_hub_private_contact_link,
             claim_hub_username,
             check_hub_public_name,
             cancel_hub_public_name_check,
@@ -780,6 +868,10 @@ macro_rules! hub_tauri_commands {
             get_hub_username_status,
             add_hub_friend_by_username,
             get_osl_profile,
+            set_owner_profile_picture,
+            read_owner_profile_picture,
+            read_owner_profile_picture_for_friend,
+            clear_owner_profile_picture,
             get_osl_chat_local_state_key,
             save_osl_profile,
             verify_hub_friend_safety_number,
@@ -836,6 +928,12 @@ mod discord_guided_deletion_plan_producer_tests {
     use crate::native_discord_adapter::guided_deletion::{
         DeletionPreview, DeletionScan, RowShape, ScannedRow, WalkCompleteness,
     };
+    use crate::shared_conversation_scroll::{
+        read_shared_conversation_messages_one_page_at_a_time_with_gate,
+        SharedConversationScrollGateState, SharedConversationScrollStop,
+        SharedConversationScrollablePlace, SharedPlaceMessage,
+    };
+    use std::cell::Cell;
 
     fn row(scan_ordinal: usize) -> ScannedRow {
         ScannedRow {
@@ -869,6 +967,58 @@ mod discord_guided_deletion_plan_producer_tests {
             generation: preview.generation,
             plan_digest: preview.plan_digest.clone(),
             mode: "attended_delete_run_v1".to_owned(),
+        }
+    }
+
+    struct StopDuringFirstPagePlace<'a> {
+        state: &'a DiscordGuidedDeletionPlanState,
+        messages: Vec<SharedPlaceMessage>,
+        page_size: usize,
+        current_page: usize,
+        stop_requested: Cell<bool>,
+        scrolls: usize,
+    }
+
+    impl<'a> StopDuringFirstPagePlace<'a> {
+        fn new(state: &'a DiscordGuidedDeletionPlanState) -> Self {
+            Self {
+                state,
+                messages: (1..=120)
+                    .map(|index| {
+                        SharedPlaceMessage::new(
+                            format!("task-3005-message-{index:03}"),
+                            format!("task 3005 message {index:03}"),
+                        )
+                    })
+                    .collect(),
+                page_size: 40,
+                current_page: 0,
+                stop_requested: Cell::new(false),
+                scrolls: 0,
+            }
+        }
+    }
+
+    impl SharedConversationScrollablePlace for StopDuringFirstPagePlace<'_> {
+        fn read_current_screen(&self) -> Result<Vec<SharedPlaceMessage>, String> {
+            if !self.stop_requested.replace(true) {
+                self.state.stop_after_current_safe_step()?;
+            }
+            let start = self.current_page.saturating_mul(self.page_size);
+            let end = start
+                .saturating_add(self.page_size)
+                .min(self.messages.len());
+            Ok(self.messages[start..end].to_vec())
+        }
+
+        fn scroll_one_screen(&mut self) -> Result<bool, String> {
+            let next_start = (self.current_page + 1).saturating_mul(self.page_size);
+            if next_start >= self.messages.len() {
+                return Ok(false);
+            }
+            self.current_page += 1;
+            self.scrolls += 1;
+            Ok(true)
         }
     }
 
@@ -941,6 +1091,95 @@ mod discord_guided_deletion_plan_producer_tests {
             Err("Preview the exact Discord deletion plan before confirming it".to_owned()),
             "confirmation consumes the preview; a retry must preview and confirm again"
         );
+    }
+
+    #[test]
+    fn task_1432_direct_pause_and_stop_commands_return_saved_state_and_match_count() {
+        let state = DiscordGuidedDeletionPlanState::default();
+        state
+            .record_scan(scan(vec![row(1), row(2), row(3)]))
+            .expect("scan is stored");
+
+        let pause = state
+            .pause_after_current_screen()
+            .expect("pause command saves current-screen state");
+        assert_eq!(pause.saved_state, "pause_after_current_screen");
+        assert_eq!(pause.match_count, 3);
+        let pause_preview = state
+            .build_preview(&[1], true)
+            .expect("pause retains found scan results for preview");
+        assert_eq!(pause_preview.rows.len(), 1);
+        println!(
+            "TASK1432 direct_pause_command=pause_after_current_screen saved_state={} match_count={} retained_preview_rows={}",
+            pause.saved_state,
+            pause.match_count,
+            pause_preview.rows.len()
+        );
+
+        let stop = state
+            .stop_after_current_safe_step()
+            .expect("stop command saves safe-step state");
+        assert_eq!(stop.saved_state, "stop_after_current_safe_step");
+        assert_eq!(stop.match_count, 3);
+        let stop_preview = state
+            .build_preview(&[2, 3], true)
+            .expect("stop retains found scan results for preview");
+        assert_eq!(stop_preview.rows.len(), 2);
+        println!(
+            "TASK1432 direct_stop_command=stop_after_current_safe_step saved_state={} match_count={} retained_preview_rows={}",
+            stop.saved_state,
+            stop.match_count,
+            stop_preview.rows.len()
+        );
+    }
+
+    #[test]
+    fn task_3005_shared_reader_stop_asked_during_run_ends_inside_one_page_and_logs_page() {
+        let state = DiscordGuidedDeletionPlanState::default();
+        state
+            .record_scan(scan(vec![row(1), row(2), row(3)]))
+            .expect("scan is stored");
+        let mut place = StopDuringFirstPagePlace::new(&state);
+
+        let read =
+            read_shared_conversation_messages_one_page_at_a_time_with_gate(&mut place, 10, &state)
+                .expect("shared reader should honor the existing stop state");
+
+        println!(
+            "TASK3005_SHARED_READER=read_shared_conversation_messages_one_page_at_a_time_with_gate"
+        );
+        println!("TASK3005_STOP_SOURCE=stop_after_current_safe_step");
+        println!("TASK3005_STOP_ASKED_DURING_RUN=true");
+        println!("TASK3005_STOP_REASON={:?}", read.stop_reason);
+        println!("TASK3005_PAGE_COUNT={}", read.page_count());
+        println!("TASK3005_MESSAGE_COUNT={}", read.message_count());
+        println!(
+            "TASK3005_STOPPED_ON_PAGE_NUMBER={}",
+            read.stopped_on_page_number.unwrap_or_default()
+        );
+        println!(
+            "TASK3005_LOG_RECORDED_STOP_PAGE={}",
+            read.page_log[0].page_number
+        );
+        println!(
+            "TASK3005_GATE_AFTER_PAGE={:?}",
+            read.page_log[0].gate_after_page
+        );
+        println!("TASK3005_SCROLLS_AFTER_STOP={}", place.scrolls);
+
+        assert_eq!(
+            read.stop_reason,
+            SharedConversationScrollStop::StopRequested
+        );
+        assert_eq!(read.page_count(), 1);
+        assert_eq!(read.message_count(), 40);
+        assert_eq!(read.stopped_on_page_number, Some(1));
+        assert_eq!(read.page_log[0].page_number, 1);
+        assert_eq!(
+            read.page_log[0].gate_after_page,
+            SharedConversationScrollGateState::StopAfterCurrentPage
+        );
+        assert_eq!(place.scrolls, 0);
     }
 }
 
@@ -1769,6 +2008,26 @@ mod tauri_registration_surface_tests {
             &["reset_hub_main_password_after_recovery"],
         );
     }
+    /// TASK 0311 — choosing no public name must reach the one-use private-link
+    /// primitive through the shipping webview. Handler registration alone is
+    /// insufficient: Tauri rejects the call unless both ACL surfaces agree.
+    #[test]
+    fn create_hub_private_contact_link_is_registered_and_granted() {
+        let (handlers, permissions, capability) = registration_inputs();
+        assert_registered_and_granted(
+            &handlers,
+            &permissions,
+            &capability,
+            "create_hub_private_contact_link",
+        );
+        assert_each_registration_surface_is_required(
+            &handlers,
+            &permissions,
+            &capability,
+            &["create_hub_private_contact_link"],
+        );
+    }
+
     /// D-108 — the missing construction site for the UI's `SecureLocalStore`.
     ///
     /// The store is implemented and unit-tested in `secure-local-store.ts` and
@@ -1815,17 +2074,6 @@ mod tauri_registration_surface_tests {
     }
 
     #[test]
-    fn coach_tip_state_commands_are_registered_and_granted() {
-        let (handlers, permissions, capability) = registration_inputs();
-        assert_each_registration_surface_is_required(
-            &handlers,
-            &permissions,
-            &capability,
-            &["get_coach_tip_state", "save_coach_tip_state"],
-        );
-    }
-
-    #[test]
     fn recovery_kit_status_commands_are_registered_and_granted() {
         let (handlers, permissions, capability) = registration_inputs();
         assert_each_registration_surface_is_required(
@@ -1836,6 +2084,23 @@ mod tauri_registration_surface_tests {
                 "get_hub_recovery_kit_unsaved",
                 "set_hub_recovery_kit_unsaved",
             ],
+        );
+    }
+
+    #[test]
+    fn recovery_word_retype_check_is_registered_and_granted() {
+        let (handlers, permissions, capability) = registration_inputs();
+        assert_registered_and_granted(
+            &handlers,
+            &permissions,
+            &capability,
+            "check_hub_recovery_word_retype",
+        );
+        assert_each_registration_surface_is_required(
+            &handlers,
+            &permissions,
+            &capability,
+            &["check_hub_recovery_word_retype"],
         );
     }
 

@@ -99,6 +99,9 @@ const SERVICE_NAMES: Readonly<Record<ServiceId, string>> = Object.freeze({
   email: "Email",
   signal: "Signal",
   whatsapp: "WhatsApp",
+  x: "X",
+  instagram: "Instagram",
+  messenger: "Messenger",
 });
 
 /** The exact sentence this screen exists to say. */

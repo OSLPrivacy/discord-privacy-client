@@ -1,0 +1,3 @@
+name = "osl-task-0580-cleanup-test"
+main = "task-0580-worker.ts"
+compatibility_date = "2026-05-13"

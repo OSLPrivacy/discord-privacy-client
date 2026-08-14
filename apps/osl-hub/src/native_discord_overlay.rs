@@ -407,6 +407,16 @@ impl Drop for CarrierPlacementGuard<'_> {
     }
 }
 
+impl CarrierPlacementGuard<'_> {
+    /// Re-check the overlay's exact session at the last safe point before a
+    /// carrier writer can create a marked placement.  If Discord closed after
+    /// the overlay opened, its guard has cleared this epoch and the writer must
+    /// leave both the application's text and the clipboard unmarked.
+    pub(crate) fn allow_marked_placement(&self, epoch: u64) -> Result<(), String> {
+        osl_privacy_hub::placement_close::allow_marked_placement(self.state.is_ready(epoch))
+    }
+}
+
 impl Default for OverlaySessionState {
     fn default() -> Self {
         Self {
@@ -4206,11 +4216,20 @@ fn host_rect_translation(measured_against: [i32; 4], current: [i32; 4]) -> Optio
 /// Apply a host translation to a placement rectangle. Size never changes: a
 /// translation is the whole of what a move does.
 fn translated_overlay_rect(rect: OverlayRect, (dx, dy): (i32, i32)) -> Option<OverlayRect> {
+    let moved = crate::overlay_follow::translate_attached_overlay(
+        crate::overlay_follow::AttachedOverlayRect {
+            x: rect.x,
+            y: rect.y,
+            width: rect.width,
+            height: rect.height,
+        },
+        (dx, dy),
+    )?;
     Some(OverlayRect {
-        x: rect.x.checked_add(dx)?,
-        y: rect.y.checked_add(dy)?,
-        width: rect.width,
-        height: rect.height,
+        x: moved.x,
+        y: moved.y,
+        width: moved.width,
+        height: moved.height,
     })
 }
 
@@ -9389,6 +9408,79 @@ mod tests {
         );
         // And a window that has not moved buys no correction at all.
         assert_eq!(host_rect_translation(opened_against, opened_against), None);
+    }
+
+    #[test]
+    fn task_3534_discord_overlay_follows_five_outside_window_moves() {
+        // Discord is the one supported outside app.  These are real placement
+        // calculations from the native guard: OSL attaches to the measured
+        // composer, then each host-window translation must carry that exact
+        // screen rectangle to the next position without changing its size.
+        const APP: &str = "Discord";
+        let opened_against = [200, 100, 1400, 900];
+        let typing_box_at_attach = AccessibilityBounds {
+            left: 320,
+            top: 700,
+            right: 1200,
+            bottom: 760,
+        };
+        let attached_osl = protected_surface_rect(opened_against, Some(typing_box_at_attach), &[])
+            .expect("the verified Discord typing box accepts an OSL attachment");
+        let moves = [(37, 0), (0, -21), (-140, 96), (200, 200), (-83, -57)];
+        let mut wrong_box_matches = 0usize;
+
+        println!("TASK3534_SUPPORTED_OUTSIDE_APPS={APP}");
+        for (index, (dx, dy)) in moves.into_iter().enumerate() {
+            let moved_window = [
+                opened_against[0] + dx,
+                opened_against[1] + dy,
+                opened_against[2] + dx,
+                opened_against[3] + dy,
+            ];
+            let moved_typing_box = translated_bounds(typing_box_at_attach, (dx, dy))
+                .expect("ordinary window movement keeps the typing box on screen");
+            let expected_osl = protected_surface_rect(moved_window, Some(moved_typing_box), &[])
+                .expect("the moved Discord typing box remains a valid OSL attachment");
+            let observed_osl = translated_overlay_rect(attached_osl, (dx, dy))
+                .expect("the attached OSL rectangle moves with Discord");
+            let matched = observed_osl == expected_osl;
+            if !matched {
+                wrong_box_matches += 1;
+            }
+
+            println!(
+                "TASK3534_MOVE app={APP} move={} typing_box=[{},{},{},{}] osl=[{},{},{},{}] matched={matched}",
+                index + 1,
+                moved_typing_box.left,
+                moved_typing_box.top,
+                moved_typing_box.right,
+                moved_typing_box.bottom,
+                observed_osl.x,
+                observed_osl.y,
+                observed_osl.x + i32::try_from(observed_osl.width).expect("bounded width"),
+                observed_osl.y + i32::try_from(observed_osl.height).expect("bounded height"),
+            );
+            assert_eq!(
+                observed_osl, expected_osl,
+                "TASK3534_FAILURE app={APP} move={} wrong rectangle: osl=[{},{},{},{}] typing_box=[{},{},{},{}]",
+                index + 1,
+                observed_osl.x,
+                observed_osl.y,
+                observed_osl.x + i32::try_from(observed_osl.width).expect("bounded width"),
+                observed_osl.y + i32::try_from(observed_osl.height).expect("bounded height"),
+                moved_typing_box.left,
+                moved_typing_box.top,
+                moved_typing_box.right,
+                moved_typing_box.bottom,
+            );
+        }
+
+        println!(
+            "TASK3534_SUMMARY apps=1 moves_per_app={} samples={} wrong_box_matches={wrong_box_matches}",
+            moves.len(),
+            moves.len(),
+        );
+        assert_eq!(wrong_box_matches, 0, "OSL matched a wrong typing box");
     }
 
     #[test]

@@ -1,13 +1,14 @@
 [package]
 name = "osl-hub"
 version = "0.1.0"
+default-run = "osl-privacy-hub"
 edition = "2021"
 license = "Apache-2.0"
 rust-version = "1.97.1"
 publish = false
 
 [build-dependencies]
-tauri-build = "=2.6.1"
+tauri-build = { version = "=2.6.1", features = [] }
 
 [dependencies]
 # Restored: a merge dropped these while keeping the code in attachment_scan.rs
@@ -21,7 +22,6 @@ tar = "=0.4.46"
 zip = { version = "=8.6.0", default-features = false, features = ["deflate"] }
 lopdf = { version = "=0.42.0", default-features = false }
 adapter-profile = { path = "../../crates/adapter-profile" }
-task-5104-appearance-fingerprint = { path = "../../tools/task-5104-appearance-fingerprint" }
 cover-draft = { path = "../../crates/cover-draft", package = "osl-cover-draft" }
 # This policy must be linked by the desktop send boundary, rather than living
 # only in an isolated workspace test crate.
@@ -43,20 +43,13 @@ transport = { path = "../../crates/transport" }
 # no I/O; `message_expiry` is the sealed-storage and scheduling shell around it.
 message-lifecycle = { path = "../../crates/message-lifecycle", optional = true }
 runtime = { path = "../../crates/runtime", optional = true }
-# TASK 6860: story default audience, auto-burn, view receipts and the honest
-# screenshot shield. Not optional -- the surface below has to be able to tell
-# the user this platform has no capture-protection primitive.
-story-privacy = { path = "../../crates/story-privacy", optional = true }
 # The carrier planner shapes the payload-bearing cover to the protected row's
 # rendered line count (`stego::shape_cover`). `discord_carrier_geometry` is not
 # behind `core`, so this cannot be an optional dependency: the planner must obey
 # the same row contract in every build that can compile it.
 stego = { path = "../../crates/stego" }
 sensitive-classify = { path = "../../crates/sensitive-classify" }
-osl-english-catalogue = { path = "../../crates/english-catalogue" }
 sha2 = "=0.10.9"
-# TASK 5166: the protected-download quarantine hex-encodes its content hashes.
-hex = "=0.4.3"
 tracing = { version = "=0.1.44", optional = true }
 # D-142: this binary shipped with `tracing` events and no subscriber, so every
 # `tracing::error!` in the workspace was dropped by `NoSubscriber`. Same pin the
@@ -80,11 +73,9 @@ rand = "0.8"
 # or app-password credentials; no plaintext fallback is available.
 imap = { version = "=2.4.1", default-features = false }
 rustls = { version = "=0.23.42", default-features = false, features = ["ring", "std", "tls12"] }
-webpki-roots = "=1.0.9"
 
 [dev-dependencies]
 tempfile = "=3.13"
-hex = "=0.4.3"
 # `tests/osl_chat_eager_fetch.rs` builds a unique temp path with `Uuid::new_v4`.
 # This crate is excluded from the workspace, so the version is pinned explicitly
 # to the one already resolved in this crate's own lockfile.
@@ -97,7 +88,7 @@ tokio = { version = "=1.49.0", features = ["rt-multi-thread"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "=0.59.0", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_Security_Cryptography", "Win32_Security_Cryptography_Catalog", "Win32_Security_Cryptography_Sip", "Win32_Security_WinTrust", "Win32_Storage_FileSystem", "Win32_Storage_Packaging_Appx", "Win32_System_Com", "Win32_System_DataExchange", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Memory", "Win32_System_Ole", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_UI_HiDpi", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
-windows = { version = "=0.56.0", features = ["Win32_Foundation", "Win32_Graphics_Imaging", "Win32_System_Com", "Win32_System_Ole", "Win32_UI_Accessibility"] }
+windows = { version = "=0.56.0", features = ["ApplicationModel_DataTransfer", "Foundation", "Foundation_Collections", "Win32_Foundation", "Win32_Graphics_Imaging", "Win32_System_Com", "Win32_System_Ole", "Win32_UI_Accessibility"] }
 
 # Linux-only, and only so the desktop binary can be BUILT and screenshotted on
 # this machine. `tauri-plugin-dialog` is declared with default-features = false,
@@ -117,7 +108,7 @@ rfd = { version = "=0.16.0", default-features = false, features = ["gtk3"] }
 # Nothing that provisions a disposable QA account may be listed here: see
 # `whatsapp-qa-identity` below for the half that was split back out.
 default = ["core", "whatsapp-qa-shell", "native-cover-writer"]
-core = ["dep:bip39", "dep:crypto", "dep:ipc", "dep:keystore", "dep:message-lifecycle", "dep:store", "dep:story-privacy", "dep:tracing", "dep:tracing-subscriber"]
+core = ["dep:bip39", "dep:crypto", "dep:ipc", "dep:keystore", "dep:message-lifecycle", "dep:store", "dep:tracing", "dep:tracing-subscriber"]
 desktop = ["dep:runtime", "dep:tauri", "dep:tauri-plugin-dialog", "dep:tauri-plugin-single-instance", "dep:tauri-plugin-updater", "dep:tokio", "core"]
 native-cover-writer = ["cover-ai/local-model"]
 custom-protocol = ["tauri/custom-protocol"]
@@ -144,6 +135,12 @@ whatsapp-qa-identity = ["whatsapp-qa-shell"]
 # Fault-injection seam used only by the named TASK 3234 integration target.
 # Normal/default/desktop builds do not include it.
 task-3234-test = ["keystore/task-3235-test"]
+# Hermetic acceptance seam for TASK 0863. It exposes only the file-backed
+# seven-screen reset probe and is absent from normal/default/desktop builds.
+task-0863-test = []
+# Hermetic acceptance seam for TASK 3712. It exposes only the encrypted local
+# protected-binding count used to query the Remove everything fixture.
+task-3712-test = []
 
 [lib]
 # The package is `osl-hub` so it can be selected with `cargo -p osl-hub`.
@@ -178,6 +175,11 @@ path = "src/main.rs"
 # also copied into the bundle. See scripts/ci/hub-bin-check.mjs.
 required-features = ["desktop"]
 
+[[bin]]
+name = "osl-allowed-place"
+path = "src/bin/osl-allowed-place.rs"
+required-features = ["core"]
+
 # ThinLTO preserves cross-crate release optimisation without the 20–30 GB
 # single-LLVM-process peak of fat LTO, which is not viable for local release
 # builds on the development machines. Keep one codegen unit for the shipping
@@ -197,4 +199,3 @@ opt-level = 3
 # and silently skips the `[[bin]]` above, and still exits 0 (D-267).
 [workspace]
 resolver = "2"
-members = ["task_5200_account_export", "task_5200_clean_reader"]

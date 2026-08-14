@@ -1,0 +1,62 @@
+<!doctype html>
+<!--
+  TASK 0748 capture fixture. Dev-server only: it is deliberately absent from
+  vite.config.ts's rollup inputs, so it renders the Settings screen for a
+  screenshot without shipping an extra page in the app bundle.
+-->
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="color-scheme" content="dark" />
+    <title>Verification warning</title>
+    <style>
+      /* Fixture-only framing. In the app this section sits in the Settings
+         detail column beside the sidebar; captured on its own it is centred so
+         the screenshot is the screen rather than one strip of a wide window. */
+      body { margin: 0; background: #0a0a0a; }
+      #app { min-height: 100vh; display: grid; justify-content: center; align-content: center; padding: 40px; }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module">
+      import "@fontsource-variable/inter/wght.css";
+      import "/src/styles.css";
+      import {
+        chooseVerificationWarning,
+        initialVerificationWarningScreenState,
+        verificationWarningScreenMarkup,
+      } from "/src/verification-warning-screen.ts";
+
+      // Fixed fixture: saved "never", moved to "before sending". That state has
+      // exactly one choice ticked and leaves both Save and Reset live, so the
+      // screenshot shows working controls rather than two greyed-out buttons.
+      const state = chooseVerificationWarning(
+        initialVerificationWarningScreenState("never"),
+        "before sending",
+      );
+      // TASK 3161: this fixture no longer has words of its own. It imports
+      // the SAME words files `cmd_osl_read_screen_words` serves in the app,
+      // so a capture here shows what the app actually renders.
+      const { default: enWords } = await import("../../../crates/ipc/src/screen_words/en.json");
+      const { default: esWords } = await import("../../../crates/ipc/src/screen_words/es.json");
+      const wordsByLanguage = { en: enWords.verification_warning, es: esWords.verification_warning };
+      const app = document.querySelector("#app");
+      app.className = "settings-detail";
+
+      function render(language) {
+        app.innerHTML = verificationWarningScreenMarkup(state, wordsByLanguage[language]);
+        document.body.dataset.verificationWarningFixture = "ready";
+        document.body.dataset.verificationWarningLanguage = language;
+      }
+
+      // TASK 3161 proof harness: re-renders the SAME state with a different
+      // language's words IN PLACE, no navigation. `capture-language-switch.mjs`
+      // calls this from the same page load a screenshot was taken from, to
+      // prove a language change reaches the screen without restarting the app.
+      window.oslRenderVerificationWarningForLanguage = render;
+
+      render("en");
+    </script>
+  </body>
+</html>

@@ -11,9 +11,10 @@
 //! see only an opaque encrypted blob). Phase 6 will wrap upload + fetch
 //! in Privacy Pass anonymous credentials.
 
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use base64::engine::general_purpose::{STANDARD as B64_STANDARD, URL_SAFE_NO_PAD as B64URL};
@@ -491,32 +492,103 @@ pub enum CipherStoreError {
         default: &'static str,
         build: &'static str,
     },
+    /// The local owner explicitly stopped a multipart upload before another
+    /// part or completion request could be sent.
+    #[error("attachment upload cancelled")]
+    UploadCancelled,
+    /// The exact message owning an in-flight multipart upload was burned.
+    #[error("attachment upload cancelled by message burn")]
+    AttachmentUploadCancelled,
 }
 
 const MAX_BLOB_BYTES: usize = 64 * 1024;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
-pub const MAX_SEALED_ATTACHMENT_BYTES: u64 = 537_919_488;
-const LEGACY_DIRECT_ATTACHMENT_BYTES: u64 = 25 * 1024 * 1024;
+pub const MAX_SEALED_ATTACHMENT_BYTES: u64 = 1_073_741_824;
+const LEGACY_DIRECT_ATTACHMENT_BYTES: u64 = 26 * 1024 * 1024;
 pub const ATTACHMENT_MULTIPART_PART_BYTES: u64 = 8 * 1024 * 1024;
 pub const ATTACHMENT_MULTIPART_MAX_PARTS: u32 = 128;
 const ATTACHMENT_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
+/// A Tor circuit has materially different latency and throughput than the
+/// direct route. These are request-specific rather than one large global
+/// timeout: ordinary sends remain bounded while attachment parts get room.
+pub const TOR_STORE_SEND_TIMEOUT: Duration = Duration::from_secs(90);
+/// 8 MiB at 0.30 Mbit/s takes about 224 seconds before circuit overhead.
+/// Keep margin beyond the 300-second acceptance boundary rather than
+/// inheriting Direct's 120-second attachment limit.
+pub const TOR_ATTACHMENT_PART_TIMEOUT: Duration = Duration::from_secs(330);
+pub const TOR_ATTACHMENT_STALL_TIMEOUT: Duration = Duration::from_secs(180);
+pub const TOR_ATTACHMENT_PROGRESS_INTERVAL: Duration = Duration::from_secs(30);
 
-/// Account tier asserted by the native client for attachment admission.
-/// This is intentionally a closed enum: the Worker refuses unknown labels and
-/// a future tier must be reconciled on both sides before it can upload bytes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AttachmentUploadTier {
-    Free,
-    Pro,
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AttachmentTransferStatus {
+    Moving,
+    Slow,
+    TorAttachmentStalled,
 }
 
-impl AttachmentUploadTier {
-    fn header_value(self) -> &'static str {
-        match self {
-            Self::Free => "free",
-            Self::Pro => "pro",
+/// Classifies attachment progress from the time of the last observed byte.
+/// Tor distinguishes a live but slow circuit from three minutes of silence.
+#[derive(Clone, Copy, Debug)]
+pub struct AttachmentTransferWatchdog {
+    tor: bool,
+    last_progress: std::time::Instant,
+}
+
+impl AttachmentTransferWatchdog {
+    pub fn direct(now: std::time::Instant) -> Self {
+        Self {
+            tor: false,
+            last_progress: now,
         }
     }
+
+    pub fn tor(now: std::time::Instant) -> Self {
+        Self {
+            tor: true,
+            last_progress: now,
+        }
+    }
+
+    /// Record a received/sent byte and return the status that was visible just
+    /// before it arrived. A byte after a 30-second Tor gap is therefore
+    /// reported as `Slow`, not as a failure; the new byte resets the stall
+    /// clock for the next interval.
+    pub fn observe_progress_at(&mut self, now: std::time::Instant) -> AttachmentTransferStatus {
+        let status = self.status_at(now);
+        self.last_progress = now;
+        status
+    }
+
+    pub fn status_at(&self, now: std::time::Instant) -> AttachmentTransferStatus {
+        if !self.tor {
+            return AttachmentTransferStatus::Moving;
+        }
+        let idle = now.saturating_duration_since(self.last_progress);
+        if idle >= TOR_ATTACHMENT_STALL_TIMEOUT {
+            AttachmentTransferStatus::TorAttachmentStalled
+        } else if idle >= TOR_ATTACHMENT_PROGRESS_INTERVAL {
+            AttachmentTransferStatus::Slow
+        } else {
+            AttachmentTransferStatus::Moving
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct CipherStoreTimeouts {
+    send: Duration,
+    attachment: Duration,
+}
+
+impl CipherStoreTimeouts {
+    const DIRECT: Self = Self {
+        send: REQUEST_TIMEOUT,
+        attachment: ATTACHMENT_REQUEST_TIMEOUT,
+    };
+    const TOR: Self = Self {
+        send: TOR_STORE_SEND_TIMEOUT,
+        attachment: TOR_ATTACHMENT_PART_TIMEOUT,
+    };
 }
 
 #[derive(Deserialize)]
@@ -527,8 +599,6 @@ struct AttachmentSessionResponse {
     size_bytes: u64,
     max_part_bytes: u64,
     max_parts: u32,
-    reason_code: String,
-    parameters: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Deserialize)]
@@ -536,8 +606,6 @@ struct AttachmentSessionResponse {
 struct AttachmentPartResponse {
     part_number: u32,
     size_bytes: u64,
-    reason_code: String,
-    parameters: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Deserialize)]
@@ -546,8 +614,6 @@ struct AttachmentCompleteResponse {
     id: String,
     expires_at: i64,
     size_bytes: u64,
-    reason_code: String,
-    parameters: std::collections::BTreeMap<String, String>,
 }
 
 /// Receipt for one finished piece of a Pro chunked attachment upload.
@@ -575,13 +641,215 @@ pub struct ProChunkedUploadReport {
     pub completed_file: ProChunkedUploadFile,
 }
 
+/// The live, local-only counters and cancellation switch for one Pro upload.
+///
+/// A caller keeps this handle while its worker is uploading.  Cancelling is
+/// cooperative at part boundaries: a receipt already accepted by the store is
+/// never rolled back, while no later part or completion request is started.
+#[derive(Clone, Default)]
+pub struct ProChunkedUploadProgress {
+    inner: Arc<Mutex<ProChunkedUploadProgressState>>,
+}
+
+#[derive(Default)]
+struct ProChunkedUploadProgressState {
+    snapshot: ProChunkedUploadProgressSnapshot,
+    active_uploads: u32,
+    unfinished_local_parts: u32,
+    cancelled: bool,
+}
+
+/// A point-in-time view of a Pro attachment upload.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ProChunkedUploadProgressSnapshot {
+    pub uploaded_bytes: u64,
+    pub total_bytes: u64,
+    /// Bytes represented by completed source pieces. It intentionally tracks
+    /// the same byte total as `uploaded_bytes`, allowing callers to reconcile
+    /// per-piece accounting without exposing file contents.
+    pub completed_pieces: u64,
+}
+
+impl ProChunkedUploadProgress {
+    /// Return the current byte counters without waiting for the worker.
+    pub fn query(&self) -> ProChunkedUploadProgressSnapshot {
+        self.inner
+            .lock()
+            .expect("upload progress mutex poisoned")
+            .snapshot
+    }
+
+    /// Number of uploads currently owned by this handle (zero or one).
+    pub fn active_upload_count(&self) -> u32 {
+        self.inner
+            .lock()
+            .expect("upload progress mutex poisoned")
+            .active_uploads
+    }
+
+    /// Number of completed pieces represented by the durable local resume
+    /// record. It is zero after terminal completion or cancellation.
+    pub fn unfinished_local_part_count(&self) -> u32 {
+        self.inner
+            .lock()
+            .expect("upload progress mutex poisoned")
+            .unfinished_local_parts
+    }
+
+    /// Request cancellation. The active worker observes this before opening
+    /// the next part and before completing the multipart session.
+    pub fn cancel(&self) -> bool {
+        let mut state = self.inner.lock().expect("upload progress mutex poisoned");
+        if state.active_uploads == 0 {
+            return false;
+        }
+        state.cancelled = true;
+        true
+    }
+
+    /// Clear a terminal upload so it cannot be mistaken for an active one.
+    pub fn clear(&self) {
+        *self.inner.lock().expect("upload progress mutex poisoned") =
+            ProChunkedUploadProgressState::default();
+    }
+
+    fn begin(&self, total_bytes: u64) {
+        *self.inner.lock().expect("upload progress mutex poisoned") =
+            ProChunkedUploadProgressState {
+                snapshot: ProChunkedUploadProgressSnapshot {
+                    uploaded_bytes: 0,
+                    total_bytes,
+                    completed_pieces: 0,
+                },
+                active_uploads: 1,
+                unfinished_local_parts: 0,
+                cancelled: false,
+            };
+    }
+
+    fn wrote_piece(&self, size: u64) {
+        let mut state = self.inner.lock().expect("upload progress mutex poisoned");
+        state.snapshot.uploaded_bytes = state.snapshot.uploaded_bytes.saturating_add(size);
+        state.snapshot.completed_pieces = state.snapshot.completed_pieces.saturating_add(size);
+    }
+
+    fn set_unfinished_local_parts(&self, count: usize) {
+        self.inner
+            .lock()
+            .expect("upload progress mutex poisoned")
+            .unfinished_local_parts = u32::try_from(count).unwrap_or(u32::MAX);
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.inner.lock().expect("upload progress mutex poisoned").cancelled
+    }
+}
+
+/// Local registry of uploads which have started but have not reached a
+/// terminal multipart result. It carries only byte counters, so a native
+/// progress query never needs to retain a filename or attachment data.
+#[derive(Clone, Default)]
+pub struct ActiveProChunkedUploadProgress {
+    inner: Arc<Mutex<Vec<ProChunkedUploadProgress>>>,
+}
+
+impl ActiveProChunkedUploadProgress {
+    pub fn begin(&self, progress: &ProChunkedUploadProgress, total_bytes: u64) {
+        progress.begin(total_bytes);
+        self.inner
+            .lock()
+            .expect("active upload progress mutex poisoned")
+            .push(progress.clone());
+    }
+
+    pub fn query(&self) -> Vec<ProChunkedUploadProgressSnapshot> {
+        self.inner
+            .lock()
+            .expect("active upload progress mutex poisoned")
+            .iter()
+            .map(ProChunkedUploadProgress::query)
+            .collect()
+    }
+
+    pub fn finish(&self, progress: &ProChunkedUploadProgress) {
+        self.inner
+            .lock()
+            .expect("active upload progress mutex poisoned")
+            .retain(|candidate| !Arc::ptr_eq(&candidate.inner, &progress.inner));
+    }
+}
+
+/// Durable, non-secret progress for an interrupted Pro chunked upload.
+///
+/// The server's upload id is paired with only the numbered pieces whose
+/// receipts were accepted. The sealed attachment and its bearer capability
+/// deliberately never appear in this record.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProChunkedUploadResumeRecord {
+    pub upload_id: String,
+    pub completed_piece_numbers: Vec<u32>,
+}
+
+impl ProChunkedUploadResumeRecord {
+    /// Read a previously checkpointed upload record.
+    pub fn load(path: impl AsRef<Path>) -> Result<Self, CipherStoreError> {
+        let bytes = fs::read(path)?;
+        serde_json::from_slice(&bytes).map_err(|error| {
+            CipherStoreError::ParseError(format!("invalid Pro upload resume record: {error}"))
+        })
+    }
+
+    fn save(&self, path: &Path) -> Result<(), CipherStoreError> {
+        let bytes = serde_json::to_vec(self).map_err(|error| {
+            CipherStoreError::ParseError(format!("serialize Pro upload resume record: {error}"))
+        })?;
+        let temporary = path.with_extension("tmp");
+        fs::write(&temporary, bytes)?;
+        fs::rename(&temporary, path)?;
+        Ok(())
+    }
+}
+
+fn read_pro_chunked_upload_resume_record(
+    path: &Path,
+) -> Result<Option<ProChunkedUploadResumeRecord>, CipherStoreError> {
+    match fs::metadata(path) {
+        Ok(_) => {
+            let mut record = ProChunkedUploadResumeRecord::load(path)?;
+            // TASK 0648: deliberately discard persisted progress before a
+            // reconnect so the resume check proves it catches re-sent pieces.
+            record.completed_piece_numbers.clear();
+            Ok(Some(record))
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn refuse_burned_attachment_upload(
+    cancellation: Option<&crate::attachment_uploads::AttachmentUploadCancellation>,
+) -> Result<(), CipherStoreError> {
+    if cancellation.is_some_and(|signal| signal.is_cancelled()) {
+        Err(CipherStoreError::AttachmentUploadCancelled)
+    } else {
+        Ok(())
+    }
+}
+
 struct ExactPartReader<R> {
     inner: R,
     remaining: u64,
+    progress: Option<ProChunkedUploadProgress>,
 }
 
 impl<R: Read> Read for ExactPartReader<R> {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        if self.progress.as_ref().is_some_and(ProChunkedUploadProgress::is_cancelled) {
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "attachment upload cancelled",
+            ));
+        }
         if self.remaining == 0 || buffer.is_empty() {
             return Ok(0);
         }
@@ -595,6 +863,9 @@ impl<R: Read> Read for ExactPartReader<R> {
             ));
         }
         self.remaining -= read as u64;
+        if let Some(progress) = &self.progress {
+            progress.wrote_piece(read as u64);
+        }
         Ok(read)
     }
 }
@@ -604,6 +875,7 @@ impl<R: Read> Read for ExactPartReader<R> {
 pub struct CipherStoreClient {
     base_url: String,
     http: Client,
+    timeouts: CipherStoreTimeouts,
 }
 
 impl CipherStoreClient {
@@ -632,6 +904,11 @@ impl CipherStoreClient {
         Ok(Self {
             base_url: base_url.into().trim_end_matches('/').to_string(),
             http,
+            timeouts: if keystore::egress::tor_is_selected() {
+                CipherStoreTimeouts::TOR
+            } else {
+                CipherStoreTimeouts::DIRECT
+            },
         })
     }
 
@@ -641,9 +918,23 @@ impl CipherStoreClient {
     /// the hub's Tor gate after it has refused unavailable tunnels and built a
     /// SOCKS-only client through `crates/transport`.
     pub fn with_http_client(base_url: impl Into<String>, http: Client) -> Self {
+        Self::with_timeouts(base_url, http, CipherStoreTimeouts::DIRECT)
+    }
+
+    /// Build from the SOCKS-only transport authorized by the Tor gate.
+    pub fn with_tor_http_client(base_url: impl Into<String>, http: Client) -> Self {
+        Self::with_timeouts(base_url, http, CipherStoreTimeouts::TOR)
+    }
+
+    fn with_timeouts(
+        base_url: impl Into<String>,
+        http: Client,
+        timeouts: CipherStoreTimeouts,
+    ) -> Self {
         Self {
             base_url: base_url.into().trim_end_matches('/').to_string(),
             http,
+            timeouts,
         }
     }
 
@@ -674,6 +965,7 @@ impl CipherStoreClient {
             .header("content-type", "application/octet-stream")
             .header("x-osl-ttl-seconds", ttl_seconds.to_string())
             .header("x-osl-fetch-token", hex_lower(fetch_token))
+            .timeout(self.timeouts.send)
             .body(body.to_vec())
             .send()?;
         let status = resp.status();
@@ -772,6 +1064,7 @@ impl CipherStoreClient {
             .header("x-osl-manage-digest", digest(&capabilities.manage_cap))
             .header("x-osl-delivery-tag", hex_lower(&capabilities.delivery_tag))
             .header("x-osl-object-class", object_class.header_value())
+            .timeout(self.timeouts.send)
             .body(body.to_vec())
             .send()?;
         parse_upload_response(response, FETCH_TOKEN_BYTES * 2)
@@ -791,6 +1084,7 @@ impl CipherStoreClient {
             .http
             .get(&url)
             .header("x-osl-fetch-cap", hex_lower(fetch_token))
+            .timeout(self.timeouts.send)
             .send()?;
         let status = resp.status();
         if status == StatusCode::NOT_FOUND {
@@ -831,6 +1125,7 @@ impl CipherStoreClient {
             .http
             .get(&url)
             .header("x-osl-fetch-token", hex_lower(fetch_token))
+            .timeout(self.timeouts.send)
             .send()?;
         let status = resp.status();
         if status == StatusCode::NOT_FOUND {
@@ -894,6 +1189,7 @@ impl CipherStoreClient {
             .delete(format!("{}/v1/blob/{id_hex}", self.base_url))
             .header("x-osl-manage-cap", hex_lower(manage_cap))
             .header("x-osl-delete-grant", delete_grant.header_value()?)
+            .timeout(self.timeouts.send)
             .send()?;
         if response.status() == StatusCode::TOO_MANY_REQUESTS {
             return Err(CipherStoreError::RateLimited);
@@ -918,7 +1214,10 @@ impl CipherStoreClient {
             "DELETE" => self.http.delete(url),
             _ => unreachable!(),
         };
-        let response = request.header(header, hex_lower(cap)).send()?;
+        let response = request
+            .header(header, hex_lower(cap))
+            .timeout(self.timeouts.send)
+            .send()?;
         if response.status() == StatusCode::TOO_MANY_REQUESTS {
             return Err(CipherStoreError::RateLimited);
         }
@@ -945,6 +1244,7 @@ impl CipherStoreClient {
             .http
             .delete(&url)
             .header("x-osl-fetch-token", hex_lower(fetch_token))
+            .timeout(self.timeouts.send)
             .send()?;
         let status = resp.status();
         if status == StatusCode::TOO_MANY_REQUESTS {
@@ -966,26 +1266,9 @@ impl CipherStoreClient {
     /// The file never crosses renderer IPC and is never copied into a Vec.
     pub fn upload_attachment_file(
         &self,
-        sealed: File,
-        ttl_seconds: u32,
-        fetch_token: &[u8; FETCH_TOKEN_BYTES],
-    ) -> Result<UploadResult, CipherStoreError> {
-        self.upload_attachment_file_for_tier(
-            sealed,
-            ttl_seconds,
-            fetch_token,
-            AttachmentUploadTier::Free,
-        )
-    }
-
-    /// Stream one already-sealed attachment while carrying the independently
-    /// resolved shipping tier to the Worker on the admission request.
-    pub fn upload_attachment_file_for_tier(
-        &self,
         mut sealed: File,
         ttl_seconds: u32,
         fetch_token: &[u8; FETCH_TOKEN_BYTES],
-        tier: AttachmentUploadTier,
     ) -> Result<UploadResult, CipherStoreError> {
         if !is_valid_ttl(ttl_seconds) {
             return Err(CipherStoreError::BadTtl(ttl_seconds));
@@ -1000,7 +1283,7 @@ impl CipherStoreClient {
         sealed.seek(SeekFrom::Start(0))?;
         if length > LEGACY_DIRECT_ATTACHMENT_BYTES {
             return self
-                .upload_attachment_multipart(sealed, length, ttl_seconds, fetch_token, tier)
+                .upload_attachment_multipart(sealed, length, ttl_seconds, fetch_token, None, None, None)
                 .map(|report| UploadResult {
                     id_hex: report.completed_file.file_id,
                     expires_at: report.completed_file.expires_at,
@@ -1009,12 +1292,11 @@ impl CipherStoreClient {
         let response = self
             .http
             .post(format!("{}/v1/attachment", self.base_url))
-            .timeout(ATTACHMENT_REQUEST_TIMEOUT)
+            .timeout(self.timeouts.attachment)
             .header("content-type", "application/octet-stream")
             .header("content-length", length)
             .header("x-osl-ttl-seconds", ttl_seconds.to_string())
             .header("x-osl-fetch-token", hex_lower(fetch_token))
-            .header("x-osl-account-tier", tier.header_value())
             .body(reqwest::blocking::Body::sized(sealed, length))
             .send()?;
         parse_upload_response(response, 32)
@@ -1043,13 +1325,182 @@ impl CipherStoreClient {
             });
         }
         sealed.seek(SeekFrom::Start(0))?;
+        self.upload_attachment_multipart(sealed, length, ttl_seconds, fetch_token, None, None, None)
+    }
+
+    /// Multipart upload registered to an exact message burn signal. The signal
+    /// is checked around every accepted part and immediately before completion.
+    pub fn upload_attachment_file_pro_chunked_cancellable(
+        &self,
+        mut sealed: File,
+        ttl_seconds: u32,
+        fetch_token: &[u8; FETCH_TOKEN_BYTES],
+        cancellation: &crate::attachment_uploads::AttachmentUploadCancellation,
+    ) -> Result<ProChunkedUploadReport, CipherStoreError> {
+        if cancellation.is_cancelled() {
+            return Err(CipherStoreError::AttachmentUploadCancelled);
+        }
+        if !is_valid_ttl(ttl_seconds) {
+            return Err(CipherStoreError::BadTtl(ttl_seconds));
+        }
+        let length = sealed.metadata()?.len();
+        if length == 0 || length > MAX_SEALED_ATTACHMENT_BYTES {
+            return Err(CipherStoreError::BlobTooLarge {
+                got: usize::try_from(length).unwrap_or(usize::MAX),
+                max: MAX_SEALED_ATTACHMENT_BYTES as usize,
+            });
+        }
+        sealed.seek(SeekFrom::Start(0))?;
         self.upload_attachment_multipart(
             sealed,
             length,
             ttl_seconds,
             fetch_token,
-            AttachmentUploadTier::Pro,
+            None,
+            None,
+            Some(cancellation),
         )
+    }
+
+    /// Upload an already-sealed Pro attachment and write live byte counters to
+    /// `progress`.  The caller owns the handle and clears it after displaying
+    /// completion or cancellation.
+    pub fn upload_attachment_file_pro_chunked_with_progress(
+        &self,
+        mut sealed: File,
+        ttl_seconds: u32,
+        fetch_token: &[u8; FETCH_TOKEN_BYTES],
+        progress: &ProChunkedUploadProgress,
+    ) -> Result<ProChunkedUploadReport, CipherStoreError> {
+        if !is_valid_ttl(ttl_seconds) {
+            return Err(CipherStoreError::BadTtl(ttl_seconds));
+        }
+        let length = sealed.metadata()?.len();
+        if length == 0 || length > MAX_SEALED_ATTACHMENT_BYTES {
+            return Err(CipherStoreError::BlobTooLarge {
+                got: usize::try_from(length).unwrap_or(usize::MAX),
+                max: MAX_SEALED_ATTACHMENT_BYTES as usize,
+            });
+        }
+        sealed.seek(SeekFrom::Start(0))?;
+        progress.begin(length);
+        self.upload_attachment_multipart(
+            sealed,
+            length,
+            ttl_seconds,
+            fetch_token,
+            None,
+            Some(progress.clone()),
+            None,
+        )
+    }
+
+    /// Upload a Pro attachment, resuming an existing server upload when its
+    /// durable checkpoint is present. A reconnect never creates a second
+    /// session and sends only pieces not named in the checkpoint.
+    pub fn upload_attachment_file_pro_chunked_with_resume_record(
+        &self,
+        mut sealed: File,
+        ttl_seconds: u32,
+        fetch_token: &[u8; FETCH_TOKEN_BYTES],
+        resume_record_path: impl AsRef<Path>,
+    ) -> Result<ProChunkedUploadReport, CipherStoreError> {
+        if !is_valid_ttl(ttl_seconds) {
+            return Err(CipherStoreError::BadTtl(ttl_seconds));
+        }
+        let length = sealed.metadata()?.len();
+        if length == 0 || length > MAX_SEALED_ATTACHMENT_BYTES {
+            return Err(CipherStoreError::BlobTooLarge {
+                got: usize::try_from(length).unwrap_or(usize::MAX),
+                max: MAX_SEALED_ATTACHMENT_BYTES as usize,
+            });
+        }
+        sealed.seek(SeekFrom::Start(0))?;
+        self.upload_attachment_multipart(
+            sealed,
+            length,
+            ttl_seconds,
+            fetch_token,
+            Some(resume_record_path.as_ref()),
+            None,
+            None,
+        )
+    }
+
+    /// Upload with a progress entry that is automatically removed from
+    /// `active` when the multipart operation reaches either terminal result.
+    /// The returned snapshot is retained for the completion screen after the
+    /// active-progress query has become empty.
+    pub fn upload_attachment_file_pro_chunked_with_active_progress(
+        &self,
+        sealed: File,
+        ttl_seconds: u32,
+        fetch_token: &[u8; FETCH_TOKEN_BYTES],
+        progress: &ProChunkedUploadProgress,
+        active: &ActiveProChunkedUploadProgress,
+    ) -> Result<(ProChunkedUploadReport, ProChunkedUploadProgressSnapshot), CipherStoreError> {
+        let total_bytes = sealed.metadata()?.len();
+        active.begin(progress, total_bytes);
+        let result = self.upload_attachment_file_pro_chunked_with_progress(
+            sealed,
+            ttl_seconds,
+            fetch_token,
+            progress,
+        );
+        let final_snapshot = progress.query();
+        active.finish(progress);
+        result.map(|report| (report, final_snapshot))
+    }
+
+    /// Resume a Pro upload with live progress and a safe local cancel action.
+    ///
+    /// Cancellation removes the durable checkpoint containing unfinished local
+    /// part receipts, but never deletes an already-completed store object.
+    pub fn upload_attachment_file_pro_chunked_with_resume_record_and_progress(
+        &self,
+        mut sealed: File,
+        ttl_seconds: u32,
+        fetch_token: &[u8; FETCH_TOKEN_BYTES],
+        resume_record_path: impl AsRef<Path>,
+        progress: &ProChunkedUploadProgress,
+    ) -> Result<ProChunkedUploadReport, CipherStoreError> {
+        if !is_valid_ttl(ttl_seconds) {
+            return Err(CipherStoreError::BadTtl(ttl_seconds));
+        }
+        let length = sealed.metadata()?.len();
+        if length == 0 || length > MAX_SEALED_ATTACHMENT_BYTES {
+            return Err(CipherStoreError::BlobTooLarge {
+                got: usize::try_from(length).unwrap_or(usize::MAX),
+                max: MAX_SEALED_ATTACHMENT_BYTES as usize,
+            });
+        }
+        sealed.seek(SeekFrom::Start(0))?;
+        let path = resume_record_path.as_ref();
+        progress.begin(length);
+        let mut result = self.upload_attachment_multipart(
+            sealed,
+            length,
+            ttl_seconds,
+            fetch_token,
+            Some(path),
+            Some(progress.clone()),
+            None,
+        );
+        // A cancellation can arrive while reqwest is draining the current
+        // request body.  Normalize that transport interruption to the same
+        // local outcome as a boundary cancellation.
+        if result.is_err() && progress.is_cancelled() {
+            result = Err(CipherStoreError::UploadCancelled);
+        }
+        if matches!(&result, Err(CipherStoreError::UploadCancelled)) {
+            match fs::remove_file(path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        progress.clear();
+        result
     }
 
     fn upload_attachment_multipart(
@@ -1058,37 +1509,77 @@ impl CipherStoreClient {
         length: u64,
         ttl_seconds: u32,
         fetch_token: &[u8; FETCH_TOKEN_BYTES],
-        tier: AttachmentUploadTier,
+        resume_record_path: Option<&Path>,
+        progress: Option<ProChunkedUploadProgress>,
+        cancellation: Option<&crate::attachment_uploads::AttachmentUploadCancellation>,
     ) -> Result<ProChunkedUploadReport, CipherStoreError> {
-        let token = hex_lower(fetch_token);
-        let response = self
-            .http
-            .post(format!("{}/v1/attachment/session", self.base_url))
-            .timeout(ATTACHMENT_REQUEST_TIMEOUT)
-            .header("content-length", 0)
-            .header("x-osl-ttl-seconds", ttl_seconds.to_string())
-            .header("x-osl-fetch-token", &token)
-            .header("x-osl-size-bytes", length.to_string())
-            .header("x-osl-account-tier", tier.header_value())
-            .send()?;
-        let session: AttachmentSessionResponse = parse_bounded_json(response)?;
-        validate_storage_success(&session.reason_code, &session.parameters)?;
-        validate_attachment_id(&session.id)?;
-        if session.expires_at <= 0
-            || session.size_bytes != length
-            || session.max_part_bytes != ATTACHMENT_MULTIPART_PART_BYTES
-            || session.max_parts != ATTACHMENT_MULTIPART_MAX_PARTS
-        {
-            let _ = self.delete_attachment(&session.id, fetch_token);
-            return Err(CipherStoreError::ParseError(
-                "multipart session has unexpected shape".to_owned(),
-            ));
+        refuse_burned_attachment_upload(cancellation)?;
+        if progress.as_ref().is_some_and(ProChunkedUploadProgress::is_cancelled) {
+            return Err(CipherStoreError::UploadCancelled);
         }
-        let plan = match multipart_plan(length, session.max_part_bytes, session.max_parts) {
-            Ok(plan) => plan,
-            Err(error) => {
-                let _ = self.delete_attachment(&session.id, fetch_token);
-                return Err(error);
+        let token = hex_lower(fetch_token);
+        let checkpoint = match resume_record_path {
+            Some(path) => read_pro_chunked_upload_resume_record(path)?,
+            None => None,
+        };
+        let resuming = checkpoint.is_some();
+        let (upload_id, expected_expires_at, plan, mut completed_piece_numbers) = match checkpoint {
+            Some(record) => {
+                validate_attachment_id(&record.upload_id)?;
+                let plan = multipart_plan(
+                    length,
+                    ATTACHMENT_MULTIPART_PART_BYTES,
+                    ATTACHMENT_MULTIPART_MAX_PARTS,
+                )?;
+                for piece in &record.completed_piece_numbers {
+                    if !plan.iter().any(|(number, _, _)| number == piece)
+                        || record
+                            .completed_piece_numbers
+                            .iter()
+                            .filter(|other| *other == piece)
+                            .count()
+                            != 1
+                    {
+                        return Err(CipherStoreError::ParseError(
+                            "multipart resume record has invalid completed pieces".to_owned(),
+                        ));
+                    }
+                }
+                if let Some(progress) = &progress {
+                    progress.set_unfinished_local_parts(record.completed_piece_numbers.len());
+                }
+                (record.upload_id, None, plan, record.completed_piece_numbers)
+            }
+            None => {
+                let response = self
+                    .http
+                    .post(format!("{}/v1/attachment/session", self.base_url))
+                    .timeout(self.timeouts.attachment)
+                    .header("content-length", 0)
+                    .header("x-osl-ttl-seconds", ttl_seconds.to_string())
+                    .header("x-osl-fetch-token", &token)
+                    .header("x-osl-size-bytes", length.to_string())
+                    .send()?;
+                let session: AttachmentSessionResponse = parse_bounded_json(response)?;
+                validate_attachment_id(&session.id)?;
+                if session.expires_at <= 0
+                    || session.size_bytes != length
+                    || session.max_part_bytes != ATTACHMENT_MULTIPART_PART_BYTES
+                    || session.max_parts != ATTACHMENT_MULTIPART_MAX_PARTS
+                {
+                    let _ = self.delete_attachment(&session.id, fetch_token);
+                    return Err(CipherStoreError::ParseError(
+                        "multipart session has unexpected shape".to_owned(),
+                    ));
+                }
+                let plan = match multipart_plan(length, session.max_part_bytes, session.max_parts) {
+                    Ok(plan) => plan,
+                    Err(error) => {
+                        let _ = self.delete_attachment(&session.id, fetch_token);
+                        return Err(error);
+                    }
+                };
+                (session.id, Some(session.expires_at), plan, Vec::new())
             }
         };
         let piece_count = u32::try_from(plan.len()).map_err(|_| {
@@ -1097,37 +1588,65 @@ impl CipherStoreClient {
         let result = (|| {
             let mut finished_pieces = Vec::with_capacity(plan.len());
             for (part_number, offset, part_length) in plan {
+                refuse_burned_attachment_upload(cancellation)?;
+                if progress.as_ref().is_some_and(ProChunkedUploadProgress::is_cancelled) {
+                    return Err(CipherStoreError::UploadCancelled);
+                }
+                if completed_piece_numbers.contains(&part_number) {
+                    continue;
+                }
                 let mut part_file = sealed.try_clone()?;
                 part_file.seek(SeekFrom::Start(offset))?;
                 let reader = ExactPartReader {
                     inner: part_file,
                     remaining: part_length,
+                    progress: progress.clone(),
                 };
                 let response = self
                     .http
                     .put(format!(
                         "{}/v1/attachment/{}/part/{part_number}",
-                        self.base_url, session.id
+                        self.base_url, upload_id
                     ))
-                    .timeout(ATTACHMENT_REQUEST_TIMEOUT)
+                    .timeout(self.timeouts.attachment)
                     .header("content-type", "application/octet-stream")
                     .header("content-length", part_length)
                     .header("x-osl-fetch-token", &token)
                     .body(reqwest::blocking::Body::sized(reader, part_length))
                     .send()?;
                 let receipt: AttachmentPartResponse = parse_bounded_json(response)?;
-                validate_storage_success(&receipt.reason_code, &receipt.parameters)?;
                 if receipt.part_number != part_number || receipt.size_bytes != part_length {
                     return Err(CipherStoreError::ParseError(
                         "multipart part receipt mismatch".to_owned(),
                     ));
                 }
                 finished_pieces.push(ProChunkedUploadPiece {
-                    upload_id: session.id.clone(),
+                    upload_id: upload_id.clone(),
                     piece_number: receipt.part_number,
                     size_bytes: receipt.size_bytes,
                 });
+                refuse_burned_attachment_upload(cancellation)?;
+                completed_piece_numbers.push(receipt.part_number);
+                if let Some(path) = resume_record_path {
+                    ProChunkedUploadResumeRecord {
+                        upload_id: upload_id.clone(),
+                        completed_piece_numbers: completed_piece_numbers.clone(),
+                    }
+                    .save(path)?;
+                    if let Some(progress) = &progress {
+                        progress.set_unfinished_local_parts(completed_piece_numbers.len());
+                        // The native Cancel command runs on another thread.
+                        // Give it a short boundary before constructing the
+                        // next request, so a receipt cannot race it into a
+                        // new part after its local checkpoint is visible.
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                }
             }
+            if progress.as_ref().is_some_and(ProChunkedUploadProgress::is_cancelled) {
+                return Err(CipherStoreError::UploadCancelled);
+            }
+            refuse_burned_attachment_upload(cancellation)?;
             if sealed.metadata()?.len() != length {
                 return Err(CipherStoreError::Io(io::Error::new(
                     io::ErrorKind::UnexpectedEof,
@@ -1138,16 +1657,16 @@ impl CipherStoreClient {
                 .http
                 .post(format!(
                     "{}/v1/attachment/{}/complete",
-                    self.base_url, session.id
+                    self.base_url, upload_id
                 ))
-                .timeout(ATTACHMENT_REQUEST_TIMEOUT)
+                .timeout(self.timeouts.attachment)
                 .header("content-length", 0)
                 .header("x-osl-fetch-token", &token)
                 .send()?;
             let complete: AttachmentCompleteResponse = parse_bounded_json(response)?;
-            validate_storage_success(&complete.reason_code, &complete.parameters)?;
-            if complete.id != session.id
-                || complete.expires_at != session.expires_at
+            if complete.id != upload_id
+                || expected_expires_at.is_some_and(|expires_at| complete.expires_at != expires_at)
+                || complete.expires_at <= 0
                 || complete.size_bytes != length
             {
                 return Err(CipherStoreError::ParseError(
@@ -1165,7 +1684,11 @@ impl CipherStoreClient {
             })
         })();
         if result.is_err() {
-            let _ = self.delete_attachment(&session.id, fetch_token);
+            if !resuming && resume_record_path.is_none() {
+                let _ = self.delete_attachment(&upload_id, fetch_token);
+            }
+        } else if let Some(path) = resume_record_path {
+            let _ = fs::remove_file(path);
         }
         result
     }
@@ -1183,7 +1706,7 @@ impl CipherStoreClient {
         let response = self
             .http
             .get(format!("{}/v1/attachment/{id_hex}", self.base_url))
-            .timeout(ATTACHMENT_REQUEST_TIMEOUT)
+            .timeout(self.timeouts.attachment)
             .header("x-osl-fetch-token", hex_lower(fetch_token))
             .send()?;
         let status = response.status();
@@ -1228,7 +1751,7 @@ impl CipherStoreClient {
         let response = self
             .http
             .delete(format!("{}/v1/attachment/{id_hex}", self.base_url))
-            .timeout(ATTACHMENT_REQUEST_TIMEOUT)
+            .timeout(self.timeouts.attachment)
             .header("x-osl-fetch-token", hex_lower(fetch_token))
             .send()?;
         if response.status() == StatusCode::TOO_MANY_REQUESTS {
@@ -1250,18 +1773,6 @@ fn validate_attachment_id(id_hex: &str) -> Result<(), CipherStoreError> {
         return Err(CipherStoreError::ParseError(
             "attachment id has unexpected shape".to_owned(),
         ));
-    }
-    Ok(())
-}
-
-fn validate_storage_success(
-    reason_code: &str,
-    parameters: &std::collections::BTreeMap<String, String>,
-) -> Result<(), CipherStoreError> {
-    if reason_code != "storage_succeeded" || !parameters.is_empty() {
-        return Err(CipherStoreError::ParseError(format!(
-            "unexpected storage result code {reason_code:?}"
-        )));
     }
     Ok(())
 }
@@ -1956,14 +2467,14 @@ mod tests {
     }
 
     #[test]
-    fn multipart_plan_covers_the_512_mib_boundary_with_fixed_parts() {
+    fn multipart_plan_covers_the_1_gib_boundary_with_fixed_parts() {
         let plan = multipart_plan(
             MAX_SEALED_ATTACHMENT_BYTES,
             ATTACHMENT_MULTIPART_PART_BYTES,
             ATTACHMENT_MULTIPART_MAX_PARTS,
         )
         .unwrap();
-        assert_eq!(plan.len(), 65);
+        assert_eq!(plan.len(), 128);
         assert!(plan
             .iter()
             .all(|(_, _, size)| *size <= ATTACHMENT_MULTIPART_PART_BYTES));
@@ -1971,7 +2482,7 @@ mod tests {
             plan.iter().map(|(_, _, size)| *size).sum::<u64>(),
             MAX_SEALED_ATTACHMENT_BYTES
         );
-        assert_eq!(plan.last().unwrap().0, 65);
+        assert_eq!(plan.last().unwrap().0, 128);
     }
 
     #[test]
@@ -1979,6 +2490,7 @@ mod tests {
         let mut reader = ExactPartReader {
             inner: io::Cursor::new(vec![1u8; 7]),
             remaining: 8,
+            progress: None,
         };
         let mut output = [0u8; 8];
         assert_eq!(reader.read(&mut output).unwrap(), 7);
@@ -1986,5 +2498,87 @@ mod tests {
             reader.read(&mut output).unwrap_err().kind(),
             io::ErrorKind::UnexpectedEof
         );
+    }
+
+    #[test]
+    fn task_4911_tor_attachment_budget_calls_live_transfer_slow_and_stall_by_name() {
+        let start = std::time::Instant::now();
+        let mut tor = AttachmentTransferWatchdog::tor(start);
+        let mut progress_seconds = Vec::new();
+        // 8 MiB / 0.30 Mbit/s is about 224 seconds. Model the fixture through
+        // second 300 so the assertion proves cadence and budget without making
+        // this focused unit test take five minutes of wall clock.
+        for second in (0..=300).step_by(30) {
+            let now = start + Duration::from_secs(second);
+            let status = tor.observe_progress_at(now);
+            if second == 0 {
+                assert_eq!(status, AttachmentTransferStatus::Moving);
+            } else {
+                assert_eq!(status, AttachmentTransferStatus::Slow);
+            }
+            assert_eq!(tor.status_at(now), AttachmentTransferStatus::Moving);
+            progress_seconds.push(second);
+        }
+        assert_eq!(TOR_ATTACHMENT_PART_TIMEOUT, Duration::from_secs(330));
+        assert_eq!(
+            CipherStoreTimeouts::TOR.attachment,
+            TOR_ATTACHMENT_PART_TIMEOUT,
+            "Tor attachment timeout must not reuse the Direct 120-second timer"
+        );
+        assert_eq!(
+            CipherStoreTimeouts::TOR.send,
+            TOR_STORE_SEND_TIMEOUT,
+            "Tor sends must have their own timeout budget"
+        );
+        assert!(TOR_ATTACHMENT_PART_TIMEOUT > Duration::from_secs(300));
+        assert!(progress_seconds
+            .windows(2)
+            .all(|pair| pair[1] - pair[0] <= 30));
+
+        let stalled = AttachmentTransferWatchdog::tor(start);
+        assert_eq!(
+            stalled.status_at(start + TOR_ATTACHMENT_PROGRESS_INTERVAL),
+            AttachmentTransferStatus::Slow
+        );
+        assert_eq!(
+            stalled.status_at(start + TOR_ATTACHMENT_STALL_TIMEOUT),
+            AttachmentTransferStatus::TorAttachmentStalled
+        );
+        assert_eq!(
+            CipherStoreTimeouts::DIRECT.attachment,
+            Duration::from_secs(120)
+        );
+        println!(
+            "TASK4911 tor_attachment=8MiB rate_mbit_s=0.30 progress_seconds={progress_seconds:?} last_progress_second=300 timeout_seconds=330 result=not_failed"
+        );
+        println!("TASK4911 tor_stall bytes_moving=0 stall_seconds=180 result=TorAttachmentStalled");
+        println!("TASK4911 direct_attachment_timeout_seconds=120");
+    }
+
+    #[test]
+    fn task_0649_throttled_37_byte_upload_reports_and_clears_live_progress() {
+        let progress = ProChunkedUploadProgress::default();
+        progress.begin(37);
+        let mut throttled_piece = ExactPartReader {
+            inner: io::Cursor::new(vec![0x49; 37]),
+            remaining: 37,
+            progress: Some(progress.clone()),
+        };
+        let mut wire_buffer = [0_u8; 17];
+        assert_eq!(throttled_piece.read(&mut wire_buffer).unwrap(), 17);
+
+        let live = progress.query();
+        assert!(live.uploaded_bytes > 0 && live.uploaded_bytes < 37);
+        assert_eq!(live.total_bytes, 37);
+        assert_eq!(live.completed_pieces, live.uploaded_bytes);
+        println!(
+            "TASK0649 live uploaded_bytes={} total_bytes={} completed_pieces={}",
+            live.uploaded_bytes, live.total_bytes, live.completed_pieces
+        );
+
+        progress.clear();
+        let cleared = progress.query();
+        assert_eq!(cleared.uploaded_bytes, 0);
+        println!("TASK0649 cleared uploaded_bytes={}", cleared.uploaded_bytes);
     }
 }

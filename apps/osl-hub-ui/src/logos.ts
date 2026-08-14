@@ -6,12 +6,14 @@ import {
   siGmail,
   siGmx,
   siGooglechrome,
+  siInstagram,
   siMaildotcom,
+  siMessenger,
   siOpera,
   siSignal,
   siTelegram,
-  siTuta,
   siWhatsapp,
+  siX,
 } from "simple-icons";
 import type { SimpleIcon } from "simple-icons";
 import type { BrowserImportId, ServiceId } from "./services";
@@ -21,11 +23,13 @@ const serviceIcons: Partial<Record<ServiceId | "signal", SimpleIcon>> = {
   telegram: siTelegram,
   signal: siSignal,
   whatsapp: siWhatsapp,
+  x: siX,
+  instagram: siInstagram,
+  messenger: siMessenger,
 };
 
 const providerIcons: Record<string, SimpleIcon> = {
   gmail: siGmail,
-  tuta: siTuta,
   gmx: siGmx,
   maildotcom: siMaildotcom,
 };
@@ -55,6 +59,9 @@ export function providerLogo(id: string): string {
   return icon ? iconSvg(icon) : envelopeSvg(fallbackLabels[id] ?? "Mail");
 }
 
+// The hex values in the hand-drawn logos below are other companies' brand
+// colours on their own marks. DELIBERATELY not OSL design tokens
+// (osl-tokens.ts) — a brand logo in OSL cyan would be the wrong brand.
 function iCloudMailSvg(): string {
   return `<svg class="company-logo provider-logo provider-logo-icloud" viewBox="0 0 24 24" role="img" aria-label="iCloud Mail"><defs><linearGradient id="icloud-mail-gradient" x1="4" y1="3" x2="20" y2="21" gradientUnits="userSpaceOnUse"><stop stop-color="#62c8ff"/><stop offset="1" stop-color="#1688f8"/></linearGradient></defs><path fill="url(#icloud-mail-gradient)" d="M7.2 19.4h10.2a4.6 4.6 0 0 0 .8-9.1A6.5 6.5 0 0 0 5.9 8.7a5.4 5.4 0 0 0 1.3 10.7Z"/><path fill="none" stroke="#fff" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.45" d="M8.1 12.2h7.8v4.6H8.1zM8.4 12.6l3.6 2.5 3.6-2.5"/></svg>`;
 }

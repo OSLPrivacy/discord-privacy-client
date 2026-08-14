@@ -56,10 +56,7 @@
         "test/integration/license-redeem-idempotency.test.ts: TS18048  #2",
         "test/integration/license-redeem-idempotency.test.ts: TS18048  #3",
         "test/integration/license-redeem-idempotency.test.ts: TS18048  #4",
-        "test/integration/license-redeem-idempotency.test.ts: TS18048  #5",
-        "test/unit/ai-generate.test.ts: TS2352",
-        "test/unit/ai-generate.test.ts: TS2493",
-        "test/unit/ai-generate.test.ts: TS2493  #2"
+        "test/integration/license-redeem-idempotency.test.ts: TS18048  #5"
       ]
     },
     {

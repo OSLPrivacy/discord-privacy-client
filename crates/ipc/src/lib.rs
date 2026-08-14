@@ -36,81 +36,57 @@
 pub mod allowed_places;
 pub mod app_preferences;
 pub mod at_rest_boundary;
+pub mod attachment_uploads;
 pub mod attachment_wire;
 pub mod auto_whitelist_rules;
 pub mod autoscrub_account_switches;
+pub mod autoscrub_deletion_agreement;
+pub mod autoscrub_controls;
 pub mod autoscrub_pro_gate;
+pub mod autoscrub_schedule_mode;
+pub mod bad_message_preview;
 pub mod bad_message_rules;
 pub mod both_sides_burn_progress;
 pub mod build_switch_metadata;
 pub mod burned_scopes_file;
-/// The machine-readable catalogue of OSL-central moderation systems that must
-/// not exist, read by the TASK 6594 central-absence sweep.
-pub mod central_moderation_needles;
-/// The deployed OSL Chats content-write guards: membership, role, author and
-/// parent binding, one named guard per write endpoint.
-pub mod chats_content_guards;
-/// The installed OSL Chats client's route manifest — every endpoint it can
-/// reach, its parent/author binding and the roles allowed to use it.
-pub mod chats_route_manifest;
-/// The deployed OSL Chats authorization authority: the server-side half of the
-/// enclave permission model that `server_membership` and `spaces` describe.
-pub mod chats_service_authority;
 pub mod cipher_store_client;
 pub mod commands;
 pub mod control_inbox_dead_letter;
 pub mod control_messages;
-pub mod crypto_top_up;
 pub mod decoy_mp4;
 pub mod destruct_ack;
+pub mod email_pointer_files;
 pub mod email_send_modes;
 pub mod email_whitelist_kinds;
-/// Signed, customisable Enclave categories, channels, modes and per-role
-/// permission overrides, with one deterministic access resolver.
-pub mod enclave_layout;
-/// Least-privilege bot principals, exact per-channel READ/POST/COMMANDS
-/// grants, human-signed command initiation, and bot-signed responses.
-pub mod enclave_bot_permissions;
-pub mod enclave_leave;
-pub mod enclave_removal;
-/// Enclave-scoped custom roles, the KEY/RELAY/TRUST permission catalogue, one
-/// resolver, and the signed instructions an Enclave's own people use to
-/// remove, mute, restrict, revoke and delete inside their own Enclave.
-pub mod enclave_self_moderation;
 pub mod fresh_start;
 pub mod friend_request;
 pub mod friend_service_name;
 pub mod group_manifest;
+pub mod half_restored_surface;
 pub(crate) mod group_send;
+pub mod irreversible_action;
 pub mod license_lifecycle;
 pub mod log_id;
 pub mod main_password;
 pub mod membership;
-pub mod membership_service;
-pub mod membership_size_rules;
 pub mod message_expiry_dial;
-pub mod metered_bytes;
 pub mod migration;
+pub mod mutual_discovery;
 pub mod named_places;
 pub mod offline_send_queue;
-// TASK 4807: ordinary cross-device sync merge rules and the server-visible
-// header view they are carried under. Imported from the 4807 gate commit
-// (c9f67906d) so 4817 proves confidentiality over the same merge engine.
 pub mod ordinary_sync;
 pub mod peer_capabilities;
 pub mod peer_map;
+pub mod permission_catalogue;
 pub mod private_contact_link;
 pub mod prose_token;
-/// The live desktop-provider discovery boundary.  This is deliberately not a
-/// command-only helper: providers report discoveries here after a signed-in
-/// Windows session has observed them.
-pub mod provider_discovery;
 pub mod receipt_wire;
 mod recoverable_file;
 pub mod recovery;
 /// Direct message-service burn/download operations whose observable item
 /// changes are gated by the shared service-reply validator.
 pub mod service_reply_operations;
+pub mod signal_story;
 pub mod signal_whitelist;
 // OSL-RN ciphertexts are single-use.  This sealed cache lets transcript
 // rendering reuse an already-decrypted payload without advancing the ratchet.
@@ -127,31 +103,41 @@ pub mod revocation;
 // 9-C1: `pending_invitations` module removed alongside the
 // invitation handshake. Pre-C1 `pending_invitations.json` files are
 // unconditionally deleted at bootstrap.
-pub mod metered_bytes;
-pub mod production_kind_admission;
+pub mod schedule_storage;
 pub mod scope;
-// TASK 4811: the written sync classification. Imported verbatim from the 4811
-// gate commit (74f52ea77) so the allowed/refused registry has one definition.
-pub mod sync_policy;
 pub mod scope_blobs_file;
+// TASK 1472: AutoScrub activity record (start, end, account, matches,
+// deletions, failures, text, location) for every run. Self-contained for
+// the same reason as scheduled_runner_rules above: gate 1451 (record
+// deletion outcomes) and gate 1464 (this crate's scheduled_runner_rules,
+// already merged here) live on other lanes / this lane respectively, and
+// this module's finish line does not require importing 1451's types.
+pub mod autoscrub_activity;
+// TASK 1476: the before-run, per-account, deletion-count and failure notices
+// for a scheduled AutoScrub batch, every one of which opens the activity
+// record behind it. Sits next to its gate 1472 above and reads its counts
+// straight out of that module's saved records, so a notice can never quote a
+// number the run did not produce.
+pub mod autoscrub_notices;
+// TASK 1464: pure decision rules for the scheduled AutoScrub runner (one
+// account at a time, pause on sleep/unavailable, resume on Run now or the
+// next schedule). Self-contained: gates 1422 (action pacing) and 1463
+// (schedule storage) live only on other lanes as of this commit and are not
+// merged here, and this task's finish line does not require importing
+// either — see the module doc comment.
+pub mod scheduled_runner_rules;
 pub mod scope_ttl_file;
 pub mod screen_words;
 pub mod server_membership;
-pub mod shipping_email;
+pub mod service_settings_restore;
 pub mod space_roster;
+#[cfg(test)]
+mod task_0465_password_reset_e2e;
 // Unit a45: encrypted UI-side storage contract (checklist A6). Defines the
 // `SecureLocalStore` trait + `SealedStore` reference impl; does not migrate
 // any caller yet (`apps/osl-hub-ui/src/main.ts` localStorage call sites and
 // `main_password::maybe_encrypt` are separate, later units).
 pub mod secure_local_store;
-// TASK 4817: the sealed self-message sync path. Every allowed 4811 kind is
-// sealed to the destination device key before any relay-visible surface sees
-// it, and merge is reachable only through an authenticated open.
-pub mod sealed_sync;
-// Selective-audience delivery is deliberately a separate wire from v=3:
-// v=3 slot hashes are useful for ordinary delivery, but would let an
-// identity-blind store associate a selective recipient slot with a public key.
-pub mod selective_visibility;
 pub mod sender_attribution_proof;
 pub mod sender_key_state;
 // A7: the session lock that actually locks. Supersedes
@@ -161,14 +147,23 @@ pub mod sender_key_state;
 pub mod session_lock;
 pub mod state;
 pub mod state_reload;
+// TASK 5031: "rename them, just for me" / "give them a colour, just for me" —
+// local overlays that never touch the other account's own profile record.
+pub mod this_person_overlay;
 pub mod tier_gate;
 pub mod tofu;
 pub mod tombstone_file;
 pub mod transport;
+pub mod unfinished_onboarding;
 // Padmé applies to the stored transport object, outside the AEAD plaintext
 // padding boundary.  Expose it from the shipping IPC crate so the upload path
 // can consume the one canonical implementation as the object envelope lands.
+pub mod automatic_stop;
+/// Whole-service cost projection and threshold alarms over durable usage.
+pub mod cost_alarm;
 pub mod transport_padding;
+/// Durable, per-person attachment and daily activity accounting used by the
+/// storage-budget gate.
 pub mod usage_counters;
 pub mod whitelist;
 pub mod whitelist_rules_store;
@@ -181,13 +176,6 @@ pub mod wire_rn;
 // OSL-RN per-peer health state. Kept separate from ratchet sessions so a
 // recovery delete cannot erase the durable fact that a peer desynchronised.
 pub mod rn_health;
-
-/// TASK 6856 acceptance check for customisable Enclave categories, channels,
-/// modes and overrides. It lives beside the crate rather than in `tests/`
-/// because `cargo test -p ipc --lib` builds only this crate's library, which
-/// keeps the check independent of the crate's binary targets.
-#[cfg(test)]
-mod task_6856_enclave_layout;
 
 // A handful of things this crate reaches for are genuinely process-global:
 // `keystore::set_base_dir_override` / `set_active_account_dir` (an `RwLock`
@@ -259,6 +247,12 @@ pub use commands::{
     UiSessionEncryptionKeyDto,
 };
 pub use state::AppState;
+
+#[cfg(test)]
+mod task_0278_remove_friend_not_block;
+
+#[cfg(test)]
+mod task_3617_complex_emoji_roundtrip;
 
 use serde::Serialize;
 use thiserror::Error;

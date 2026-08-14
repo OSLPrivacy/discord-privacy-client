@@ -43,6 +43,7 @@ pub struct SharedConversationScrollPageLog {
     pub new_messages_read: usize,
     pub cumulative_messages_read: usize,
     pub gate_after_page: SharedConversationScrollGateState,
+    pub stopped_inside_page_after_message: Option<usize>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -81,49 +82,43 @@ pub struct SharedConversationScrollPace {
 
 impl SharedConversationScrollPace {
     pub fn new(pause_ms: u64) -> Self {
-        Self {
-            pause_ms,
-            clock_ms: 0,
-            active_actions: 0,
-            max_parallel_actions: 0,
-        }
+        Self { pause_ms, clock_ms: 0, active_actions: 0, max_parallel_actions: 0 }
     }
 
-    pub fn immediate() -> Self {
-        Self::new(0)
-    }
+    pub fn immediate() -> Self { Self::new(0) }
+    pub fn pause_ms(&self) -> u64 { self.pause_ms }
+    pub fn elapsed_ms(&self) -> u64 { self.clock_ms }
+    pub fn max_parallel_actions(&self) -> usize { self.max_parallel_actions }
 
-    pub fn pause_ms(&self) -> u64 {
-        self.pause_ms
-    }
-
-    pub fn elapsed_ms(&self) -> u64 {
-        self.clock_ms
-    }
-
-    pub fn max_parallel_actions(&self) -> usize {
-        self.max_parallel_actions
-    }
-
-    fn paced_action(
-        &mut self,
-        kind: SharedConversationScrollActionKind,
-        page_number: usize,
-    ) -> SharedConversationScrollActionLog {
+    fn paced_action(&mut self, kind: SharedConversationScrollActionKind, page_number: usize) -> SharedConversationScrollActionLog {
         self.clock_ms = self.clock_ms.saturating_add(self.pause_ms);
         self.active_actions = self.active_actions.saturating_add(1);
         self.max_parallel_actions = self.max_parallel_actions.max(self.active_actions);
         let started_at_ms = self.clock_ms;
         self.clock_ms = self.clock_ms.saturating_add(1);
         self.active_actions = self.active_actions.saturating_sub(1);
-        SharedConversationScrollActionLog {
-            kind,
-            page_number,
-            pause_ms: self.pause_ms,
-            started_at_ms,
-            finished_at_ms: self.clock_ms,
-        }
+        SharedConversationScrollActionLog { kind, page_number, pause_ms: self.pause_ms, started_at_ms, finished_at_ms: self.clock_ms }
     }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case", tag = "event")]
+pub enum SharedConversationScrollEventLogEntry {
+    MessageRead {
+        page_number: usize,
+        message_index_in_page: usize,
+        cumulative_messages_read: usize,
+    },
+    PauseRequestedInsidePage {
+        page_number: usize,
+        message_index_in_page: usize,
+        cumulative_messages_read: usize,
+    },
+    StopRequestedInsidePage {
+        page_number: usize,
+        message_index_in_page: usize,
+        cumulative_messages_read: usize,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -132,6 +127,7 @@ pub struct SharedConversationScrollRead {
     pub messages: Vec<SharedPlaceMessage>,
     pub page_log: Vec<SharedConversationScrollPageLog>,
     pub action_log: Vec<SharedConversationScrollActionLog>,
+    pub event_log: Vec<SharedConversationScrollEventLogEntry>,
     pub stop_reason: SharedConversationScrollStop,
     pub stopped_on_page_number: Option<usize>,
 }
@@ -161,6 +157,15 @@ pub enum SharedConversationScrollGateState {
 
 pub trait SharedConversationScrollGate {
     fn state_between_pages(&self) -> Result<SharedConversationScrollGateState, String>;
+
+    fn state_after_message(
+        &self,
+        _page_number: usize,
+        _message_index_in_page: usize,
+        _cumulative_messages_read: usize,
+    ) -> Result<SharedConversationScrollGateState, String> {
+        Ok(SharedConversationScrollGateState::Running)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -218,6 +223,7 @@ where
     let mut messages = Vec::new();
     let mut page_log = Vec::new();
     let mut action_log = Vec::new();
+    let mut event_log = Vec::new();
     let mut seen_message_ids = HashSet::new();
 
     for page_number in 1..=page_limit {
@@ -225,12 +231,75 @@ where
         let screen = place.read_current_screen()?;
         let messages_on_screen = screen.len();
         let mut new_messages_read = 0usize;
+        let mut stopped_inside_page_after_message = None;
 
         for message in screen {
             validate_message(&message)?;
             if seen_message_ids.insert(message.message_id.clone()) {
                 messages.push(message);
                 new_messages_read += 1;
+                event_log.push(SharedConversationScrollEventLogEntry::MessageRead {
+                    page_number,
+                    message_index_in_page: new_messages_read,
+                    cumulative_messages_read: messages.len(),
+                });
+                match gate.state_after_message(page_number, new_messages_read, messages.len())? {
+                    SharedConversationScrollGateState::Running => {}
+                    SharedConversationScrollGateState::PauseAfterCurrentPage => {
+                        stopped_inside_page_after_message = Some(new_messages_read);
+                        event_log.push(
+                            SharedConversationScrollEventLogEntry::PauseRequestedInsidePage {
+                                page_number,
+                                message_index_in_page: new_messages_read,
+                                cumulative_messages_read: messages.len(),
+                            },
+                        );
+                        page_log.push(SharedConversationScrollPageLog {
+                            page_number,
+                            messages_on_screen,
+                            new_messages_read,
+                            cumulative_messages_read: messages.len(),
+                            gate_after_page:
+                                SharedConversationScrollGateState::PauseAfterCurrentPage,
+                            stopped_inside_page_after_message,
+                        });
+                        return Ok(SharedConversationScrollRead {
+                            messages,
+                            page_log,
+                            action_log,
+                            event_log,
+                            stop_reason: SharedConversationScrollStop::PauseRequested,
+                            stopped_on_page_number: Some(page_number),
+                        });
+                    }
+                    SharedConversationScrollGateState::StopAfterCurrentPage => {
+                        stopped_inside_page_after_message = Some(new_messages_read);
+                        event_log.push(
+                            SharedConversationScrollEventLogEntry::StopRequestedInsidePage {
+                                page_number,
+                                message_index_in_page: new_messages_read,
+                                cumulative_messages_read: messages.len(),
+                            },
+                        );
+                        page_log.push(SharedConversationScrollPageLog {
+                            page_number,
+                            messages_on_screen,
+                            new_messages_read,
+                            cumulative_messages_read: messages.len(),
+                            gate_after_page:
+                                SharedConversationScrollGateState::StopAfterCurrentPage,
+                            stopped_inside_page_after_message,
+                        });
+                        return Ok(SharedConversationScrollRead {
+                            messages,
+                            page_log,
+                            action_log,
+                            event_log,
+                            stop_reason: SharedConversationScrollStop::StopRequested,
+                            stopped_on_page_number: Some(page_number),
+                        });
+                    }
+                }
             }
         }
 
@@ -241,6 +310,7 @@ where
             new_messages_read,
             cumulative_messages_read: messages.len(),
             gate_after_page,
+            stopped_inside_page_after_message,
         });
 
         match gate_after_page {
@@ -250,6 +320,7 @@ where
                     messages,
                     page_log,
                     action_log,
+                    event_log,
                     stop_reason: SharedConversationScrollStop::PauseRequested,
                     stopped_on_page_number: Some(page_number),
                 });
@@ -259,6 +330,7 @@ where
                     messages,
                     page_log,
                     action_log,
+                    event_log,
                     stop_reason: SharedConversationScrollStop::StopRequested,
                     stopped_on_page_number: Some(page_number),
                 });
@@ -270,6 +342,7 @@ where
                 messages,
                 page_log,
                 action_log,
+                event_log,
                 stop_reason: SharedConversationScrollStop::PageLimitReached,
                 stopped_on_page_number: None,
             });
@@ -280,6 +353,7 @@ where
                 messages,
                 page_log,
                 action_log,
+                event_log,
                 stop_reason: SharedConversationScrollStop::NoNewMessages,
                 stopped_on_page_number: None,
             });
@@ -290,6 +364,7 @@ where
                 messages,
                 page_log,
                 action_log,
+                event_log,
                 stop_reason: SharedConversationScrollStop::EndOfPlace,
                 stopped_on_page_number: None,
             });

@@ -15,11 +15,13 @@
 export type SettingsHomeChoiceId =
   | "account"
   | "apps"
+  | "friends"
   | "privacy"
   | "whitelisting"
   | "scrub"
   | "cleanup"
   | "notifications"
+  | "window-sounds"
   | "appearance"
   | "about";
 
@@ -40,6 +42,11 @@ export const settingsHomeChoices: readonly SettingsHomeChoice[] = [
     id: "apps",
     label: "Apps and sending",
     explanation: "Which apps and accounts OSL may open, and how it sends your messages.",
+  },
+  {
+    id: "friends",
+    label: "Friends",
+    explanation: "Who you trust, who may contact you, and which accounts friends can see.",
   },
   {
     id: "privacy",
@@ -65,6 +72,11 @@ export const settingsHomeChoices: readonly SettingsHomeChoice[] = [
     id: "notifications",
     label: "Notifications",
     explanation: "Which alerts OSL raises on this device, and how much they show.",
+  },
+  {
+    id: "window-sounds",
+    label: "Window & sounds",
+    explanation: "Where the window opens, how it moves, and which sounds this device plays.",
   },
   {
     id: "appearance",

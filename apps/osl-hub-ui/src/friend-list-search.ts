@@ -1,144 +1,135 @@
-import type { FriendsTab } from "./friends-tabs";
+/**
+ * Task 3674: searchable Friends list.
+ *
+ * The list state deliberately owns the selected tab and search text.  Opening
+ * a friend page changes only the screen, making Back restore the exact list
+ * the person navigated from.
+ */
+import {
+  FRIENDS_TAB_IDS,
+  FRIENDS_TAB_LABELS,
+  type FriendsTabId,
+} from "./friends-tabs";
 
 export interface Friend {
   readonly id: string;
   readonly name: string;
-  readonly tab: FriendsTab;
+  /** "all" is a view, not a stored friend category. */
+  readonly tab: Exclude<FriendsTabId, "all">;
 }
 
-export type FriendListScreen = "list" | "friend-page";
-
 export interface FriendListState {
-  readonly activeTab: FriendsTab;
+  readonly activeTab: FriendsTabId;
   readonly searchQuery: string;
-  readonly screen: FriendListScreen;
+  readonly screen: "list" | "friend-page";
   readonly openFriendId: string | null;
 }
 
-export function initialFriendListState(activeTab: FriendsTab = "all"): FriendListState {
+export const FRIEND_NOT_IN_VISIBLE_LIST_ERROR = "Friend is not in the visible Friends list";
+
+export function initialFriendListState(activeTab: FriendsTabId = "all"): FriendListState {
   return { activeTab, searchQuery: "", screen: "list", openFriendId: null };
 }
 
 function matchesSearch(friend: Friend, query: string): boolean {
-  const trimmed = query.trim().toLowerCase();
-  if (trimmed.length === 0) return true;
-  return friend.name.toLowerCase().includes(trimmed);
+  return friend.name.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase());
 }
 
-/** The friends shown for the current tab and search query, list screen only. */
-export function visibleFriends(friends: readonly Friend[], state: FriendListState): Friend[] {
+export function visibleFriends(friends: readonly Friend[], state: FriendListState): readonly Friend[] {
   return friends.filter(
-    (friend) => friend.tab === state.activeTab && matchesSearch(friend, state.searchQuery),
+    (friend) => (state.activeTab === "all" || friend.tab === state.activeTab) && matchesSearch(friend, state.searchQuery),
   );
 }
 
-export function setFriendListTab(state: FriendListState, tab: FriendsTab): FriendListState {
-  return { ...state, activeTab: tab };
+export function setFriendListTab(state: FriendListState, activeTab: FriendsTabId): FriendListState {
+  return { ...state, activeTab };
 }
 
-export function setFriendListSearch(state: FriendListState, query: string): FriendListState {
-  return { ...state, searchQuery: query };
+export function setFriendListSearch(state: FriendListState, searchQuery: string): FriendListState {
+  return { ...state, searchQuery };
 }
 
-export const FRIEND_NOT_IN_TAB_ERROR = "Cannot open a friend outside the selected tab's visible results.";
-
-/**
- * Open a friend's page. Only a friend currently visible (right tab, matches the
- * search) can be opened, so the id passed here always came from a row the list
- * screen actually drew.
- */
 export function openFriendPage(
   friends: readonly Friend[],
   state: FriendListState,
   friendId: string,
 ): FriendListState {
-  const visible = visibleFriends(friends, state);
-  if (!visible.some((friend) => friend.id === friendId)) {
-    throw new Error(FRIEND_NOT_IN_TAB_ERROR);
+  if (!visibleFriends(friends, state).some((friend) => friend.id === friendId)) {
+    throw new Error(FRIEND_NOT_IN_VISIBLE_LIST_ERROR);
   }
   return { ...state, screen: "friend-page", openFriendId: friendId };
 }
 
-/**
- * Back from the friend page returns to the list screen with the same tab and
- * search query it had when the friend was opened -- neither was ever cleared.
- */
 export function backToFriendList(state: FriendListState): FriendListState {
   return { ...state, screen: "list", openFriendId: null };
 }
 
-function escapeAttribute(value: string): string {
-  return value
-    .replace(/&/gu, "&amp;")
-    .replace(/</gu, "&lt;")
-    .replace(/>/gu, "&gt;")
-    .replace(/"/gu, "&quot;");
+function escapeHtml(value: string): string {
+  return value.replace(/&/gu, "&amp;").replace(/</gu, "&lt;").replace(/>/gu, "&gt;").replace(/"/gu, "&quot;").replace(/'/gu, "&#39;");
 }
 
-function friendRowMarkup(friend: Friend): string {
-  return `<li class="friend-row" data-friend-row="${escapeAttribute(friend.id)}"><button class="friend-open-button" type="button" data-open-friend="${escapeAttribute(friend.id)}">${friend.name}</button></li>`;
+function tabMarkup(state: FriendListState, friends: readonly Friend[]): string {
+  return FRIENDS_TAB_IDS.map((tab) => {
+    const count = tab === "all" ? friends.length : friends.filter((friend) => friend.tab === tab).length;
+    return `<button class="friends-tab${state.activeTab === tab ? " active" : ""}" data-friends-tab="${tab}" type="button" aria-pressed="${state.activeTab === tab}">${FRIENDS_TAB_LABELS[tab]} <span class="tab-count">${count}</span></button>`;
+  }).join("");
 }
 
 export function friendListMarkup(friends: readonly Friend[], state: FriendListState): string {
-  const rows = visibleFriends(friends, state).map(friendRowMarkup).join("");
-  return [
-    `<section class="friend-list" data-friend-list-screen data-active-tab="${escapeAttribute(state.activeTab)}">`,
-    `<input class="friend-search-input" type="search" data-friend-search value="${escapeAttribute(state.searchQuery)}" aria-label="Search friends by name" />`,
-    `<ul class="friend-list-rows">${rows}</ul>`,
-    `</section>`,
-  ].join("");
+  const rows = visibleFriends(friends, state)
+    .map((friend) => `<button class="friend-list-row" data-open-friend="${escapeHtml(friend.id)}" type="button">${escapeHtml(friend.name)}</button>`)
+    .join("");
+  const empty = rows || `<p data-friend-search-empty>No friends match this search.</p>`;
+  return `<section class="friends-list" data-active-tab="${state.activeTab}" aria-label="Friends"><div class="tab-bar">${tabMarkup(state, friends)}<button class="button primary add-friend-button" data-add-friend type="button">Add Friend</button></div><label for="friend-list-search">Search friends</label><input id="friend-list-search" data-friend-search type="search" value="${escapeHtml(state.searchQuery)}" placeholder="Search friends" autocomplete="off"/><div data-friend-list-results>${empty}</div></section>`;
 }
 
-export function friendPageMarkup(friends: readonly Friend[], state: FriendListState): string {
-  const friend = friends.find((candidate) => candidate.id === state.openFriendId);
-  if (!friend) throw new Error("No friend page is open.");
-  return [
-    `<section class="friend-page" data-friend-page="${escapeAttribute(friend.id)}">`,
-    `<button class="friend-page-back" type="button" data-friend-page-back>Back</button>`,
-    `<h2 class="friend-page-name">${friend.name}</h2>`,
-    `</section>`,
-  ].join("");
+export function friendPageMarkup(friend: Friend): string {
+  return `<section class="friend-page" data-friend-page="${escapeHtml(friend.id)}"><button data-friend-page-back type="button">Back</button><h2>${escapeHtml(friend.name)}</h2></section>`;
 }
 
 export function renderFriendListScreen(friends: readonly Friend[], state: FriendListState): string {
-  return state.screen === "friend-page"
-    ? friendPageMarkup(friends, state)
-    : friendListMarkup(friends, state);
+  if (state.screen === "list") return friendListMarkup(friends, state);
+  const friend = friends.find((candidate) => candidate.id === state.openFriendId);
+  if (!friend) throw new Error("Open friend no longer exists");
+  return friendPageMarkup(friend);
 }
 
-/** Mount the searchable friend list. Search and the active tab persist across an open/Back round trip. */
+export interface FriendListSearchController {
+  readonly state: () => FriendListState;
+  readonly render: () => void;
+}
+
+/** Bind a mounted Friends-list container without reloading or losing list state. */
 export function attachFriendListSearch(
-  mount: HTMLElement,
+  root: HTMLElement,
   friends: readonly Friend[],
-  initialTab: FriendsTab = "all",
-): { getState: () => FriendListState } {
-  let state = initialFriendListState(initialTab);
-  const draw = (): void => {
-    mount.innerHTML = renderFriendListScreen(friends, state);
-  };
-  mount.addEventListener("input", (event) => {
-    const target = event.target as HTMLInputElement | null;
-    if (!target || target.dataset.friendSearch === undefined) return;
-    state = setFriendListSearch(state, target.value);
-    draw();
-  });
-  mount.addEventListener("click", (event) => {
-    const target = event.target as HTMLElement | null;
-    const openButton = target?.closest?.("[data-open-friend]") as HTMLElement | null;
-    if (openButton) {
-      const friendId = openButton.dataset.openFriend;
-      if (friendId) {
-        state = openFriendPage(friends, state, friendId);
-        draw();
-      }
-      return;
-    }
-    const backButton = target?.closest?.("[data-friend-page-back]") as HTMLElement | null;
-    if (backButton) {
+  startingState: FriendListState = initialFriendListState(),
+): FriendListSearchController {
+  let state = startingState;
+  const render = (): void => {
+    root.innerHTML = renderFriendListScreen(friends, state);
+    const search = root.querySelector<HTMLInputElement>("[data-friend-search]");
+    search?.addEventListener("input", () => {
+      state = setFriendListSearch(state, search.value);
+      render();
+    });
+    root.querySelectorAll<HTMLButtonElement>("[data-friends-tab]").forEach((tab) => {
+      tab.addEventListener("click", () => {
+        state = setFriendListTab(state, tab.dataset.friendsTab as FriendsTabId);
+        render();
+      });
+    });
+    root.querySelectorAll<HTMLButtonElement>("[data-open-friend]").forEach((row) => {
+      row.addEventListener("click", () => {
+        state = openFriendPage(friends, state, row.dataset.openFriend ?? "");
+        render();
+      });
+    });
+    root.querySelector<HTMLButtonElement>("[data-friend-page-back]")?.addEventListener("click", () => {
       state = backToFriendList(state);
-      draw();
-    }
-  });
-  draw();
-  return { getState: () => state };
+      render();
+    });
+  };
+  render();
+  return { state: () => state, render };
 }

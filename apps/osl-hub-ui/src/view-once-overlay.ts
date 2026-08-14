@@ -7,8 +7,6 @@
  * the current language, the same way `view-once-player-screen.ts` does.
  */
 
-import { viewerCaptureDisclosureMarkup } from "./view-once-capture-disclosure";
-
 export interface ViewOnceOverlayProtectedText {
   readonly kind: "text";
   readonly text: string;
@@ -89,7 +87,6 @@ export function viewOnceOverlayMarkup(model: ViewOnceOverlayModel, words: Record
     <div class="voo-card" role="dialog" aria-modal="true" aria-label="${escapeHtml(requireWord(words, "protected_text_placeholder"))}" data-voo-card>
       <button class="voo-close" type="button" aria-label="${escapeHtml(requireWord(words, "close_aria_label"))}" data-voo-close>&times;</button>
       ${content}
-      ${viewerCaptureDisclosureMarkup()}
       <div class="voo-controls">
         <label class="voo-duration-label">
           <span>${durationLabel}</span>

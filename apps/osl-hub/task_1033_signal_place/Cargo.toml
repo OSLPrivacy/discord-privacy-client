@@ -1,0 +1,11 @@
+[package]
+name = "task-1033-signal-place"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[[test]]
+name = "task_1033_signal_shared_place_text"
+path = "../tests/task_1033_signal_shared_place_text.rs"

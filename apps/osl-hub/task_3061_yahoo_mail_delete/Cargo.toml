@@ -1,0 +1,22 @@
+# Standalone check crate for TASK 3061.
+#
+# `apps/osl-hub` itself does not compile in this tree: 27 files under
+# `apps/osl-hub/src` carry merge damage that predates this task ("this file
+# contains an unclosed delimiter" / "unexpected closing delimiter"), among them
+# `services.rs`, so no `-p osl-hub` test target can link. Following the
+# TASK 3406 / TASK 3338 / TASK 3045 precedent, this crate compiles the hub's OWN
+# source files through `#[path]` rather than copying them, so the Yahoo fill-in
+# under test is byte-for-byte the file `apps/osl-hub/src/lib.rs` declares and the
+# deleter it calls is byte-for-byte gate 3045's.
+#
+# The dependency pin below is copied exactly from `apps/osl-hub/Cargo.toml`.
+[package]
+name = "task-3061-yahoo-mail-delete"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+serde = { version = "=1.0.228", features = ["derive"] }
+
+[workspace]

@@ -30,6 +30,7 @@ const signal: LinkedService = {
   sidebarOrder: 0,
   category: "consumer",
   launchState: "available",
+  generatedLabel: "Reading only",
   supportsNativePreview: true,
   supportsProtectedPreview: true,
   accounts: [{ id: "signal-account", label: "Personal", displayHandle: "Signal", state: "demoLinked", provider: null }],
@@ -42,6 +43,7 @@ const email: LinkedService = {
   sidebarOrder: 1,
   category: "consumer",
   launchState: "available",
+  generatedLabel: "Opens the app",
   supportsNativePreview: true,
   supportsProtectedPreview: true,
   accounts: [

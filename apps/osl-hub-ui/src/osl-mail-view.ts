@@ -17,6 +17,7 @@ export interface OslMailViewModel {
   error: string | null;
   threadSyncUnavailable: boolean;
   composeDraft?: OslMailComposeDraft;
+  attachmentTrayMarkup?: string;
 }
 
 export interface OslMailComposeDraft {
@@ -112,9 +113,8 @@ function inbox(model: OslMailViewModel): string {
 }
 
 function compose(model: OslMailViewModel): string {
-  return `<section class="osl-mail-compose"><header><h2>New OSL message</h2><button class="text-button" data-mail-pane="inbox" type="button">Cancel</button></header><form id="osl-mail-compose-form"><label>To<input id="osl-mail-to" type="email" inputmode="email" autocomplete="email" placeholder="username@oslprivacy.com" required/></label><label>Subject<input id="osl-mail-subject" maxlength="512"/></label><label class="mail-body">Message<textarea id="osl-mail-body" required maxlength="262144"></textarea></label><div class="osl-mail-transit-guide"><span>${transitBadge("oslE2ee")} OSL Mail recipients only</span><span class="is-disabled">External outbound is unavailable in v1</span></div><button class="button primary" id="osl-mail-send" data-osl-mail-send-choice="Send" type="button">Send protected</button></form>${model.sendReceipt ? confirmation("Send accepted", model.sendReceipt.receiptSha256) : ""}</section>`;
   const draft = model.composeDraft ?? { to: "", subject: "", body: "" };
-  return `<section class="osl-mail-compose"><header><h2>New OSL message</h2><button class="text-button" data-mail-pane="inbox" type="button">Cancel</button></header><form id="osl-mail-compose-form"><label>To<input id="osl-mail-to" type="email" inputmode="email" autocomplete="email" placeholder="username@oslprivacy.com" value="${escape(draft.to)}" required/></label><label>Subject<input id="osl-mail-subject" maxlength="512" value="${escape(draft.subject)}"/></label><label class="mail-body">Message<textarea id="osl-mail-body" required maxlength="262144">${escape(draft.body)}</textarea></label><div class="osl-mail-transit-guide"><span>${transitBadge("oslE2ee")} OSL Mail recipients only</span><span class="is-disabled">External outbound is unavailable in v1</span></div><button class="button primary" type="submit">Send protected</button></form>${model.sendReceipt ? confirmation("Send accepted", model.sendReceipt.receiptSha256) : ""}</section>`;
+  return `<section class="osl-mail-compose"><header><h2>New OSL message</h2><button class="text-button" data-mail-pane="inbox" type="button">Cancel</button></header><form id="osl-mail-compose-form"><label>To<input id="osl-mail-to" type="email" inputmode="email" autocomplete="email" placeholder="username@oslprivacy.com" value="${escape(draft.to)}" required/></label><label>Subject<input id="osl-mail-subject" maxlength="512" value="${escape(draft.subject)}"/></label><label class="mail-body">Message<textarea id="osl-mail-body" required maxlength="262144">${escape(draft.body)}</textarea></label>${model.attachmentTrayMarkup ?? ""}<div class="osl-mail-transit-guide"><span>${transitBadge("oslE2ee")} OSL Mail recipients only</span><span class="is-disabled">External outbound is unavailable in v1</span></div><button class="button primary" type="submit">Send protected</button></form>${model.sendReceipt ? confirmation("Send accepted", model.sendReceipt.receiptSha256) : ""}</section>`;
 }
 
 function settings(model: OslMailViewModel): string {

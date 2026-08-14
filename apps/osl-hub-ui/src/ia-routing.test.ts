@@ -46,7 +46,7 @@ beforeEach(() => {
 });
 
 describe("IA routing", () => {
-  it("maps application routes to the fixed IA destinations in the rendered shell", () => {
+  it("maps application routes to destination content without a rendered rail", () => {
     const { __oslHubUiTest } = ui;
     const expectations = [
       ["home", "Home"],
@@ -61,17 +61,17 @@ describe("IA routing", () => {
 
     for (const [route, heading] of expectations) {
       __oslHubUiTest.reset({ route });
-      const sidebar = __oslHubUiTest.renderPrimarySidebar();
       const content = __oslHubUiTest.renderWorkspaceContent(route);
+      const shell = __oslHubUiTest.renderRouteShell(route);
 
-      expect(sidebar).toContain(`data-primary-destination="${route}"`);
-      expect(sidebar).toContain(`data-route="${route}"`);
       expect(content).toContain(heading);
+      expect(shell).toContain("data-shared-launcher-header");
+      expect(shell).not.toMatch(/primary-sidebar|data-primary-destination|with-primary-sidebar/u);
     }
   });
 
   it("exposes fixed IA route preview helpers", () => {
-    const { fixedIaRoutePreview, primarySidebarMarkup } = ui;
+    const { fixedIaRoutePreview } = ui;
 
     const routes = fixedIaRoutePreview();
     expect(routes.map((target) => target.destination)).toEqual(oslPrimaryDestinationValues);
@@ -85,10 +85,5 @@ describe("IA routing", () => {
     ]);
     expect(routes.every((target) => target.settingsSection === null)).toBe(true);
 
-    const sidebar = primarySidebarMarkup();
-    for (const target of routes) {
-      expect(sidebar).toContain(`data-primary-destination="${target.destination}"`);
-      expect(sidebar).toContain(`data-route="${target.route}"`);
-    }
   });
 });

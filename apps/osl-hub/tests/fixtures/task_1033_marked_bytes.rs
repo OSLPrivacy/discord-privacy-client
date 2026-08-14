@@ -1,0 +1,1 @@
+pub const MARKED_TEXT: &str = "OSL1.SIGNAL.T1033-MARKED-🦊-7E4B";

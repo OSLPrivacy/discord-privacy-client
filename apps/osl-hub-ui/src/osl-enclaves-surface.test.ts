@@ -24,4 +24,10 @@ describe("T21-T46 Enclaves surface ownership", () => {
     expect(markup).toContain("<span>Available</span>");
     expect(markup).not.toContain("style=");
   });
+
+  it("keeps cut voice and beacon features absent from the RC surface", () => {
+    const markup = oslEnclavesSurfaceMarkup({ statusTag: (label) => `<span>${label}</span>` });
+    expect(markup).not.toMatch(/voice|relay|SFU/iu);
+    expect(markup).not.toMatch(/beacon|subscribe|subscriber|one-way post/iu);
+  });
 });

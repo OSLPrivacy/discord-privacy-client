@@ -1,0 +1,321 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>What OSL can prove</title>
+  <meta name="description" content="What OSL protects today, every known problem it has already found in itself, how to inspect the claims, the Scrub account risk, and what a Pro purchase does and does not consent to.">
+  <link rel="stylesheet" href="docs/site.css">
+</head>
+<body>
+  <main>
+    <h1>What OSL can prove, and what it cannot</h1>
+    <p>This page states what OSL protects today, names every problem OSL already knows about itself, and shows you how to check both without taking our word for it.</p>
+    <p>The problem list below is not a summary. It is the whole of the limits record kept in <code>data/tested-limits.json</code>, and <code>scripts/check-audit-page-words.mjs</code> fails if this page names fewer problems than that record holds.</p>
+
+    <section aria-labelledby="protections">
+      <h2 id="protections">What is protected today</h2>
+      <dl>
+        <dt>Every direct message is sealed to its own key</dt>
+        <dd>Message contents are encrypted with a hybrid scheme combining X25519 and ML-KEM-768. Breaking it requires breaking both. This protects contents against future quantum decryption of recorded traffic. It does not make identity verification quantum-resistant — that is still classical X25519 and Ed25519, and it is proven on test builds rather than on a numbered release build.</dd>
+
+        <dt>The connected service receives an encrypted block, not your words</dt>
+        <dd>Discord receives an encrypted block, not your message. It never receives the decryption key. Discord still sees who you talk to, when, and how often. We cannot hide that.</dd>
+
+        <dt>Messages cached on your device are encrypted</dt>
+        <dd>Decrypted messages cached on your device are encrypted at rest. This does not cover attachments. Non-image attachments are currently written to disk unencrypted.</dd>
+
+        <dt>Your OSL identity is not your Discord account</dt>
+        <dd>OSL identities are separate from your Discord account, and the key server refuses Discord's numeric account IDs outright. Existing accounts created before this change are switched off until their owner's app re-registers them, which happens automatically the next time they open OSL.</dd>
+
+        <dt>The licences</dt>
+        <dd>OSL is fully open source. The only exception is the optional AutoScrub module, which does not exist yet; if it is introduced it would be downloaded separately, only after your explicit consent, and a reproducible fully open-source build would stay usable without it.</dd>
+      </dl>
+      <p>Each of these statements carries its own limit in the same breath, because a protection quoted without its limit is a claim we have not earned.</p>
+    </section>
+
+    <section aria-labelledby="limits">
+      <h2 id="limits">Tested limits</h2>
+      <p>Every problem below is also written out, one entry at a time with the file that establishes it, on the <a href="tested-limits.html">tested-limits page</a>.</p>
+      <!-- limits-count:start -->
+      <p>Known problems named on this page: <strong data-limit-count="page">39</strong>. Entries in the limits record <code>data/tested-limits.json</code>: <strong data-limit-count="record">39</strong>.</p>
+      <!-- limits-count:end -->
+      <p>Those two numbers are compared by a check, not by a person. A problem cannot leave this page by being quietly dropped from it.</p>
+    </section>
+
+    <section aria-labelledby="known-problems">
+      <h2 id="known-problems">Every known problem</h2>
+      <!-- limits:start -->
+      <ol class="limits">
+        <li id="limit-cap-per-message-sealing" data-limit="cap:per-message-sealing">
+          <h3>Per-message hybrid sealing</h3>
+          <p data-limit-status>Status: Beta</p>
+          <p data-limit-problem>Working. Every direct message is sealed to the recipient keys with a fresh key of its own, combining X25519 with post-quantum ML-KEM-768. Proven on test builds against a real conversation, not yet on a numbered release build.</p>
+          <p data-limit-evidence>Recorded by data/pricing.json#/capability_registry. Evidence: <code>data/pricing.json</code>.</p>
+        </li>
+        <li id="limit-cap-cover-carrier-text" data-limit="cap:cover-carrier-text">
+          <h3>Cover text carrier</h3>
+          <p data-limit-status>Status: Planned</p>
+          <p data-limit-problem>Not yet. The readable text never reaches the connected service, but what the service currently receives is an obvious encrypted block rather than an innocuous-looking message. The natural-language cover mode is switched off in the current build because the post-quantum wire is too large for it.</p>
+          <p data-limit-evidence>Recorded by data/pricing.json#/capability_registry. Evidence: <code>data/pricing.json</code>.</p>
+        </li>
+        <li id="limit-cap-protected-text" data-limit="cap:protected-text">
+          <h3>Protected text send and read</h3>
+          <p data-limit-status>Status: Beta</p>
+          <p data-limit-problem>Working on Discord. Sending and reading protected text is proven on test builds. Discord is the only connector qualified so far.</p>
+          <p data-limit-evidence>Recorded by data/pricing.json#/capability_registry. Evidence: <code>data/pricing.json</code>.</p>
+        </li>
+        <li id="limit-cap-image-send" data-limit="cap:image-send">
+          <h3>Encrypted image sending</h3>
+          <p data-limit-status>Status: Planned</p>
+          <p data-limit-problem>Not in the shipping app yet. The encryption for images is written and the picker accepts PNG and JPEG, but nothing in the released app drives it end to end. This is not part of what a Pro purchase gives you today.</p>
+          <p data-limit-evidence>Recorded by data/pricing.json#/capability_registry. Evidence: <code>data/pricing.json</code>.</p>
+        </li>
+        <li id="limit-cap-file-send" data-limit="cap:file-send">
+          <h3>Non-image file sending</h3>
+          <p data-limit-status>Status: Planned</p>
+          <p data-limit-problem>Not yet. Only PNG and JPEG are offered; other file types are not supported.</p>
+          <p data-limit-evidence>Recorded by data/pricing.json#/capability_registry. Evidence: <code>data/pricing.json</code>.</p>
+        </li>
+        <li id="limit-cap-group-protection" data-limit="cap:group-protection">
+          <h3>Group chat and server channel protection</h3>
+          <p data-limit-status>Status: Planned</p>
+          <p data-limit-problem>Group and channel protection is on the way and works well in testing.</p>
+          <p data-limit-evidence>Recorded by data/pricing.json#/capability_registry. Evidence: <code>data/pricing.json</code>.</p>
+        </li>
+        <li id="limit-cap-ratchet" data-limit="cap:ratchet">
+          <h3>Old-message protection</h3>
+          <p data-limit-status>Status: Planned</p>
+          <p data-limit-problem>Not yet. The mechanism that would keep old messages safe if a key is later stolen is written and tested but deliberately switched off pending independent review.</p>
+          <p data-limit-evidence>Recorded by data/pricing.json#/capability_registry. Evidence: <code>data/pricing.json</code>.</p>
+        </li>
+        <li id="limit-cap-attachment-privacy-guard" data-limit="cap:attachment-privacy-guard">
+          <h3>Attachment Privacy Guard</h3>
+          <p data-limit-status>Status: Planned</p>
+          <p data-limit-problem>Not yet. Stripping hidden details out of a file before encrypting it is written but nothing in the shipping app calls it. Assume a file you send still carries its original details.</p>
+          <p data-limit-evidence>Recorded by data/pricing.json#/capability_registry. Evidence: <code>data/pricing.json</code>.</p>
+        </li>
+        <li id="limit-cap-exposure-warning" data-limit="cap:exposure-warning">
+          <h3>Before-send warning</h3>
+          <p data-limit-status>Status: Planned</p>
+          <p data-limit-problem>Not yet. The detection code exists and is tested, but nothing in the shipping app calls it, so OSL does not warn you today.</p>
+          <p data-limit-evidence>Recorded by data/pricing.json#/capability_registry. Evidence: <code>data/pricing.json</code>.</p>
+        </li>
+        <li id="limit-cap-expiry" data-limit="cap:expiry">
+          <h3>Timed expiry</h3>
+          <p data-limit-status>Status: Planned</p>
+          <p data-limit-problem>Not yet. Timed deletion is not wired into the shipping app.</p>
+          <p data-limit-evidence>Recorded by data/pricing.json#/capability_registry. Evidence: <code>data/pricing.json</code>.</p>
+        </li>
+        <li id="limit-cap-view-once" data-limit="cap:view-once">
+          <h3>View once</h3>
+          <p data-limit-status>Status: Planned</p>
+          <p data-limit-problem>Not yet. Components are built; the production wiring and the two-party consent it requires are incomplete.</p>
+          <p data-limit-evidence>Recorded by data/pricing.json#/capability_registry. Evidence: <code>data/pricing.json</code>.</p>
+        </li>
+        <li id="limit-cap-burn" data-limit="cap:burn">
+          <h3>Burn</h3>
+          <p data-limit-status>Status: Planned</p>
+          <p data-limit-problem>Not yet as a peer action. When it lands, burn deletes OSL local and server-side state and asks the other side to delete too. It does not destroy anyone ability to decrypt what the service already holds, and it cannot recall a screenshot.</p>
+          <p data-limit-evidence>Recorded by data/pricing.json#/capability_registry. Evidence: <code>data/pricing.json</code>.</p>
+        </li>
+        <li id="limit-cap-link-protection" data-limit="cap:link-protection">
+          <h3>Link protection</h3>
+          <p data-limit-status>Status: Planned</p>
+          <p data-limit-problem>Not yet. This is a design intention with no code behind it.</p>
+          <p data-limit-evidence>Recorded by data/pricing.json#/capability_registry. Evidence: <code>data/pricing.json</code>.</p>
+        </li>
+        <li id="limit-cap-scrub-discovery" data-limit="cap:scrub-discovery">
+          <h3>Scrub discovery</h3>
+          <p data-limit-status>Status: Planned</p>
+          <p data-limit-problem>Not yet. Current source can fall back to generic JSON when a provider parser refuses an export, so provider identity, archive inventory, media bytes and completeness are not reliably bound. Google, Discord, Meta, X and WhatsApp exports are not qualified end to end.</p>
+          <p data-limit-evidence>Recorded by data/pricing.json#/capability_registry. Evidence: <code>data/pricing.json</code>.</p>
+        </li>
+        <li id="limit-cap-scrub-guided-deletion" data-limit="cap:scrub-guided-deletion">
+          <h3>Guided deletion handoff</h3>
+          <p data-limit-status>Status: Planned</p>
+          <p data-limit-problem>Not yet, and further off than a dependency on discovery would suggest. The part of the app that would actually carry out a guided deletion is not connected: it holds every candidate and does not open the page, choose the delete action, confirm it, or check that it worked. When it does land, OSL will take you to the page and you confirm each removal yourself — OSL will not delete on your behalf.</p>
+          <p data-limit-evidence>Recorded by data/pricing.json#/capability_registry. Evidence: <code>data/pricing.json</code>.</p>
+        </li>
+        <li id="limit-cap-autoscrub" data-limit="cap:autoscrub">
+          <h3>AutoScrub</h3>
+          <p data-limit-status>Status: Planned</p>
+          <p data-limit-problem>Not yet. What exists is switched-off interface scaffolding, not a working engine — the app itself says it is unavailable in this build. AutoScrub is also the one optional closed-source module, it is not installed by default, and it would need your explicit consent to download.</p>
+          <p data-limit-evidence>Recorded by data/pricing.json#/capability_registry. Evidence: <code>data/pricing.json</code>.</p>
+        </li>
+        <li id="limit-cap-ai-carrier-text" data-limit="cap:ai-carrier-text">
+          <h3>AI-generated carrier text</h3>
+          <p data-limit-status>Status: Planned</p>
+          <p data-limit-problem>Not yet. Opt-in AI-written cover text. Cloud generation is never end-to-end private, because the service has to see the text it is working on.</p>
+          <p data-limit-evidence>Recorded by data/pricing.json#/capability_registry. Evidence: <code>data/pricing.json</code>.</p>
+        </li>
+        <li id="limit-cap-processing-credits" data-limit="cap:processing-credits">
+          <h3>Processing credits</h3>
+          <p data-limit-status>Status: Planned</p>
+          <p data-limit-problem>Not yet, and not on sale. Credits would be bought separately and never renew.</p>
+          <p data-limit-evidence>Recorded by data/pricing.json#/capability_registry. Evidence: <code>data/pricing.json</code>.</p>
+        </li>
+        <li id="limit-cap-pro-expiry-enforcement" data-limit="cap:pro-expiry-enforcement">
+          <h3>Automatic Pro expiry</h3>
+          <p data-limit-status>Status: Planned</p>
+          <p data-limit-problem>Not yet. A purchased code currently unlocks Pro without a redemption clock, so the month does not yet start when you enter the code.</p>
+          <p data-limit-evidence>Recorded by data/pricing.json#/capability_registry. Evidence: <code>data/pricing.json</code>.</p>
+        </li>
+        <li id="limit-cap-exposure-comparison" data-limit="cap:exposure-comparison">
+          <h3>Country exposure comparison</h3>
+          <p data-limit-status>Status: Illustration</p>
+          <p data-limit-problem>A drawing, not a measurement. The homepage comparison summarises published agency and company practice. It is not a scan of your device, and this site never shows a live protection score.</p>
+          <p data-limit-evidence>Recorded by data/pricing.json#/capability_registry. Evidence: <code>data/pricing.json</code>.</p>
+        </li>
+        <li id="limit-cap-website-scrub" data-limit="cap:website-scrub">
+          <h3>Website Scrub</h3>
+          <p data-limit-status>Status: Illustration</p>
+          <p data-limit-problem>Illustration only. The website does not scan browser history, read browser data, or access local account data.</p>
+          <p data-limit-evidence>Recorded by data/pricing.json#/capability_registry. Evidence: <code>data/pricing.json</code>.</p>
+        </li>
+        <li id="limit-cap-product-animations" data-limit="cap:product-animations">
+          <h3>Product animations</h3>
+          <p data-limit-status>Status: Illustration</p>
+          <p data-limit-problem>Drawings, not recordings. Every animated scene on this site illustrates intended behaviour rather than showing the app running.</p>
+          <p data-limit-evidence>Recorded by data/pricing.json#/capability_registry. Evidence: <code>data/pricing.json</code>.</p>
+        </li>
+        <li id="limit-matrix-signal-desktop-public" data-limit="matrix:signal_desktop_public">
+          <h3>Signal — Signal Desktop native Windows adapter</h3>
+          <p data-limit-status>Status: coming_soon</p>
+          <p data-limit-problem>Signal has QA foundations only; OSL must refuse support claims until a complete adapter contract and two-peer exact-build proof exist.</p>
+          <p data-limit-evidence>Recorded by docs/status/support-matrix.json#/versioned_public_support_matrix/entries. Evidence: <code>docs/status/support-matrix.json</code>, <code>docs/design/osl-master-decision-2026-07-26.md</code>.</p>
+        </li>
+        <li id="limit-matrix-whatsapp-windows-public" data-limit="matrix:whatsapp_windows_public">
+          <h3>WhatsApp — WhatsApp for Windows adapter</h3>
+          <p data-limit-status>Status: coming_soon</p>
+          <p data-limit-problem>WhatsApp needs its own runtime proof; OSL must refuse support claims until a complete adapter contract and two-peer exact-build proof exist.</p>
+          <p data-limit-evidence>Recorded by docs/status/support-matrix.json#/versioned_public_support_matrix/entries. Evidence: <code>docs/status/support-matrix.json</code>, <code>docs/design/osl-master-decision-2026-07-26.md</code>.</p>
+        </li>
+        <li id="limit-matrix-telegram-desktop-public" data-limit="matrix:telegram_desktop_public">
+          <h3>Telegram — Telegram Desktop native Windows adapter</h3>
+          <p data-limit-status>Status: externally_blocked</p>
+          <p data-limit-problem>This status records OSL's release gate and never a technical block in Telegram's client. Telegram Desktop cannot be listed as supported until a signed-client UI Automation probe proves stable, text-exposed message rows on an actual conversation surface AND OSL's own adapter proves live delivery: the probe half was measured on 2026-08-04 and is met; the delivery half is not, and it is the half that keeps the label.</p>
+          <p data-limit-evidence>Recorded by docs/status/support-matrix.json#/versioned_public_support_matrix/entries. Evidence: <code>docs/status/support-matrix.json</code>, <code>docs/reports/telegram-adapter-verdict.md</code>.</p>
+        </li>
+        <li id="limit-matrix-osl-mail-public" data-limit="matrix:osl_mail_public">
+          <h3>OSL Mail — OSL Mail for Outlook-connected mailboxes</h3>
+          <p data-limit-status>Status: unsupported</p>
+          <p data-limit-problem>Outlook is scoped as OSL Mail, not Outlook chat support; protected inline replies must refuse until a separate OSL Mail gate proves mailbox binding, recipient authority, safe send behavior, draft handling, and runtime support.</p>
+          <p data-limit-evidence>Recorded by docs/status/support-matrix.json#/versioned_public_support_matrix/entries. Evidence: <code>docs/status/support-matrix.json</code>, <code>docs/reports/outlook-osl-mail-verdict.md</code>.</p>
+        </li>
+        <li id="limit-finding-key-substitution" data-limit="finding:key-substitution">
+          <h3>Key substitution after a reinstall</h3>
+          <p data-limit-status>Status: Open critical finding</p>
+          <p data-limit-problem>The safety number you compare with a friend covers only the signing key, so a key server that swapped a recipient's encryption keys would not change the number you check. Until the whole key bundle is covered, the verification ceremony does not protect the keys that decrypt messages.</p>
+          <p data-limit-evidence>Recorded by docs/THREAT_MODEL.md. Evidence: <code>docs/THREAT_MODEL.md</code>.</p>
+        </li>
+        <li id="limit-finding-no-outside-cryptographic-review" data-limit="finding:no-outside-cryptographic-review">
+          <h3>No outside cryptographic review has been paid for</h3>
+          <p data-limit-status>Status: Open</p>
+          <p data-limit-problem>The encryption that ships is a custom construction, and no outside firm has been commissioned to examine it. A paid third-party cryptographic review is a prerequisite for v1 stable, not something that has happened.</p>
+          <p data-limit-evidence>Recorded by docs/THREAT_MODEL.md#audit-status-v1-alpha-vs-v1-stable. Evidence: <code>docs/THREAT_MODEL.md</code>, <code>docs/security/osl-audit-2026-07-26-codex.md</code>.</p>
+        </li>
+        <li id="limit-finding-osl-rn-unreviewed" data-limit="finding:osl-rn-unreviewed">
+          <h3>OSL-RN is unreviewed research and carries no real traffic</h3>
+          <p data-limit-status>Status: Planned</p>
+          <p data-limit-problem>The next-generation ratchet crate is reachable only from its own tests, has had no outside cryptographic review, and the shipping runtime keeps its gate closed, so no real message goes through it.</p>
+          <p data-limit-evidence>Recorded by crates/osl-ratchet-next/DESIGN.md. Evidence: <code>crates/osl-ratchet-next/DESIGN.md</code>, <code>Cargo.toml</code>.</p>
+        </li>
+        <li id="limit-finding-no-code-signing" data-limit="finding:no-code-signing">
+          <h3>The Windows build is not code signed</h3>
+          <p data-limit-status>Status: Open</p>
+          <p data-limit-problem>The Windows executable is not signed, so Windows may show an unknown-publisher or reputation warning. The minisign updater key and the published checksum are the only build-integrity anchors today.</p>
+          <p data-limit-evidence>Recorded by docs/release/code-signing-decision.md. Evidence: <code>docs/release/code-signing-decision.md</code>, <code>docs/download.html</code>.</p>
+        </li>
+        <li id="limit-finding-rebuild-scope" data-limit="finding:rebuild-scope">
+          <h3>Rebuilding a release compares the program, not the installer</h3>
+          <p data-limit-status>Status: Open</p>
+          <p data-limit-problem>The rebuild guide compares the application executable inside the installer and deliberately does not compare the installer bytes or the updater signature, so a match proves the program came from the published source and nothing more.</p>
+          <p data-limit-evidence>Recorded by docs/release/verify-the-build-yourself.md. Evidence: <code>docs/release/verify-the-build-yourself.md</code>.</p>
+        </li>
+        <li id="limit-finding-device-removal-detection" data-limit="finding:device-removal-detection">
+          <h3>Device-removal detection is Windows-only and unmeasured</h3>
+          <p data-limit-status>Status: Open</p>
+          <p data-limit-problem>The removal trigger is Windows-only, it cannot see a removal while the machine is suspended or hibernating, and its delivery delay has never been measured on a virtual machine, so no deadline is promised.</p>
+          <p data-limit-evidence>Recorded by docs/design/device-removal-detection-limits.md. Evidence: <code>docs/design/device-removal-detection-limits.md</code>.</p>
+        </li>
+        <li id="limit-finding-timed-delete-research-only" data-limit="finding:timed-delete-research-only">
+          <h3>Recorded delete-for-everyone windows are research, not proof</h3>
+          <p data-limit-status>Status: Research only</p>
+          <p data-limit-problem>The saved per-service delete-for-everyone windows are looked-up limits from each provider, and the record says outright that it does not prove timed delete works in OSL.</p>
+          <p data-limit-evidence>Recorded by proof/research/timed-delete-limits.txt. Evidence: <code>proof/research/timed-delete-limits.txt</code>.</p>
+        </li>
+        <li id="limit-finding-hosted-workspace-unavailable" data-limit="finding:hosted-workspace-unavailable">
+          <h3>Hosted Android workspace is unavailable</h3>
+          <p data-limit-status>Status: Planned</p>
+          <p data-limit-problem>A hosted Android workspace is not offered here. It would need its own threat model, its own explicit consent, and a fresh review before any claim about it changed.</p>
+          <p data-limit-evidence>Recorded by apps/osl-hub-ui/src/android-workspace.test.ts. Evidence: <code>apps/osl-hub-ui/src/android-workspace.test.ts</code>, <code>apps/osl-hub-ui/src/main.ts</code>.</p>
+        </li>
+        <li id="limit-finding-autoscrub-account-risk" data-limit="finding:autoscrub-account-risk">
+          <h3>AutoScrub drives the service interface and can cost you the account</h3>
+          <p data-limit-status>Status: Planned</p>
+          <p data-limit-problem>AutoScrub works by driving the service's own interface. That may break the service's rules and could terminate your account, so it is never installed without your explicit consent to that risk.</p>
+          <p data-limit-evidence>Recorded by apps/osl-hub-ui/src/component-consent.ts. Evidence: <code>apps/osl-hub-ui/src/component-consent.ts</code>, <code>apps/osl-hub-ui/src/component-consent.test.ts</code>.</p>
+        </li>
+        <li id="limit-finding-pro-is-not-cloud-consent" data-limit="finding:pro-is-not-cloud-consent">
+          <h3>Buying Pro is not consent to cloud processing</h3>
+          <p data-limit-status>Status: Open</p>
+          <p data-limit-problem>Pro on its own never turns on cloud generation. A cloud request is refused with cloud-consent-required until you give a separate, explicit consent, and basic encryption and the word-bank carrier never depend on Pro.</p>
+          <p data-limit-evidence>Recorded by apps/osl-hub-ui/src/cover-generation-eligibility.test.ts. Evidence: <code>apps/osl-hub-ui/src/cover-generation-eligibility.test.ts</code>, <code>docs/design/pro-activation-onboarding.md</code>.</p>
+        </li>
+        <li id="limit-finding-no-redemption-record" data-limit="finding:no-redemption-record">
+          <h3>A Pro code has no redemption clock</h3>
+          <p data-limit-status>Status: Open</p>
+          <p data-limit-problem>No redemption record exists yet, so the keyserver cannot start a month when you enter a code and cannot return an account to Free by itself.</p>
+          <p data-limit-evidence>Recorded by data/pricing.json#/required_phrases. Evidence: <code>data/pricing.json</code>, <code>docs/design/osl-master-decision-2026-07-26.md</code>.</p>
+        </li>
+        <li id="limit-finding-metadata-visible" data-limit="finding:metadata-visible">
+          <h3>The connected service still sees who and when</h3>
+          <p data-limit-status>Status: Open</p>
+          <p data-limit-problem>A connected service receives an encrypted block instead of your words, but it still sees who you talk to, when, and how often, and OSL cannot hide that.</p>
+          <p data-limit-evidence>Recorded by docs/design/osl-public-claim-allowlist.md#a2. Evidence: <code>docs/design/osl-public-claim-allowlist.md</code>, <code>docs/THREAT_MODEL.md</code>.</p>
+        </li>
+        <li id="limit-finding-burn-cannot-reach-the-service-copy" data-limit="finding:burn-cannot-reach-the-service-copy">
+          <h3>Burn cannot reach the copy the service holds</h3>
+          <p data-limit-status>Status: Planned</p>
+          <p data-limit-problem>Burn erases OSL's own local copy and may ask the other side to delete theirs. The encrypted block the service already stored stays readable to anyone holding the recipient's long-term keys, and no burn recalls a screenshot.</p>
+          <p data-limit-evidence>Recorded by docs/design/osl-public-claim-allowlist.md#d. Evidence: <code>docs/design/osl-public-claim-allowlist.md</code>.</p>
+        </li>
+      </ol>
+      <!-- limits:end -->
+    </section>
+
+    <section aria-labelledby="inspection">
+      <h2 id="inspection">How to inspect this yourself</h2>
+      <ul>
+        <li>The limits record this page is built from: <code>data/tested-limits.json</code>.</li>
+        <li>The rule for what OSL may claim at all, with the evidence line behind every row: <code>docs/design/osl-public-claim-allowlist.md</code>.</li>
+        <li>What OSL does not defend against, and the open findings: <code>docs/THREAT_MODEL.md</code>.</li>
+        <li>Which services are qualified, and which are not: <code>docs/status/support-matrix.json</code>.</li>
+        <li>Rebuild a published Windows release and compare it with the one we shipped: <a href="docs/release/verify-the-build-yourself.md">verify the build yourself</a>.</li>
+        <li>Run the check that grades this page: <code>node scripts/check-audit-page-words.mjs</code>. It reads the record, not this prose, and it exits non-zero if the two disagree.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="scrub-risk">
+      <h2 id="scrub-risk">Scrub, AutoScrub, and the risk to your account</h2>
+      <p>AutoScrub works by driving a service's own interface. This may break that service's rules and could terminate your account. Install it only if you understand and accept that risk, and the app asks you to acknowledge that risk in writing for the named service before anything is downloaded.</p>
+      <p>AutoScrub is not installed by default, and it does not exist in this build. Cloud AutoScrub would send selected data to a server and is not end-to-end private.</p>
+      <p>Scrub itself does not delete anything for you. When guided deletion lands, OSL takes you to the page and you confirm each removal yourself. A requested removal is never shown as a verified removal.</p>
+    </section>
+
+    <section aria-labelledby="pro-consent">
+      <h2 id="pro-consent">What a Pro purchase does and does not consent to</h2>
+      <ul>
+        <li>$5 is the intended price for one month of Pro. Checkout is paused until one-month redemption and expiry are implemented.</li>
+        <li>Nothing renews automatically, and OSL never stores your payment details.</li>
+        <li>No redemption record exists yet, so a code cannot start your month when you enter it and cannot return your account to Free by itself.</li>
+        <li>Free stays free. Paying is never required for the basic encryption path to keep working. Pro never unlocks the encryption or the word-bank carrier — those are not Pro features.</li>
+        <li>Pro is not consent to cloud processing. Cloud generation needs its own separate, explicit consent, and a request made without it is refused with <code>cloud-consent-required</code>.</li>
+        <li>Processing credits are bought separately for optional cloud AI features. They never renew, and encryption keeps working without them.</li>
+        <li>The payment and credit records contain no message text, no conversation names, no carrier text and no recipient identity.</li>
+      </ul>
+    </section>
+  </main>
+</body>
+</html>

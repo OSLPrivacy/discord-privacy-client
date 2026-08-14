@@ -3,11 +3,10 @@
 //! This state never holds plaintext, a capability, or a transport handle. The
 //! bundled UI can only learn whether local AI selection is currently ready.
 
-use crate::ai_consent::AiCloudConsent;
 use crate::bundled_model_pack::{
-    ensure_bundled_model_pack, BundledModelPackError, BundledModelPackStatus,
+    bundled_model_pack_path, ensure_bundled_model_pack, verified_status, BundledCoverWriter,
+    BundledModelPackError, BundledModelPackStatus, CoverShapeConstraints,
 };
-use crate::credits::{unavailable_balance, BalanceDisplay};
 use cover_ai::fallback::{select_carrier, CarrierCapabilities, CarrierDecision};
 use serde::Serialize;
 use std::collections::HashSet;
@@ -18,7 +17,13 @@ use std::sync::Mutex;
 #[derive(Default)]
 pub struct AiCarrierState {
     local_model_ready: AtomicBool,
-    cloud_consent: AiCloudConsent,
+    // The shared Covertext button chooses the built-in layered wordbank for
+    // this running session.  It is deliberately separate from model
+    // availability: an unpressed choice keeps the established cover writer,
+    // while pressing the plain Covertext button selects the local wordbank.
+    wordbank_writer_selected: AtomicBool,
+    ai_covertext_selected: AtomicBool,
+    local_writer: Mutex<Option<BundledCoverWriter>>,
     // Previewing is deliberately an opt-in held only for this running session.
     // A restart must fail closed rather than unexpectedly resuming typing into
     // a third-party composer.
@@ -28,6 +33,18 @@ pub struct AiCarrierState {
 impl AiCarrierState {
     pub fn set_local_model_ready(&self, ready: bool) {
         self.local_model_ready.store(ready, Ordering::Release);
+        if !ready {
+            self.ai_covertext_selected.store(false, Ordering::Release);
+        }
+    }
+
+    pub fn set_wordbank_writer_selected(&self, selected: bool) {
+        self.wordbank_writer_selected
+            .store(selected, Ordering::Release);
+    }
+
+    pub fn wordbank_writer_selected(&self) -> bool {
+        self.wordbank_writer_selected.load(Ordering::Acquire)
     }
 
     pub fn ensure_bundled_local_model(
@@ -36,6 +53,11 @@ impl AiCarrierState {
     ) -> Result<BundledModelPackStatus, BundledModelPackError> {
         match ensure_bundled_model_pack(install_root) {
             Ok(status) => {
+                let writer = BundledCoverWriter::load(&status.artifact_path)?;
+                *self
+                    .local_writer
+                    .lock()
+                    .map_err(|_| BundledModelPackError::InvalidModelFile)? = Some(writer);
                 self.set_local_model_ready(true);
                 Ok(status)
             }
@@ -46,11 +68,63 @@ impl AiCarrierState {
         }
     }
 
-    /// This record remains separate from entitlement and is read whenever the
-    /// shipping status boundary is queried, so revocation takes effect without
-    /// restarting the app.
-    pub fn cloud_consent(&self) -> &AiCloudConsent {
-        &self.cloud_consent
+    /// Select the AI writer for subsequent carriers. This is the backend
+    /// action behind the visible AI Covertext button; it refuses only when the
+    /// verified bundled pack is genuinely unavailable.
+    pub fn set_ai_covertext_selected(&self, selected: bool) -> Result<AiCarrierStatus, String> {
+        if selected && !self.local_model_ready.load(Ordering::Acquire) {
+            return Err("AI Covertext needs the verified local model pack".to_owned());
+        }
+        self.ai_covertext_selected
+            .store(selected, Ordering::Release);
+        Ok(self.status())
+    }
+
+    /// Ask the local writer for fresh cover entropy. Its input type contains
+    /// only length and line-shape counts, so private words cannot cross this
+    /// boundary accidentally.
+    pub fn next_cover_entropy(
+        &self,
+        shape: &CoverShapeConstraints,
+    ) -> Result<Option<[u8; 32]>, String> {
+        if !self.ai_covertext_selected.load(Ordering::Acquire) {
+            return Ok(None);
+        }
+        let mut writer = self
+            .local_writer
+            .lock()
+            .map_err(|_| "The local AI cover writer is unavailable".to_owned())?;
+        let writer = writer
+            .as_mut()
+            .ok_or_else(|| "The local AI cover writer is unavailable".to_owned())?;
+        writer
+            .generate_cover_entropy(shape)
+            .map(|entropy| Some(entropy.into_bytes()))
+            .map_err(|_| "The local AI cover writer could not produce a cover".to_owned())
+    }
+
+    /// Recheck an already-installed pack without recreating a missing file.
+    /// Button presses use this path so uninstalling the pack takes effect on
+    /// the next press and can never silently reinstall itself around refusal.
+    pub fn refresh_bundled_local_model(
+        &self,
+        install_root: &Path,
+    ) -> Result<BundledModelPackStatus, BundledModelPackError> {
+        match verified_status(&bundled_model_pack_path(install_root)) {
+            Ok(status) => {
+                let writer = BundledCoverWriter::load(&status.artifact_path)?;
+                *self
+                    .local_writer
+                    .lock()
+                    .map_err(|_| BundledModelPackError::InvalidModelFile)? = Some(writer);
+                self.set_local_model_ready(true);
+                Ok(status)
+            }
+            Err(error) => {
+                self.set_local_model_ready(false);
+                Err(error)
+            }
+        }
     }
 
     /// Enable or revoke carrier preview for one opaque conversation scope.
@@ -87,12 +161,12 @@ impl AiCarrierState {
 
     /// Resolve the optional carrier policy at the protected-send boundary.
     ///
-    /// This is deliberately local-only. Cloud generation is deferred, so a
-    /// consent record can never become an egress route. An unavailable local
-    /// model resolves to the word-bank floor and never prevents encryption.
+    /// This is deliberately local-only. An unavailable local model resolves
+    /// to the word-bank floor and never prevents encryption.
     pub fn select_for_shipping_send(&self) -> CarrierDecision {
         select_carrier(CarrierCapabilities {
-            ai_model_available: self.local_model_ready.load(Ordering::Acquire),
+            ai_model_available: self.local_model_ready.load(Ordering::Acquire)
+                && self.ai_covertext_selected.load(Ordering::Acquire),
             word_bank_selection_available: true,
         })
     }
@@ -101,14 +175,8 @@ impl AiCarrierState {
         let local_model_ready = self.local_model_ready.load(Ordering::Acquire);
         AiCarrierStatus {
             local_model_ready,
+            ai_covertext_selected: self.ai_covertext_selected.load(Ordering::Acquire),
             word_bank_fallback: !local_model_ready,
-            cloud_consent_granted: self.cloud_consent.is_granted(),
-            cloud_credit_balance: match unavailable_balance() {
-                BalanceDisplay::Current(balance) | BalanceDisplay::Stale(balance) => {
-                    Some(balance.0)
-                }
-                BalanceDisplay::Unknown => None,
-            },
         }
     }
 }
@@ -118,12 +186,8 @@ impl AiCarrierState {
 #[serde(rename_all = "camelCase")]
 pub struct AiCarrierStatus {
     pub local_model_ready: bool,
+    pub ai_covertext_selected: bool,
     pub word_bank_fallback: bool,
-    /// Separate from Pro entitlement. A future cloud sender must still check
-    /// `AiCloudConsent::permits_cloud_send` at the send boundary.
-    pub cloud_consent_granted: bool,
-    /// `None` is an explicit unknown, never a fabricated zero balance.
-    pub cloud_credit_balance: Option<u64>,
 }
 
 // The #[tauri::command] wrapper lives in main.rs with every other command:
@@ -141,10 +205,16 @@ pub fn set_ai_carrier_preview_enabled_for(
     state.set_preview_enabled(scope_id, enabled)
 }
 
+pub fn set_ai_covertext_selected_for(
+    state: &AiCarrierState,
+    selected: bool,
+) -> Result<AiCarrierStatus, String> {
+    state.set_ai_covertext_selected(selected)
+}
+
 #[cfg(test)]
 mod tests {
     use super::AiCarrierState;
-    use crate::cloud_autoscrub_consent::CloudAutoScrubHighSensitivityAcknowledgement;
 
     #[test]
     fn status_truthfully_falls_back_until_a_local_model_is_ready() {
@@ -156,30 +226,12 @@ mod tests {
     }
 
     #[test]
-    fn cloud_consent_status_reads_the_separate_record_on_every_shipping_status_request() {
+    fn task_3520_plain_covertext_button_selects_the_wordbank_writer() {
         let state = AiCarrierState::default();
-        assert!(!state.status().cloud_consent_granted);
-
-        assert!(state
-            .cloud_consent()
-            .grant(CloudAutoScrubHighSensitivityAcknowledgement::all()));
-        assert!(state.status().cloud_consent_granted);
-
-        state.cloud_consent().revoke();
-        assert!(
-            !state.status().cloud_consent_granted,
-            "revocation must be visible through the shipping carrier status without restart"
-        );
+        assert!(!state.wordbank_writer_selected());
+        state.set_wordbank_writer_selected(true);
+        assert!(state.wordbank_writer_selected());
     }
-
-    #[test]
-    fn shipping_carrier_status_reports_an_unavailable_credit_ledger_as_unknown() {
-        assert_eq!(
-            AiCarrierState::default().status().cloud_credit_balance,
-            None
-        );
-    }
-
     #[test]
     fn t13_th3_preview_is_off_by_default_scoped_and_revocable() {
         let state = AiCarrierState::default();

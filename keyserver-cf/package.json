@@ -21,6 +21,7 @@
     "readiness:probe-bridge": "node scripts/probe-readiness-bridge.mjs",
     "readiness:admit": "node scripts/admit-readiness-archive.mjs",
     "readiness:assert-refusal": "node scripts/assert-readiness-refusal.mjs",
+    "release:deploy": "node scripts/release-deploy-live-revision.mjs",
     "sender-filter:admission": "node scripts/create-sender-filter-deployment-receipt.mjs",
     "scheme1:client-preflight": "node scripts/create-scheme1-client-preflight.mjs",
     "canonical-rollout:admit-provisioning": "node scripts/create-canonical-rollout-admission.mjs",

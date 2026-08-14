@@ -1,0 +1,7 @@
+screen: apps/osl-hub-ui/src/onboarding-delete.ts firstTimedDeleteWarningMarkup
+factual sentence count: 4
+FACT 1 | Timed delete removes the message from the other person's screen using the app's own delete. | proof: proof/research/timed-delete-operation.txt, proof/research/timed-delete-limits.txt
+FACT 2 | Most apps leave a “This message was deleted” mark. | proof: proof/research/timed-delete-marks.txt
+FACT 3 | A screenshot they already took is gone forever from our reach. | proof: proof/research/timed-delete-screenshots.txt
+FACT 4 | Email cannot be recalled at all. | proof: proof/research/timed-delete-email.txt, proof/research/timed-delete-limits.txt
+unsupported count 0

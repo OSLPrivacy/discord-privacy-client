@@ -158,10 +158,7 @@ impl<B: TelegramBackend> SurfaceAdapter for TelegramSurfaceAdapter<B> {
             elapsed_ms: 0,
         };
         if !self.validates_binding(binding)
-            || !same_scope(
-                &binding.scope_binding_hash,
-                &authorization.scope_binding_hash,
-            )
+            || !same_scope_and_message_box(binding, authorization)
             || !self.supports(adapter_profile::Capability::PlaceProtectedPayload)
         {
             return refused();
@@ -373,7 +370,7 @@ mod tests {
         let binding = binding(1);
         let placed = adapter.place(
             &binding,
-            &PlacementAuthorization::for_scope("scope-a"),
+            &PlacementAuthorization::for_scope_and_provider("scope-a", "telegram").unwrap(),
             &Carrier("carrier".into()),
         );
 
@@ -383,7 +380,7 @@ mod tests {
 
         let refused = adapter.place(
             &binding,
-            &PlacementAuthorization::for_scope("other-scope"),
+            &PlacementAuthorization::for_scope_and_provider("other-scope", "telegram").unwrap(),
             &Carrier("carrier".into()),
         );
         assert_eq!(refused.status, PlacementStatus::NotPlaced);
@@ -445,7 +442,7 @@ mod tests {
         let accessibility = binding(1);
         let placed = adapter.place(
             &accessibility,
-            &PlacementAuthorization::for_scope("scope-a"),
+            &PlacementAuthorization::for_scope_and_provider("scope-a", "telegram").unwrap(),
             &Carrier("carrier".into()),
         );
 

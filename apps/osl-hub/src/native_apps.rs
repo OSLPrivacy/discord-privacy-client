@@ -7,11 +7,14 @@
 
 use adapter_profile::{AdapterService, AdapterSurface, SupportLevel};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::windows_executable_trust::ExecutablePublisher;
 #[cfg(target_os = "windows")]
 use crate::windows_executable_trust::{verify_executable, TrustedExecutable};
 
+#[cfg(target_os = "windows")]
+use std::io::{Read, Write};
 #[cfg(target_os = "windows")]
 use std::os::windows::ffi::OsStringExt;
 #[cfg(target_os = "windows")]
@@ -36,9 +39,11 @@ use windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW;
 pub enum NativeAppId {
     Discord,
     Telegram,
+    Instagram,
     Signal,
     Whatsapp,
     Outlook,
+    X,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
@@ -274,11 +279,18 @@ pub struct MullvadStatus {
 #[serde(rename_all = "camelCase")]
 pub struct MullvadActionResult {
     pub started: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub installer_sha256: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub installer_source: Option<&'static str>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum FirefoxServiceId {
+    Messenger,
     Gmail,
     Outlook,
     Proton,
@@ -289,6 +301,34 @@ pub enum FirefoxServiceId {
     Maildotcom,
     Icloud,
 }
+
+/// Fixed provider surfaces whose QA results are version-bound.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum ProviderVersionTarget {
+    Native(NativeAppId),
+    Browser(BrowserImportId),
+    FirefoxService(FirefoxServiceId),
+}
+
+pub const PROVIDER_VERSION_TARGETS: [ProviderVersionTarget; 17] = [
+    ProviderVersionTarget::Native(NativeAppId::Discord),
+    ProviderVersionTarget::Native(NativeAppId::Telegram),
+    ProviderVersionTarget::Native(NativeAppId::Signal),
+    ProviderVersionTarget::Native(NativeAppId::Whatsapp),
+    ProviderVersionTarget::Native(NativeAppId::Outlook),
+    ProviderVersionTarget::Browser(BrowserImportId::Chrome),
+    ProviderVersionTarget::Browser(BrowserImportId::Edge),
+    ProviderVersionTarget::Browser(BrowserImportId::Firefox),
+    ProviderVersionTarget::Browser(BrowserImportId::Brave),
+    ProviderVersionTarget::FirefoxService(FirefoxServiceId::Gmail),
+    ProviderVersionTarget::FirefoxService(FirefoxServiceId::Proton),
+    ProviderVersionTarget::FirefoxService(FirefoxServiceId::Tuta),
+    ProviderVersionTarget::FirefoxService(FirefoxServiceId::Yahoo),
+    ProviderVersionTarget::FirefoxService(FirefoxServiceId::Aol),
+    ProviderVersionTarget::FirefoxService(FirefoxServiceId::Gmx),
+    ProviderVersionTarget::FirefoxService(FirefoxServiceId::Maildotcom),
+    ProviderVersionTarget::FirefoxService(FirefoxServiceId::Icloud),
+];
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -489,6 +529,30 @@ static VERIFIED_INSTALLER_AVAILABLE: Mutex<InstallerAvailabilityCache> =
 
 #[cfg(any(target_os = "windows", test))]
 const MULLVAD_PACKAGE_ID: &str = "MullvadVPN.MullvadVPN";
+
+#[cfg(any(target_os = "windows", test))]
+const MULLVAD_VENDOR_INSTALLER_VERSION: &str = "2026.3";
+
+#[cfg(any(target_os = "windows", test))]
+const MULLVAD_VENDOR_INSTALLER_FILENAME: &str = "MullvadVPN-2026.3_x64.exe";
+
+#[cfg(any(target_os = "windows", test))]
+const MULLVAD_VENDOR_INSTALLER_URL: &str =
+    "https://github.com/mullvad/mullvadvpn-app/releases/download/2026.3/MullvadVPN-2026.3_x64.exe";
+
+#[cfg(any(target_os = "windows", test))]
+const MULLVAD_VENDOR_INSTALLER_SHA256: &str =
+    "e335507b948083100b54f8000ef5bb733e3ee959f8df6a573e9404c506cb139a";
+
+#[cfg(any(target_os = "windows", test))]
+const MULLVAD_HASH_MISMATCH: &str = "MULLVAD-HASH-MISMATCH";
+
+#[cfg(any(target_os = "windows", test))]
+const MULLVAD_VENDOR_INSTALLER_MAX_BYTES: u64 = 160 * 1024 * 1024;
+
+#[cfg(target_os = "windows")]
+const MULLVAD_VENDOR_INSTALLER_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(120);
+
 #[cfg(any(target_os = "windows", test))]
 const DISCORD_DEDICATED_PACKAGE_ID: &str = "Discord.Discord.PTB";
 
@@ -591,6 +655,18 @@ const NATIVE_APPS: &[NativeAppManifest] = &[
         store_package_family_name: None,
     },
     NativeAppManifest {
+        id: NativeAppId::Instagram,
+        display_name: "Instagram",
+        adapter_service: AdapterService::Instagram,
+        adapter_surface: AdapterSurface::FixedOfficialWebOrigin,
+        adapter_support: SupportLevel::ComingSoon,
+        package_id: "",
+        package_source: "unavailable",
+        candidates: INSTAGRAM_CANDIDATES,
+        publisher: None,
+        store_package_family_name: None,
+    },
+    NativeAppManifest {
         id: NativeAppId::Whatsapp,
         display_name: "WhatsApp",
         adapter_service: AdapterService::Whatsapp,
@@ -615,6 +691,18 @@ const NATIVE_APPS: &[NativeAppManifest] = &[
         package_source: "unavailable",
         candidates: OUTLOOK_CLASSIC_CANDIDATES,
         publisher: Some(ExecutablePublisher::Microsoft),
+        store_package_family_name: None,
+    },
+    NativeAppManifest {
+        id: NativeAppId::X,
+        display_name: "X",
+        adapter_service: AdapterService::X,
+        adapter_surface: AdapterSurface::FixedOfficialWebOrigin,
+        adapter_support: SupportLevel::ComingSoon,
+        package_id: "",
+        package_source: "unavailable",
+        candidates: &[],
+        publisher: None,
         store_package_family_name: None,
     },
 ];
@@ -780,6 +868,10 @@ const FIREFOX_CANDIDATES: &[ExecutableCandidate] = &[
 
 #[cfg(any(target_os = "windows", test))]
 const FIREFOX_SERVICES: &[(FirefoxServiceId, &str)] = &[
+    (
+        FirefoxServiceId::Messenger,
+        "https://www.facebook.com/messages/",
+    ),
     (FirefoxServiceId::Gmail, "https://mail.google.com/"),
     (FirefoxServiceId::Outlook, "https://outlook.live.com/mail/"),
     (FirefoxServiceId::Proton, "https://mail.proton.me/"),
@@ -796,9 +888,15 @@ fn manifest(id: NativeAppId) -> &'static NativeAppManifest {
         NativeAppId::Discord => &NATIVE_APPS[0],
         NativeAppId::Telegram => &NATIVE_APPS[1],
         NativeAppId::Signal => &NATIVE_APPS[2],
-        NativeAppId::Whatsapp => &NATIVE_APPS[3],
-        NativeAppId::Outlook => &NATIVE_APPS[4],
+        NativeAppId::Instagram => &NATIVE_APPS[3],
+        NativeAppId::Whatsapp => &NATIVE_APPS[4],
+        NativeAppId::Outlook => &NATIVE_APPS[5],
+        NativeAppId::X => &NATIVE_APPS[6],
     }
+}
+
+pub fn native_app_display_name(id: NativeAppId) -> &'static str {
+    manifest(id).display_name
 }
 
 pub(crate) fn whatsapp_store_package_family_name() -> &'static str {
@@ -827,9 +925,11 @@ pub(crate) const fn claim_surface(id: NativeAppId) -> crate::claim_state::Surfac
     match id {
         NativeAppId::Discord => Surface::Discord,
         NativeAppId::Telegram => Surface::Telegram,
+        NativeAppId::Instagram => Surface::Instagram,
         NativeAppId::Signal => Surface::Signal,
         NativeAppId::Whatsapp => Surface::Whatsapp,
         NativeAppId::Outlook => Surface::OutlookDesktop,
+        NativeAppId::X => Surface::X,
     }
 }
 
@@ -855,9 +955,11 @@ fn native_app_protected_mode(id: NativeAppId) -> NativeAppProtectedMode {
     match id {
         NativeAppId::Discord => NativeAppProtectedMode::AssistOnly,
         NativeAppId::Telegram
+        | NativeAppId::Instagram
         | NativeAppId::Signal
         | NativeAppId::Whatsapp
-        | NativeAppId::Outlook => NativeAppProtectedMode::Unavailable,
+        | NativeAppId::Outlook
+        | NativeAppId::X => NativeAppProtectedMode::Unavailable,
     }
 }
 
@@ -903,6 +1005,7 @@ fn list_native_apps_with_claims_and_installer_probe(
             let installed = match app.id {
                 NativeAppId::Whatsapp => whatsapp_store_package_installed(),
                 NativeAppId::Outlook => !outlook_native_executable_paths().is_empty(),
+                NativeAppId::X => false,
                 _ => installed_executable(app).is_some(),
             };
             let availability = if installed {
@@ -942,7 +1045,10 @@ fn list_native_apps_with_claims_and_installer_probe(
     {
         for status in &mut statuses {
             if status.availability == NativeAppAvailability::Unavailable
-                && status.id != NativeAppId::Outlook
+                && !matches!(
+                    status.id,
+                    NativeAppId::Outlook | NativeAppId::Instagram | NativeAppId::X
+                )
             {
                 status.availability = NativeAppAvailability::Installable;
             }
@@ -1307,11 +1413,11 @@ pub fn install_native_app(id: NativeAppId) -> Result<NativeInstallResult, String
     #[cfg(target_os = "windows")]
     {
         let app = manifest(id);
-        if id == NativeAppId::Outlook {
-            return Err(
-                "Outlook installation is managed by Microsoft 365 or the Microsoft Store"
-                    .to_owned(),
-            );
+        if matches!(
+            id,
+            NativeAppId::Outlook | NativeAppId::Instagram | NativeAppId::X
+        ) {
+            return Err("This app is not installable by OSL Privacy".to_owned());
         }
         let winget = installer_executable()
             .ok_or_else(|| "Windows App Installer (winget) is unavailable".to_owned())?;
@@ -1389,7 +1495,7 @@ pub fn install_discord_dedicated_channel() -> Result<(), String> {
 pub fn get_mullvad_status() -> MullvadStatus {
     let availability = if mullvad_executable().is_some() {
         NativeAppAvailability::Installed
-    } else if installer_available_for_listing() {
+    } else if mullvad_installer_available_for_listing() {
         NativeAppAvailability::Installable
     } else {
         NativeAppAvailability::Unavailable
@@ -1397,18 +1503,46 @@ pub fn get_mullvad_status() -> MullvadStatus {
     MullvadStatus { availability }
 }
 
-/// Starts only the exact current Mullvad package from the public winget
-/// repository. Winget verifies the selected manifest and installer; OSL does
-/// not accept a package id, source, executable path, or argument from the UI.
+#[cfg(target_os = "windows")]
+fn mullvad_installer_available_for_listing() -> bool {
+    true
+}
+
+#[cfg(not(target_os = "windows"))]
+fn mullvad_installer_available_for_listing() -> bool {
+    false
+}
+
+/// Starts only Mullvad's pinned vendor installer. Winget remains a second
+/// choice only when it is already present and the direct download could not be
+/// started or completed. OSL does not accept a package id, source, executable
+/// path, URL, hash, or argument from the UI.
 pub fn install_mullvad() -> Result<MullvadActionResult, String> {
     #[cfg(target_os = "windows")]
     {
-        let winget = installer_executable()
-            .ok_or_else(|| "Windows App Installer (winget) is unavailable".to_owned())?;
-        let arguments = mullvad_install_arguments();
-        spawn_detached(&winget, &arguments)
-            .map_err(|_| "The Mullvad installer could not be started".to_owned())?;
-        Ok(MullvadActionResult { started: true })
+        match install_mullvad_from_verified_vendor_installer() {
+            Ok(()) => Ok(MullvadActionResult {
+                started: true,
+                version: Some(MULLVAD_VENDOR_INSTALLER_VERSION),
+                installer_sha256: Some(MULLVAD_VENDOR_INSTALLER_SHA256),
+                installer_source: Some("vendor"),
+            }),
+            Err(error) if error == MULLVAD_HASH_MISMATCH => Err(error),
+            Err(direct_error) => {
+                let Some(winget) = installer_executable() else {
+                    return Err(direct_error);
+                };
+                let arguments = mullvad_winget_install_arguments();
+                spawn_detached(&winget, &arguments)
+                    .map_err(|_| "The Mullvad installer could not be started".to_owned())?;
+                Ok(MullvadActionResult {
+                    started: true,
+                    version: Some(MULLVAD_VENDOR_INSTALLER_VERSION),
+                    installer_sha256: Some(MULLVAD_VENDOR_INSTALLER_SHA256),
+                    installer_source: Some("winget"),
+                })
+            }
+        }
     }
     #[cfg(not(target_os = "windows"))]
     {
@@ -1417,7 +1551,7 @@ pub fn install_mullvad() -> Result<MullvadActionResult, String> {
 }
 
 #[cfg(any(target_os = "windows", test))]
-fn mullvad_install_arguments() -> [&'static str; 9] {
+fn mullvad_winget_install_arguments() -> [&'static str; 9] {
     [
         "install",
         "--id",
@@ -1429,6 +1563,120 @@ fn mullvad_install_arguments() -> [&'static str; 9] {
         "--accept-package-agreements",
         "--silent",
     ]
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn mullvad_vendor_installer_arguments() -> [&'static str; 1] {
+    ["/S"]
+}
+
+#[cfg(target_os = "windows")]
+fn install_mullvad_from_verified_vendor_installer() -> Result<(), String> {
+    eprintln!("MULLVAD-INSTALLER-VERSION={MULLVAD_VENDOR_INSTALLER_VERSION}");
+    eprintln!("MULLVAD-INSTALLER-PINNED-SHA256={MULLVAD_VENDOR_INSTALLER_SHA256}");
+    let installer = download_mullvad_vendor_installer()?;
+    let actual_sha256 = sha256_file_hex(&installer).map_err(|_| {
+        remove_downloaded_mullvad_installer(&installer);
+        "The Mullvad installer hash could not be checked".to_owned()
+    })?;
+    if actual_sha256 != MULLVAD_VENDOR_INSTALLER_SHA256 {
+        remove_downloaded_mullvad_installer(&installer);
+        eprintln!("{MULLVAD_HASH_MISMATCH}");
+        return Err(MULLVAD_HASH_MISMATCH.to_owned());
+    }
+    spawn_detached(&installer, &mullvad_vendor_installer_arguments())
+        .map_err(|_| "The Mullvad installer could not be started".to_owned())
+}
+
+#[cfg(target_os = "windows")]
+fn download_mullvad_vendor_installer() -> Result<PathBuf, String> {
+    let destination = mullvad_vendor_installer_download_path();
+    if let Some(parent) = destination.parent() {
+        std::fs::create_dir_all(parent).map_err(|_| {
+            "The Mullvad installer download directory could not be prepared".to_owned()
+        })?;
+    }
+    let mut response = reqwest::blocking::Client::builder()
+        .redirect(reqwest::redirect::Policy::limited(5))
+        .timeout(MULLVAD_VENDOR_INSTALLER_DOWNLOAD_TIMEOUT)
+        .user_agent("OSL Mullvad installer/1")
+        .build()
+        .map_err(|_| "The Mullvad installer downloader could not be prepared".to_owned())?
+        .get(MULLVAD_VENDOR_INSTALLER_URL)
+        .send()
+        .map_err(|_| "The Mullvad installer could not be downloaded".to_owned())?
+        .error_for_status()
+        .map_err(|_| "The Mullvad installer could not be downloaded".to_owned())?;
+    if response
+        .content_length()
+        .is_some_and(|bytes| bytes > MULLVAD_VENDOR_INSTALLER_MAX_BYTES)
+    {
+        return Err("The Mullvad installer download is too large".to_owned());
+    }
+
+    let partial = destination.with_extension("exe.partial");
+    let mut file = std::fs::File::create(&partial)
+        .map_err(|_| "The Mullvad installer download could not be created".to_owned())?;
+    let mut copied = 0u64;
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let read = response
+            .read(&mut buffer)
+            .map_err(|_| "The Mullvad installer download could not be read".to_owned())?;
+        if read == 0 {
+            break;
+        }
+        copied += read as u64;
+        if copied > MULLVAD_VENDOR_INSTALLER_MAX_BYTES {
+            remove_downloaded_mullvad_installer(&partial);
+            return Err("The Mullvad installer download is too large".to_owned());
+        }
+        file.write_all(&buffer[..read])
+            .map_err(|_| "The Mullvad installer download could not be written".to_owned())?;
+    }
+    file.sync_all()
+        .map_err(|_| "The Mullvad installer download could not be finalized".to_owned())?;
+    drop(file);
+    std::fs::rename(&partial, &destination)
+        .map_err(|_| "The Mullvad installer download could not be finalized".to_owned())?;
+    Ok(destination)
+}
+
+#[cfg(target_os = "windows")]
+fn mullvad_vendor_installer_download_path() -> PathBuf {
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0);
+    std::env::temp_dir().join(format!(
+        "osl-mullvad-{unique}-{}-{MULLVAD_VENDOR_INSTALLER_FILENAME}",
+        std::process::id()
+    ))
+}
+
+#[cfg(target_os = "windows")]
+fn remove_downloaded_mullvad_installer(path: &Path) {
+    let _ = std::fs::remove_file(path);
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn sha256_bytes_hex(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
+}
+
+#[cfg(target_os = "windows")]
+fn sha256_file_hex(path: &Path) -> std::io::Result<String> {
+    let mut file = std::fs::File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
 }
 
 #[cfg(any(target_os = "windows", test))]
@@ -1444,7 +1692,12 @@ pub fn open_mullvad() -> Result<MullvadActionResult, String> {
         let executable = mullvad_executable()
             .ok_or_else(|| "Mullvad is not installed in a supported Windows location".to_owned())?;
         spawn_detached(&executable, &[]).map_err(|_| "Mullvad could not be opened".to_owned())?;
-        Ok(MullvadActionResult { started: true })
+        Ok(MullvadActionResult {
+            started: true,
+            version: None,
+            installer_sha256: None,
+            installer_source: None,
+        })
     }
     #[cfg(not(target_os = "windows"))]
     {
@@ -1492,9 +1745,6 @@ pub fn launch_firefox_service(
     owner_osl_user_id: &str,
     service_id: FirefoxServiceId,
 ) -> Result<FirefoxLaunchResult, String> {
-    if service_id == FirefoxServiceId::Outlook {
-        return Err("Outlook opens only through the verified native app".to_owned());
-    }
     #[cfg(target_os = "windows")]
     {
         let firefox = firefox_executable()
@@ -1549,6 +1799,7 @@ pub fn install_firefox() -> Result<FirefoxInstallResult, String> {
 #[cfg(any(target_os = "windows", test))]
 pub(crate) fn firefox_service_url(service_id: FirefoxServiceId) -> &'static str {
     match service_id {
+        FirefoxServiceId::Messenger => "https://www.facebook.com/messages/",
         FirefoxServiceId::Gmail => "https://mail.google.com/",
         FirefoxServiceId::Outlook => "https://outlook.live.com/mail/",
         FirefoxServiceId::Proton => "https://mail.proton.me/",
@@ -1590,8 +1841,147 @@ pub(crate) fn trusted_browser_executable_at(
 }
 
 #[cfg(any(target_os = "windows", test))]
-pub(crate) fn browser_display_name(id: BrowserImportId) -> &'static str {
+pub fn browser_display_name(id: BrowserImportId) -> &'static str {
     browser_import_manifest(id).display_name
+}
+
+pub fn firefox_service_display_name(id: FirefoxServiceId) -> &'static str {
+    match id {
+        FirefoxServiceId::Messenger => "Messenger",
+        FirefoxServiceId::Gmail => "Gmail",
+        FirefoxServiceId::Outlook => "Outlook",
+        FirefoxServiceId::Proton => "Proton Mail",
+        FirefoxServiceId::Tuta => "Tuta Mail",
+        FirefoxServiceId::Yahoo => "Yahoo Mail",
+        FirefoxServiceId::Aol => "AOL Mail",
+        FirefoxServiceId::Gmx => "GMX Mail",
+        FirefoxServiceId::Maildotcom => "mail.com",
+        FirefoxServiceId::Icloud => "iCloud Mail",
+    }
+}
+
+pub fn provider_version_target_name(target: ProviderVersionTarget) -> &'static str {
+    match target {
+        ProviderVersionTarget::Native(id) => native_app_display_name(id),
+        ProviderVersionTarget::Browser(id) => match id {
+            BrowserImportId::Chrome => "Chrome",
+            BrowserImportId::Edge => "Edge",
+            BrowserImportId::Firefox => "Firefox",
+            BrowserImportId::Brave => "Brave",
+            BrowserImportId::Opera => "Opera",
+            BrowserImportId::DuckDuckGo => "DuckDuckGo",
+        },
+        ProviderVersionTarget::FirefoxService(id) => firefox_service_display_name(id),
+    }
+}
+
+pub fn provider_version_target_exact_version(target: ProviderVersionTarget) -> Option<String> {
+    match target {
+        ProviderVersionTarget::Native(id) => native_app_exact_version(id),
+        ProviderVersionTarget::Browser(id) => browser_import_exact_version(id),
+        ProviderVersionTarget::FirefoxService(id) => firefox_service_browser_exact_version(id),
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn version_from_package_full_name(full_name: &str) -> Option<String> {
+    let version = full_name.split('_').nth(1)?;
+    let components = version.split('.').collect::<Vec<_>>();
+    (components.len() == 4
+        && components.iter().all(|component| {
+            !component.is_empty() && component.bytes().all(|byte| byte.is_ascii_digit())
+        }))
+    .then(|| version.to_owned())
+}
+
+#[cfg(target_os = "windows")]
+fn file_version(path: &Path) -> Option<String> {
+    let system_directory = system_directory()?;
+    let powershell = system_directory
+        .join("WindowsPowerShell")
+        .join("v1.0")
+        .join("powershell.exe");
+    if !powershell.is_file() {
+        return None;
+    }
+    let mut command = Command::new(powershell);
+    command
+        .args([
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "[Diagnostics.FileVersionInfo]::GetVersionInfo($args[0]).FileVersion",
+        ])
+        .arg(path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    let output = command_output_with_timeout(command, APP_INSTALLER_PROBE_TIMEOUT).ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let version = std::str::from_utf8(&output.stdout).ok()?.trim();
+    (!version.is_empty()
+        && !version.contains('\0')
+        && version
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_' | b' ')))
+    .then(|| version.to_owned())
+}
+
+#[cfg(target_os = "windows")]
+fn trusted_executable_version(executable: &TrustedExecutable) -> Option<String> {
+    if let Some(parent) = executable.path().parent() {
+        if let Some(version) = parent
+            .file_name()
+            .and_then(|name| name.to_str())
+            .and_then(|name| name.strip_prefix("app-"))
+            .filter(|version| discord_version_key(&format!("app-{version}")).is_some())
+        {
+            return Some(version.to_owned());
+        }
+    }
+    file_version(executable.path())
+}
+
+#[cfg(target_os = "windows")]
+pub fn native_app_exact_version(id: NativeAppId) -> Option<String> {
+    match id {
+        NativeAppId::Whatsapp => whatsapp_store_package_version(),
+        NativeAppId::Outlook => outlook_store_package_version().or_else(|| {
+            installed_executable(manifest(id))
+                .and_then(|executable| trusted_executable_version(&executable))
+        }),
+        _ => installed_executable(manifest(id))
+            .and_then(|executable| trusted_executable_version(&executable)),
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn native_app_exact_version(_id: NativeAppId) -> Option<String> {
+    None
+}
+
+#[cfg(target_os = "windows")]
+pub fn browser_import_exact_version(id: BrowserImportId) -> Option<String> {
+    browser_import_executable(browser_import_manifest(id))
+        .and_then(|executable| trusted_executable_version(&executable))
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn browser_import_exact_version(_id: BrowserImportId) -> Option<String> {
+    None
+}
+
+#[cfg(target_os = "windows")]
+pub fn firefox_service_browser_exact_version(_id: FirefoxServiceId) -> Option<String> {
+    firefox_executable().and_then(|executable| trusted_executable_version(&executable))
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn firefox_service_browser_exact_version(_id: FirefoxServiceId) -> Option<String> {
+    None
 }
 
 #[cfg(any(target_os = "windows", test))]
@@ -1866,6 +2256,12 @@ fn whatsapp_store_package_installed() -> bool {
     whatsapp_store_package_root().is_some()
 }
 
+#[cfg(target_os = "windows")]
+fn whatsapp_store_package_version() -> Option<String> {
+    whatsapp_store_package_full_name()
+        .and_then(|full_name| version_from_package_full_name(&full_name))
+}
+
 /// Resolve the executable only through the current user's exact AppX
 /// registration. WhatsApp's packaged executable is not independently
 /// Authenticode signed, so callers must never fall back to a user-writable
@@ -1882,6 +2278,11 @@ pub(crate) fn whatsapp_store_executable_path() -> Option<PathBuf> {
 
 #[cfg(target_os = "windows")]
 fn whatsapp_store_package_root() -> Option<PathBuf> {
+    whatsapp_store_package_full_name().and_then(|full_name| package_path_from_full_name(&full_name))
+}
+
+#[cfg(target_os = "windows")]
+fn whatsapp_store_package_full_name() -> Option<String> {
     use std::os::windows::ffi::OsStrExt;
 
     use windows_sys::Win32::Foundation::{ERROR_INSUFFICIENT_BUFFER, ERROR_SUCCESS};
@@ -1941,7 +2342,6 @@ fn whatsapp_store_package_root() -> Option<PathBuf> {
                     utf16_string_from_api_buffer(*package_name, &buffer[..buffer_length as usize])
                 })
                 .flatten()
-                .and_then(|full_name| package_path_from_full_name(&full_name))
         })
 }
 
@@ -1958,7 +2358,18 @@ fn outlook_store_executable_path() -> Option<PathBuf> {
 }
 
 #[cfg(target_os = "windows")]
+fn outlook_store_package_version() -> Option<String> {
+    outlook_store_package_full_name()
+        .and_then(|full_name| version_from_package_full_name(&full_name))
+}
+
+#[cfg(target_os = "windows")]
 fn outlook_store_package_root() -> Option<PathBuf> {
+    outlook_store_package_full_name().and_then(|full_name| package_path_from_full_name(&full_name))
+}
+
+#[cfg(target_os = "windows")]
+fn outlook_store_package_full_name() -> Option<String> {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Foundation::{ERROR_INSUFFICIENT_BUFFER, ERROR_SUCCESS};
     use windows_sys::Win32::Storage::Packaging::Appx::GetPackagesByPackageFamily;
@@ -2016,7 +2427,7 @@ fn outlook_store_package_root() -> Option<PathBuf> {
                 return None;
             }
             let path = package_path_from_full_name(&full_name)?;
-            is_trusted_outlook_package_path(&path, &program_files).then_some(path)
+            is_trusted_outlook_package_path(&path, &program_files).then_some(full_name)
         })
 }
 
@@ -2608,13 +3019,17 @@ pub(crate) mod tests {
 
     #[test]
     fn manifest_is_exhaustive_unique_and_uses_fixed_packages() {
-        assert_eq!(NATIVE_APPS.len(), 5);
+        assert_eq!(NATIVE_APPS.len(), 6);
         for (index, app) in NATIVE_APPS.iter().enumerate() {
             assert!(!app.display_name.is_empty());
+            let expected_surface = if app.id == NativeAppId::X {
+                AdapterSurface::FixedOfficialWebOrigin
+            } else {
+                AdapterSurface::InstalledNativeClient
+            };
             assert_eq!(
-                app.adapter_surface,
-                AdapterSurface::InstalledNativeClient,
-                "{:?} native inventory must bind to installed native adapter surface",
+                app.adapter_surface, expected_surface,
+                "{:?} native inventory must bind to its fixed adapter surface",
                 app.id
             );
             // The public status is no longer a second reading of
@@ -2635,7 +3050,7 @@ pub(crate) mod tests {
                  rows, and no carrier surface has earned one.",
                 app.id
             );
-            if app.id == NativeAppId::Outlook {
+            if matches!(app.id, NativeAppId::Outlook | NativeAppId::X) {
                 assert!(app.package_id.is_empty());
                 assert_eq!(app.package_source, "unavailable");
             } else {
@@ -2647,7 +3062,11 @@ pub(crate) mod tests {
                     .all(|byte| byte.is_ascii_alphanumeric() || byte == b'.'));
                 assert!(matches!(app.package_source, "winget" | "msstore"));
             }
-            assert!(!app.candidates.is_empty());
+            if app.id == NativeAppId::X {
+                assert!(app.candidates.is_empty());
+            } else {
+                assert!(!app.candidates.is_empty());
+            }
             assert!(NATIVE_APPS[..index]
                 .iter()
                 .all(|previous| previous.id != app.id));
@@ -2695,6 +3114,10 @@ pub(crate) mod tests {
             &manifest(NativeAppId::Outlook).adapter_service,
             &AdapterService::Outlook
         );
+        assert_eq!(
+            &manifest(NativeAppId::X).adapter_service,
+            &AdapterService::X
+        );
         assert_eq!(manifest(NativeAppId::Whatsapp).package_source, "msstore");
         assert_eq!(
             native_app_publisher(NativeAppId::Discord),
@@ -2713,11 +3136,13 @@ pub(crate) mod tests {
             native_app_publisher(NativeAppId::Outlook),
             Some(ExecutablePublisher::Microsoft)
         );
+        assert_eq!(native_app_publisher(NativeAppId::X), None);
         assert!(isolated_native_profile_available(NativeAppId::Discord));
         assert!(isolated_native_profile_available(NativeAppId::Telegram));
         assert!(!isolated_native_profile_available(NativeAppId::Signal));
         assert!(!isolated_native_profile_available(NativeAppId::Whatsapp));
         assert!(!isolated_native_profile_available(NativeAppId::Outlook));
+        assert!(!isolated_native_profile_available(NativeAppId::X));
     }
 
     #[test]
@@ -2809,17 +3234,38 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn outlook_has_no_firefox_fallback() {
-        assert!(
-            launch_firefox_service(Path::new("."), "owner-a", FirefoxServiceId::Outlook).is_err()
+    fn task_4505_outlook_web_has_a_firefox_service_address() {
+        assert_eq!(
+            firefox_service_url(FirefoxServiceId::Outlook),
+            "https://outlook.live.com/mail/"
+        );
+        println!(
+            "TASK4505_OUTLOOK_WEB_FIREFOX_URL={}",
+            firefox_service_url(FirefoxServiceId::Outlook)
         );
     }
 
     #[test]
     fn mullvad_actions_use_fixed_package_and_path() {
         assert_eq!(MULLVAD_PACKAGE_ID, "MullvadVPN.MullvadVPN");
+        assert_eq!(MULLVAD_VENDOR_INSTALLER_VERSION, "2026.3");
         assert_eq!(
-            mullvad_install_arguments(),
+            MULLVAD_VENDOR_INSTALLER_FILENAME,
+            "MullvadVPN-2026.3_x64.exe"
+        );
+        assert_eq!(
+            MULLVAD_VENDOR_INSTALLER_URL,
+            "https://github.com/mullvad/mullvadvpn-app/releases/download/2026.3/MullvadVPN-2026.3_x64.exe"
+        );
+        assert_eq!(
+            MULLVAD_VENDOR_INSTALLER_SHA256,
+            "e335507b948083100b54f8000ef5bb733e3ee959f8df6a573e9404c506cb139a"
+        );
+        assert_eq!(MULLVAD_HASH_MISMATCH, "MULLVAD-HASH-MISMATCH");
+        assert_eq!(MULLVAD_VENDOR_INSTALLER_MAX_BYTES, 160 * 1024 * 1024);
+        assert_eq!(mullvad_vendor_installer_arguments(), ["/S"]);
+        assert_eq!(
+            mullvad_winget_install_arguments(),
             [
                 "install",
                 "--id",
@@ -2851,10 +3297,24 @@ pub(crate) mod tests {
             assert!(!candidate.relative_path.contains(':'));
             assert!(candidate.relative_path.ends_with(r"Mullvad VPN.exe"));
         }
-        assert!(
-            serde_json::to_value(MullvadActionResult { started: true }).unwrap()["started"]
-                .as_bool()
-                .unwrap()
+        assert!(serde_json::to_value(MullvadActionResult {
+            started: true,
+            version: Some(MULLVAD_VENDOR_INSTALLER_VERSION),
+            installer_sha256: Some(MULLVAD_VENDOR_INSTALLER_SHA256),
+            installer_source: Some("vendor"),
+        })
+        .unwrap()["started"]
+            .as_bool()
+            .unwrap());
+    }
+
+    #[test]
+    fn mullvad_vendor_installer_hash_mismatch_has_exact_sentinel() {
+        assert_eq!(MULLVAD_HASH_MISMATCH, "MULLVAD-HASH-MISMATCH");
+        assert_ne!(
+            sha256_bytes_hex(b"corrupted Mullvad installer"),
+            MULLVAD_VENDOR_INSTALLER_SHA256,
+            "a corrupted download must not reach installer launch"
         );
     }
 
@@ -3030,7 +3490,10 @@ pub(crate) mod tests {
                     assert_eq!(status.support_status, NativeAppSupportStatus::NoClaim);
                     assert_eq!(status.protected_mode, NativeAppProtectedMode::Unavailable);
                 }
-                NativeAppId::Signal | NativeAppId::Whatsapp | NativeAppId::Outlook => {
+                NativeAppId::Signal
+                | NativeAppId::Whatsapp
+                | NativeAppId::Outlook
+                | NativeAppId::X => {
                     assert_eq!(status.support_status, NativeAppSupportStatus::ComingSoon);
                     assert_eq!(status.protected_mode, NativeAppProtectedMode::Unavailable);
                 }
@@ -3178,7 +3641,7 @@ pub(crate) mod tests {
             NativeAppId::Telegram => CarrySeam::Uia2Substrate,
             NativeAppId::Signal => CarrySeam::ProviderOwnedBackend,
             NativeAppId::Whatsapp => CarrySeam::Uia2Substrate,
-            NativeAppId::Outlook => CarrySeam::NoCarryPath,
+            NativeAppId::Outlook | NativeAppId::X => CarrySeam::NoCarryPath,
         }
     }
 
@@ -4270,6 +4733,7 @@ pub(crate) mod tests {
             CarrySeam::ProviderOwnedBackend
         );
         assert_eq!(carry_seam(NativeAppId::Outlook), CarrySeam::NoCarryPath);
+        assert_eq!(carry_seam(NativeAppId::X), CarrySeam::NoCarryPath);
     }
 
     /// **D-203's unguarded axis.** The lane's first guard bound TS to Rust, which
@@ -4443,6 +4907,7 @@ pub(crate) mod tests {
                 NativeAppId::Signal => "signal",
                 NativeAppId::Whatsapp => "whatsapp",
                 NativeAppId::Outlook => "outlook",
+                NativeAppId::X => "x",
             }
         }
 
@@ -4456,6 +4921,7 @@ pub(crate) mod tests {
                 NativeAppId::Signal => Some("src/native_signal_adapter.rs"),
                 NativeAppId::Whatsapp => Some("src/native_whatsapp_adapter.rs"),
                 NativeAppId::Outlook => None,
+                NativeAppId::X => None,
             }
         }
 
@@ -5318,7 +5784,7 @@ pub(crate) mod tests {
 
     #[test]
     fn firefox_manifest_is_exhaustive_and_https_only() {
-        assert_eq!(FIREFOX_SERVICES.len(), 9);
+        assert_eq!(FIREFOX_SERVICES.len(), 10);
         assert_eq!(FIREFOX_PACKAGE_ID, "Mozilla.Firefox");
         assert_eq!(FIREFOX_MIGRATION_SWITCH, "--migration");
         assert_eq!(FIREFOX_WAIT_FOR_BROWSER_SWITCH, "-wait-for-browser");
@@ -5788,7 +6254,7 @@ pub(crate) mod tests {
         assert_eq!(statuses.len(), NATIVE_APPS.len());
         #[cfg(not(target_os = "windows"))]
         for status in statuses {
-            let expected = if status.id == NativeAppId::Outlook {
+            let expected = if matches!(status.id, NativeAppId::Outlook | NativeAppId::X) {
                 NativeAppAvailability::Unavailable
             } else {
                 NativeAppAvailability::Installable
@@ -6002,3 +6468,7 @@ pub(crate) mod tests {
         .is_err());
     }
 }
+
+const INSTAGRAM_CANDIDATES: &[ExecutableCandidate] = &[];
+
+const X_CANDIDATES: &[ExecutableCandidate] = &[];

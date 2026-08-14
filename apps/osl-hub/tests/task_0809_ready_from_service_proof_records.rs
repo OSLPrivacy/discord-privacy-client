@@ -15,7 +15,7 @@ fn valid_discord_two_person_proof() -> ProtectedDeliveryProof {
 }
 
 #[test]
-fn task_0809_valid_two_person_proof_changes_one_service_decision_to_ready() {
+fn task_0809_proof_records_cannot_invent_missing_two_person_capability() {
     let before = ready_decisions_from_service_proof_records(&[]);
     let before_ready_count = before
         .iter()
@@ -40,15 +40,22 @@ fn task_0809_valid_two_person_proof_changes_one_service_decision_to_ready() {
         .filter(|decision| decision.label == Some(ServiceReadyLabel::Ready))
         .collect();
     println!("TASK0809_AFTER_READY_COUNT={}", ready.len());
-    assert_eq!(ready.len(), 1);
-    assert_eq!(ready[0].service_id, ServiceKind::Discord);
+    assert_eq!(ready.len(), 0);
+    let discord = after
+        .iter()
+        .find(|decision| decision.service_id == ServiceKind::Discord)
+        .expect("Discord has an installed service decision");
+    assert_eq!(
+        discord.refusal.as_deref(),
+        Some("ready_requires_real_two_person_protected_messaging_capability")
+    );
     println!(
-        "TASK0809_VALID_TWO_PERSON_PROOF service={:?} protected_message_received={} received_by_real_other_person={} sender_person_id={} recipient_person_id={} decision={:?}",
+        "TASK0809_VALID_TWO_PERSON_PROOF_WITHOUT_CAPABILITY service={:?} protected_message_received={} received_by_real_other_person={} sender_person_id={} recipient_person_id={} refusal={}",
         proof.service_id,
         proof.protected_message_received,
         proof.received_by_real_other_person,
         proof.sender_person_id,
         proof.recipient_person_id,
-        ready[0].label.unwrap()
+        discord.refusal.as_deref().unwrap()
     );
 }

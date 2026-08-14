@@ -6,6 +6,7 @@ import {
   applyOslChatDraftToElement,
   oslChatDraftBytes,
   oslChatsViewMarkup,
+  submitsOslChatDraft,
   type OslChatFriend,
   type OslChatsViewModel,
 } from "./osl-chats-view";
@@ -16,6 +17,7 @@ function friend(overrides: Partial<OslChatFriend> = {}): OslChatFriend {
     nickname: "Rose",
     verified: true,
     ready: true,
+    handshakeConfirmed: true,
     preview: "See you soon",
     previewVisible: true,
     unreadCount: 0,
@@ -70,6 +72,34 @@ describe("OSL chats view", () => {
     expect(markup).toContain("osl-chat-message-text");
   });
 
+  it("groups a three-day fixture with one avatar per consecutive sender and centred day dividers", () => {
+    const messages = [
+      { messageId: "day-one", direction: "incoming" as const, body: "Monday", state: "received" as const, timestampLabel: "9:00 AM", dateLabel: "Jun 10, 2026" },
+      ...["one", "two", "three", "four", "five"].map((body, index) => ({ messageId: `five-${index}`, direction: "incoming" as const, body, state: "received" as const, timestampLabel: `10:0${index} AM`, dateLabel: "Jun 11, 2026" })),
+      { messageId: "day-three", direction: "outgoing" as const, body: "Wednesday", state: "sent" as const, timestampLabel: "11:00 AM", dateLabel: "Jun 12, 2026" },
+    ];
+    const markup = oslChatsViewMarkup(model({ messages }));
+    const groupCount = (markup.match(/data-osl-chat-message-group=/gu) ?? []).length;
+    const articleCount = (markup.match(/<article class="osl-chat-message /gu) ?? []).length;
+    const groupedMessageCount = [...markup.matchAll(/data-message-count="(\d+)"/gu)]
+      .reduce((total, match) => total + Number(match[1]), 0);
+    const dividerCount = (markup.match(/class="osl-chat-date-divider"/gu) ?? []).length;
+    const fiveMessageGroup = markup.match(/data-osl-chat-message-group="incoming" data-message-count="5">([\s\S]*?)<\/section>/u)?.[1] ?? "";
+
+    console.log(`TASK5010 date_dividers=${dividerCount} consecutive_sender_messages=5 group_avatar_count=${(fiveMessageGroup.match(/osl-chat-avatar is-message/gu) ?? []).length} grouped_messages=${articleCount}/${articleCount}`);
+    expect(dividerCount).toBe(2);
+    expect(fiveMessageGroup).toContain("osl-chat-avatar is-message");
+    expect((fiveMessageGroup.match(/osl-chat-avatar is-message/gu) ?? [])).toHaveLength(1);
+    expect(groupCount).toBe(3);
+    expect(articleCount).toBe(messages.length);
+    expect(groupedMessageCount).toBe(articleCount);
+
+    const stylesheet = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
+    expect(stylesheet).toMatch(/\.osl-chat-message-group \{[^}]*grid-template-columns: 40px minmax\(0, 1fr\);[^}]*column-gap: 16px;/u);
+    expect(stylesheet).toMatch(/\.osl-chat-avatar \{[^}]*width: 40px;[^}]*height: 40px;[^}]*border-radius: 50% !important;/u);
+    expect(stylesheet).toMatch(/\.osl-chat-date-divider \{[^}]*justify-content: center;[^}]*text-align: center;/u);
+  });
+
   it("shows every honest delivery tag without inferring another state", () => {
     const markup = oslChatsViewMarkup(model({
       messages: OSL_CHAT_DELIVERY_STATES.map((state) => ({ messageId: state, direction: state === "received" ? "incoming" : "outgoing", body: state, state, timestampLabel: "Now" })),
@@ -119,8 +149,71 @@ describe("OSL chats view", () => {
     expect(oslChatsViewMarkup(model({ draft: "Hello" }))).toMatch(/class="osl-chat-send" type="submit"(?![^>]* disabled)[^>]*>/u);
     expect(oslChatsViewMarkup(model({ draft: "Hello", friends: [friend({ verified: false })] }))).toMatch(/class="osl-chat-send" type="submit"[^>]* disabled/u);
     expect(oslChatsViewMarkup(model({ draft: "Hello", friends: [friend({ ready: false })] }))).toMatch(/class="osl-chat-send" type="submit"[^>]* disabled/u);
+    expect(oslChatsViewMarkup(model({ draft: "Hello", friends: [friend({ handshakeConfirmed: false })] }))).toMatch(/class="osl-chat-send" type="submit"[^>]* disabled/u);
     expect(oslChatsViewMarkup(model({ draft: "   " }))).toMatch(/class="osl-chat-send" type="submit"[^>]* disabled/u);
     expect(oslChatsViewMarkup(model({ draft: "Hello", busy: true }))).toMatch(/class="osl-chat-send" type="submit"[^>]* disabled/u);
+  });
+
+  it("shows changed and corrupt build warnings without blocking message sending", () => {
+    for (const [status, detail] of [
+      ["mismatch", "This app copy does not match OSL&#39;s signed build list."],
+      ["unknown", "OSL could not verify this app copy against its signed build list."],
+    ] as const) {
+      const markup = oslChatsViewMarkup(model({ draft: "Hello", buildIntegrity: status }));
+      expect(markup, status).toContain(`data-osl-build-integrity="${status}"`);
+      expect(markup, status).toContain("Build verification warning");
+      expect(markup, status).toContain(detail);
+      expect(markup, status).toMatch(/data-osl-chat-send-context="1"[^>]*(?<!disabled)>/u);
+      expect(markup, status).toMatch(/class="osl-chat-send" type="submit"(?![^>]* disabled)[^>]*>/u);
+    }
+
+    expect(oslChatsViewMarkup(model({ draft: "Hello", buildIntegrity: "verified" })))
+      .not.toContain("Build verification warning");
+  });
+
+  it("TASK0434 starts direct chats only when both peers have answered", () => {
+    const supported = [
+      friend({ personId: "supporting-peer-1", nickname: "Rose", handshakeConfirmed: true }),
+      friend({ personId: "supporting-peer-2", nickname: "Lane", handshakeConfirmed: true }),
+    ];
+    const unsupported = friend({
+      personId: "unsupported-peer-1",
+      nickname: "Noah",
+      handshakeConfirmed: false,
+    });
+    const renderActive = (activePersonId: string) => oslChatsViewMarkup(model({
+      friends: [...supported, unsupported],
+      activePersonId,
+      draft: "TASK0434 direct chat",
+    }));
+    const supportedMarkup = supported.map((peer) => renderActive(peer.personId));
+    const unsupportedMarkup = renderActive(unsupported.personId);
+    const supportedEnabled = supportedMarkup.filter((markup) => /class="osl-chat-send" type="submit"(?![^>]* disabled)[^>]*data-osl-chat-peer-state="mutual"/u.test(markup)).length;
+    const unsupportedWeaklyBlocked = /class="osl-chat-send" type="submit"[^>]*data-osl-chat-peer-state="one-way"[^>]*disabled/u.test(unsupportedMarkup)
+      && unsupportedMarkup.includes("Chat needs both people to answer before sending.");
+
+    console.log(`TASK0434 supported_peers_send_with_stronger_state=${supportedEnabled} state=mutual`);
+    console.log(`TASK0434 unsupported_peers_cannot_silently_send_weakly=${unsupportedWeaklyBlocked ? 1 : 0} state=one-way`);
+    expect(supportedEnabled).toBe(2);
+    expect(unsupportedWeaklyBlocked).toBe(true);
+  });
+
+  it("shows the changed-build warning for changed and corrupt proofs while send stays available", () => {
+    for (const [reason, marker] of [["changed", "changed"], ["corruptProof", "corrupt-proof"]] as const) {
+      const markup = oslChatsViewMarkup(model({
+        draft: "Hello",
+        buildWarning: {
+          kind: "changedBuild",
+          reason,
+          message: "OSL build changed after its startup proof. Sending stays available.",
+          messageSendingAvailable: true,
+        },
+      }));
+      expect(markup).toContain(`data-osl-chat-build-warning="${marker}"`);
+      expect(markup).toContain("Changed build warning");
+      expect(markup).toContain('data-message-sending-available="true"');
+      expect(markup).toMatch(/class="osl-chat-send" type="submit"(?![^>]* disabled)[^>]*>/u);
+    }
   });
 
   it("accepts the backend maximum and blocks the first draft the backend would reject", () => {
@@ -139,7 +232,7 @@ describe("OSL chats view", () => {
   it("renders no external history, scripts, or backend capability claims", () => {
     const markup = oslChatsViewMarkup(model());
     expect(markup).not.toContain("<script");
-    expect(markup).not.toMatch(/Discord|Signal|Telegram|Snapchat|encrypted|end-to-end|server|group|keyserver|ratchet|receipt|browser profile|provider adapter|relay/iu);
+    expect(markup).not.toMatch(/Discord|Signal|Telegram|Snapchat|encrypted|end-to-end|server|keyserver|ratchet|receipt|browser profile|provider adapter|relay/iu);
   });
 });
 
@@ -175,6 +268,16 @@ describe("send button re-enablement while typing", () => {
     expect(markup).not.toMatch(/class="osl-chat-send"[^>]*disabled/u);
   });
 
+  it("submits the typing box only on a bare Enter", () => {
+    expect(submitsOslChatDraft({ key: "Enter" })).toBe(true);
+    expect(submitsOslChatDraft({ key: "Enter", shiftKey: true })).toBe(false);
+    expect(submitsOslChatDraft({ key: "Enter", ctrlKey: true })).toBe(false);
+    expect(submitsOslChatDraft({ key: "Enter", altKey: true })).toBe(false);
+    expect(submitsOslChatDraft({ key: "Enter", metaKey: true })).toBe(false);
+    expect(submitsOslChatDraft({ key: "Enter", isComposing: true })).toBe(false);
+    expect(submitsOslChatDraft({ key: "a" })).toBe(false);
+  });
+
   it("send success clears the live textarea element through the draft source of truth", () => {
     const textarea = { value: "message that was just sent" };
     applyOslChatDraftToElement(textarea, "");
@@ -183,8 +286,11 @@ describe("send button re-enablement while typing", () => {
     const main = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
     const sendStart = main.indexOf("async function sendOslChat(event: SubmitEvent): Promise<void> {");
     const resetStart = main.indexOf("function resetOslChatUiState", sendStart);
+    const prepareStart = main.indexOf("prepareOslChatText(draft, oslChatViewOnce)", sendStart);
     expect(sendStart).toBeGreaterThan(-1);
     expect(resetStart).toBeGreaterThan(sendStart);
+    expect(prepareStart).toBeGreaterThan(sendStart);
+    expect(main.slice(sendStart, prepareStart)).toContain("oslChatHandshakeConfirmed(oslChatMessages.get(personId) ?? [])");
     expect(main.slice(sendStart, resetStart)).toContain('setOslChatDraft("");');
   });
 });

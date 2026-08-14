@@ -23,6 +23,7 @@ const signalApp = (availability: NativeApp["availability"] = "installed"): Nativ
   deliveryEvidence: "neverProvenLive",
   claimBlockers: [],
   claimNote: "QA shell fixture: no live evidence, so OSL makes no claim.",
+  // This status copy is held to the catalog's generated-label rule.
   statusPage: {
     capability: "carrier capability is wired but not live-proven",
     generatedLabel: "Coming later",

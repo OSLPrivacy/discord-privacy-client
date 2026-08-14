@@ -13,12 +13,15 @@ use cover_draft::{
     GenerationControl, LocalCoverModel, ModelError, ModelInput, ModelPackMetadata,
     ModelPackSignatureVerifier, ObservedArtifact, TrustedModelPack,
 };
+use rand::RngCore;
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
 const MODEL_PACK_DOMAIN: &[u8] = b"osl-cover-draft-model-pack-v1";
 const VERSION_DOMAIN: &[u8] = b"osl-bundled-covertext-version-v1";
 const SIGNATURE_DOMAIN: &[u8] = b"osl-bundled-covertext-metadata-signature-v1";
+const COVER_ENTROPY_DOMAIN: &[u8] = b"osl-bundled-covertext-entropy-v1";
+const WRITER_INPUT_DOMAIN: &[u8] = b"osl-bundled-covertext-input-v1";
 
 pub const MODEL_FILE_NAME: &str = "osl-covertext-tiny-v1.oslmodel";
 pub const MODEL_ID: &str = MODEL_FILE_NAME;
@@ -45,6 +48,73 @@ pub enum BundledModelPackError {
     },
     MetadataRejected,
     InvalidModelFile,
+    InvalidShape,
+}
+
+/// The complete input the local writer is allowed to observe: counts only.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CoverShapeConstraints {
+    character_count: usize,
+    hard_line_character_counts: Vec<u32>,
+}
+
+impl CoverShapeConstraints {
+    pub const MAX_CHARACTERS: usize = 20_000;
+    pub const MAX_HARD_LINES: usize = 96;
+
+    pub fn new(
+        character_count: usize,
+        hard_line_character_counts: Vec<u32>,
+    ) -> Result<Self, BundledModelPackError> {
+        let total = hard_line_character_counts
+            .iter()
+            .try_fold(0usize, |sum, count| sum.checked_add(*count as usize));
+        if character_count == 0
+            || character_count > Self::MAX_CHARACTERS
+            || hard_line_character_counts.is_empty()
+            || hard_line_character_counts.len() > Self::MAX_HARD_LINES
+            || total.is_none_or(|total| total > character_count)
+        {
+            return Err(BundledModelPackError::InvalidShape);
+        }
+        Ok(Self {
+            character_count,
+            hard_line_character_counts,
+        })
+    }
+
+    pub fn character_count(&self) -> usize {
+        self.character_count
+    }
+
+    pub fn hard_line_character_counts(&self) -> &[u32] {
+        &self.hard_line_character_counts
+    }
+}
+
+/// Fresh non-secret entropy produced by the verified on-device writer.
+pub struct GeneratedCoverEntropy([u8; 32]);
+
+impl GeneratedCoverEntropy {
+    pub fn into_bytes(self) -> [u8; 32] {
+        self.0
+    }
+}
+
+/// Observes the exact dynamic request consumed by the local writer and the
+/// exact entropy it returns. The production path uses a no-op observer; audit
+/// tests replace it with a counter without widening the writer's input type.
+pub trait CoverWriterObserver {
+    fn writer_received(&mut self, input: &[u8]);
+    fn writer_returned(&mut self, output: &[u8]);
+}
+
+struct NoopCoverWriterObserver;
+
+impl CoverWriterObserver for NoopCoverWriterObserver {
+    fn writer_received(&mut self, _input: &[u8]) {}
+
+    fn writer_returned(&mut self, _output: &[u8]) {}
 }
 
 impl BundledModelPackError {
@@ -105,6 +175,55 @@ impl BundledCoverWriter {
             templates,
             next: 0,
         })
+    }
+
+    /// Select fresh carrier entropy from the local pack using only the public
+    /// length/shape contract. The payload encoder consumes this later; private
+    /// message text is not representable at this API boundary.
+    pub fn generate_cover_entropy(
+        &mut self,
+        shape: &CoverShapeConstraints,
+    ) -> Result<GeneratedCoverEntropy, BundledModelPackError> {
+        self.generate_cover_entropy_observed(shape, &mut NoopCoverWriterObserver)
+    }
+
+    /// The observed form is byte-identical to the shipping form. The captured
+    /// request is also what the entropy hash consumes, so the audit watches the
+    /// real model boundary rather than a separately reconstructed description.
+    pub fn generate_cover_entropy_observed(
+        &mut self,
+        shape: &CoverShapeConstraints,
+        observer: &mut dyn CoverWriterObserver,
+    ) -> Result<GeneratedCoverEntropy, BundledModelPackError> {
+        let template = self
+            .templates
+            .get(self.next % self.templates.len())
+            .ok_or(BundledModelPackError::InvalidModelFile)?;
+        self.next = self.next.wrapping_add(1);
+
+        let mut writer_input = Vec::with_capacity(
+            WRITER_INPUT_DOMAIN.len() + 16 + shape.hard_line_character_counts.len() * 4,
+        );
+        writer_input.extend_from_slice(WRITER_INPUT_DOMAIN);
+        writer_input.extend_from_slice(&(shape.character_count as u64).to_be_bytes());
+        writer_input
+            .extend_from_slice(&(shape.hard_line_character_counts.len() as u64).to_be_bytes());
+        for count in &shape.hard_line_character_counts {
+            writer_input.extend_from_slice(&count.to_be_bytes());
+        }
+        observer.writer_received(&writer_input);
+
+        let mut fresh = [0u8; 32];
+        rand::rngs::OsRng.fill_bytes(&mut fresh);
+        let mut hash = Sha256::new();
+        hash.update(COVER_ENTROPY_DOMAIN);
+        hash_field(&mut hash, self.trusted_pack.metadata_digest().as_slice());
+        hash_field(&mut hash, template.as_bytes());
+        hash_field(&mut hash, &writer_input);
+        hash_field(&mut hash, &fresh);
+        let generated: [u8; 32] = hash.finalize().into();
+        observer.writer_returned(&generated);
+        Ok(GeneratedCoverEntropy(generated))
     }
 }
 

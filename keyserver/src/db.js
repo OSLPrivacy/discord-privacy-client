@@ -88,6 +88,21 @@ function initSchema(db) {
       PRIMARY KEY (user_id, opk_id),
       FOREIGN KEY (user_id) REFERENCES users (user_id)
     );
+
+    CREATE TABLE IF NOT EXISTS private_drawer_cards (
+      card_b64 TEXT PRIMARY KEY,
+      root_drawer_name TEXT NOT NULL,
+      assigned_drawer_name TEXT NOT NULL,
+      published_handle TEXT NOT NULL,
+      published_account TEXT NOT NULL,
+      published_at TEXT NOT NULL
+    ) WITHOUT ROWID;
+
+    CREATE INDEX IF NOT EXISTS idx_private_drawer_cards_assigned
+      ON private_drawer_cards (assigned_drawer_name);
+
+    CREATE INDEX IF NOT EXISTS idx_private_drawer_cards_root
+      ON private_drawer_cards (root_drawer_name);
   `);
 
   // Phase 9-A2 migration: pre-A2 production deployments have a `users`
@@ -107,6 +122,98 @@ function initSchema(db) {
   if (!hasWrappedExpirySecondsCol) {
     db.exec("ALTER TABLE wrapped_keys ADD COLUMN expiry_seconds INTEGER");
   }
+}
+
+export const PRIVATE_DRAWER_CARD_COUNT = 40;
+export const PRIVATE_DRAWER_RAW_CARD_BYTES = 64;
+export const PRIVATE_DRAWER_CARD_B64_BYTES = 88;
+
+function privateDrawerChildName(rootDrawerName, cardB64, splitDepth) {
+  if (splitDepth <= 0) return rootDrawerName;
+  return `${rootDrawerName}:${cardB64.slice(0, splitDepth)}`;
+}
+
+function splitPrivateDrawerAssignments(rows) {
+  if (rows.length <= PRIVATE_DRAWER_CARD_COUNT) {
+    return new Map(rows.map((row) => [row.card_b64, row.root_drawer_name]));
+  }
+
+  for (let splitDepth = 1; splitDepth <= PRIVATE_DRAWER_CARD_B64_BYTES; splitDepth += 1) {
+    const groups = new Map();
+    for (const row of rows) {
+      const childName = privateDrawerChildName(
+        row.root_drawer_name,
+        row.card_b64,
+        splitDepth,
+      );
+      groups.set(childName, (groups.get(childName) ?? 0) + 1);
+    }
+    if ([...groups.values()].every((count) => count <= PRIVATE_DRAWER_CARD_COUNT)) {
+      return new Map(
+        rows.map((row) => [
+          row.card_b64,
+          privateDrawerChildName(row.root_drawer_name, row.card_b64, splitDepth),
+        ]),
+      );
+    }
+  }
+
+  throw new Error('private drawer could not split below fixed card count');
+}
+
+function rebalancePrivateDrawer(db, rootDrawerName) {
+  const rows = db
+    .prepare(
+      `SELECT card_b64, root_drawer_name
+         FROM private_drawer_cards
+        WHERE root_drawer_name = ?
+        ORDER BY card_b64 ASC`,
+    )
+    .all(rootDrawerName);
+  const assignments = splitPrivateDrawerAssignments(rows);
+  const update = db.prepare(
+    `UPDATE private_drawer_cards
+        SET assigned_drawer_name = ?
+      WHERE card_b64 = ?`,
+  );
+  for (const [cardB64, assignedDrawerName] of assignments) {
+    update.run(assignedDrawerName, cardB64);
+  }
+  return assignments;
+}
+
+export function publishPrivateDrawerCard(db, row) {
+  const now = new Date().toISOString();
+  const txn = db.transaction(() => {
+    db.prepare(
+      `INSERT INTO private_drawer_cards
+         (card_b64, root_drawer_name, assigned_drawer_name,
+          published_handle, published_account, published_at)
+       VALUES
+         (@card_b64, @drawer_name, @drawer_name,
+          @published_handle, @published_account, @now)`,
+    ).run({
+      card_b64: row.card_b64,
+      drawer_name: row.drawer_name,
+      published_handle: row.handle,
+      published_account: row.account,
+      now,
+    });
+    return rebalancePrivateDrawer(db, row.drawer_name).get(row.card_b64);
+  });
+  return { assigned_drawer_name: txn() };
+}
+
+export function getPrivateDrawerCards(db, drawerName) {
+  return db
+    .prepare(
+      `SELECT card_b64
+         FROM private_drawer_cards
+        WHERE assigned_drawer_name = ?
+        ORDER BY card_b64 ASC`,
+    )
+    .all(drawerName)
+    .map((row) => row.card_b64);
 }
 
 // ---- users ----

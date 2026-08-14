@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark light" />
+    <link rel="stylesheet" href="/src/styles.css" />
+    <link rel="stylesheet" href="/src/auto-whitelist-rules-screen.css" />
+    <title>OSL Privacy - TASK 0740</title>
+  </head>
+  <body class="rules-screen-stage">
+    <div id="app"></div>
+    <script type="module">
+      const { attachAutoWhitelistRulesScreen } = await import("/src/auto-whitelist-rules-screen.ts");
+      const { AUTO_WHITELIST_RULES_SCREEN_SAVED } = await import(
+        "/src/auto-whitelist-rules-screen-data.ts"
+      );
+      // The capture reads the last saved payload back, so Save is proved to hand
+      // over rules rather than merely to redraw the screen.
+      window.oslLastSavedRules = null;
+      attachAutoWhitelistRulesScreen(
+        document.querySelector("#app"),
+        AUTO_WHITELIST_RULES_SCREEN_SAVED,
+        (rules) => { window.oslLastSavedRules = rules; },
+      );
+      await document.fonts.ready;
+      document.documentElement.dataset.task0740 = "ready";
+    </script>
+  </body>
+</html>

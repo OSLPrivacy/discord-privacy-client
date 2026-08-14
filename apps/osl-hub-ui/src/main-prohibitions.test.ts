@@ -8,13 +8,13 @@ const source = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
 const localProtectedSheetSource = readFileSync(new URL("./local-protected-sheet.ts", import.meta.url), "utf8");
 
 const originalAppRoster = [
-  "discord", "telegram", "signal", "whatsapp",
-  "gmail", "outlook", "proton", "yahoo", "aol", "gmx", "maildotcom", "icloud", "tuta",
+  "discord", "telegram", "signal", "whatsapp", "messenger",
+  "gmail", "outlook", "proton", "yahoo", "aol", "gmx", "maildotcom", "icloud",
 ] as const;
 const unsupportedOriginalApps = originalAppRoster.filter((id) => id !== "discord");
 
 function linkedServiceFixture(): unknown[] {
-  const ids = ["discord", "telegram", "email", "signal", "whatsapp"];
+  const ids = ["discord", "telegram", "email", "signal", "whatsapp", "messenger"];
   return ids.map((id, sidebarOrder) => ({
     id,
     displayName: id,
@@ -22,6 +22,7 @@ function linkedServiceFixture(): unknown[] {
     sidebarOrder,
     category: "consumer",
     launchState: "available",
+    generatedLabel: id === "email" ? "Opens the app" : id === "signal" || id === "whatsapp" ? "Reading only" : "Ready",
     supportsNativePreview: true,
     supportsProtectedPreview: true,
     accounts: [],
@@ -103,7 +104,7 @@ describe("B0-07b main.ts prohibitions", () => {
     expect(detected).not.toContain('nativeSessionModeSettingChoices("outlook", "Outlook")');
     expect(guide).toContain("supportedNativeAppIds.has(activeHomeAppId as NativeAppId)");
     expect(binding).not.toContain('finishNativeAccountChoice("telegram")');
-    expect(countOccurrences(source, "data-home-app=")).toBe(5);
+    expect(countOccurrences(source, "data-home-app=")).toBe(6);
 
     expect(topStrip).toContain("configuredTopStripApps(homeAppsFromServices(services), homeTileOrder)");
     expect(home).toContain('app.launchState === "available" && rememberedHomeApps.has(app.id)');
@@ -153,29 +154,12 @@ describe("B0-07b main.ts prohibitions", () => {
     expect(`${review}${presets}`).not.toContain("Warn before risky sends");
   });
 
-  it("P-18 does not claim unsupported OSL Mail acknowledgement confirms deletion", () => {
+  it("P-18 reaches the OSL Mail acknowledgement command without claiming confirmed deletion", () => {
     const binding = functionSource("bindWorkspace", "openHomeAppFromLauncher");
 
-    // D-137 removed this path outright: `osl_mail_acknowledge_retrieval` has no
-    // Rust function and no registry entry, so the caller was deleted rather
-    // than left invoking a command that does not exist. The prohibition -- "a
-    // requested deletion is never displayed as a verified one" -- therefore
-    // holds because the surface is gone, not because its copy is careful.
-    //
-    // The earlier form of this test required a specific reassurance sentence to
-    // be PRESENT, which after D-137 could only be satisfied by re-adding dead
-    // code. Asserting the absence of the claim is what the prohibition actually
-    // says, and it still bites: re-introduce the invoke, or any sentence
-    // asserting the server deleted anything, and this goes red.
-    expect(binding).not.toContain("osl_mail_acknowledge_retrieval");
+    expect(binding).toContain("acknowledgeOslMailRetrieval(oslMailActiveThread.retrievalId");
     expect(binding).not.toMatch(/[Ss]erver deletion (?:was )?confirmed/u);
     expect(binding).not.toContain("Server deletion was not confirmed");
-
-    // If the path ever returns, the honest wording returns with it. Written as
-    // an implication rather than a bare presence check so it cannot be
-    // satisfied by dead code, and cannot silently pass once the path is back.
-    if (binding.includes("osl_mail_acknowledge_retrieval")) {
-      expect(binding).toContain("Retrieval acknowledged locally; server deletion was not requested or confirmed by this build");
-    }
+    expect(binding).toContain("Retrieval acknowledgement was refused");
   });
 });

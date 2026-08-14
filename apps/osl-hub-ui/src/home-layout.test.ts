@@ -61,10 +61,6 @@ function renderedTileIds(markup: string): string[] {
   return [...markup.matchAll(/<article[^>]*\bdata-tile-id="([^"]+)"/gu)].map((match) => match[1]);
 }
 
-function routeTitle(markup: string): string {
-  return markup.match(/<h1\b[^>]*\bid="route-heading"[^>]*>([^<]+)<\/h1>/u)?.[1] ?? "";
-}
-
 function functionSource(source: string, name: string, nextName: string): string {
   const start = source.indexOf(`function ${name}`);
   const end = source.indexOf(`function ${nextName}`, start + 1);
@@ -73,28 +69,67 @@ function functionSource(source: string, name: string, nextName: string): string 
   return source.slice(start, end);
 }
 
+// HOME IS A REBUILD, not a restyle (DECISIONS.txt "UI WORKSTREAMS" item 1,
+// 6 August; PRODUCT.txt §2 "A launcher, not a dashboard. No sidebar."). The
+// protection DERIVATION from tasks 0820–0827 survives unchanged in
+// homeStatusSnapshot(); its presentation moved out of the body into the
+// shared header's data readout and the bell popover — PRODUCT.txt keeps
+// exactly one status affordance on Home: "The data readout, always visible,
+// in the header". Placement stays subject to still-open owner task 0825.
 describe("home workspace hierarchy", () => {
   const source = readRelative("./main.ts");
   const styles = readRelative("./styles.css");
-  const destination = functionSource(source, "homeDestinationContent", "workspaceContent");
-  const home = functionSource(source, "workspaceContent", "peopleListMarkup");
+  const destination = functionSource(source, "homeStatusSnapshot", "relativeNotificationTime");
+  const home = functionSource(source, "workspaceContent", "parsedEnclaveAudiences");
 
-  it("Implement Home as the protection status destination", () => {
+  it("Implement Home protection status in the header readout and bell popover", () => {
     const { __oslHubUiTest } = ui;
 
     __oslHubUiTest.reset({ route: "home", coreReady: false, storageMethod: null });
-    const blockedHome = __oslHubUiTest.renderWorkspaceContent("home");
+    __oslHubUiTest.setHomeNotificationsOpenForTest(true);
+    const blockedHome = __oslHubUiTest.renderRouteShell("home");
     const blockedCopy = visibleText(blockedHome);
 
-    expect(blockedHome).toContain('data-home-destination="protection-status"');
     expect(blockedHome).toContain('data-home-protection-state="needs-attention"');
     expect(blockedHome).toContain('data-home-primary-issue="account-protection"');
-    expect(blockedCopy).toMatch(/\bHome\b/iu);
-    expect(blockedCopy).toMatch(/Needs attention/iu);
-    expect(blockedCopy).toMatch(/Connected apps/iu);
-    expect(blockedCopy).toMatch(/Trusted people/iu);
-    expect(blockedCopy).toMatch(/Recent protection/iu);
+    expect(blockedCopy).toMatch(/needs? your attention/iu);
+    __oslHubUiTest.setHomeNotificationsOpenForTest(false);
 
+    __oslHubUiTest.reset({
+      route: "home",
+      coreReady: true,
+      storageMethod: "tpm-pcp",
+      services: [{
+        id: "discord",
+        displayName: "Discord",
+        sidebarGlyph: "D",
+        sidebarOrder: 1,
+        category: "consumer",
+        launchState: "available",
+        generatedLabel: "Ready",
+        supportsNativePreview: true,
+        supportsProtectedPreview: true,
+        accounts: [{ id: "discord-local", label: "Local Discord", displayHandle: "local", state: "demoLinked", provider: null }],
+      }],
+      hubPeople: [{ personId: "verified", alias: "Verified friend", safetyNumberVerified: true }],
+      notificationsEnabled: true,
+      appNotifications: [],
+    });
+    const protectedHome = __oslHubUiTest.renderRouteShell("home");
+    const protectedCopy = visibleText(protectedHome);
+
+    expect(protectedHome).toContain('data-home-protection-state="protected"');
+    expect(protectedHome).toContain('data-home-primary-issue="protected-conversation"');
+    expect(protectedCopy).toMatch(/\bProtected\b/iu);
+    expect(protectedCopy).not.toMatch(/keyservers?|ratchets?|receipts?|browser profiles?|provider adapters?/iu);
+  });
+
+  it("cannot read Protected while checks are unrun and people are unreviewed", () => {
+    // Audit capture 0816: the shipped Home read "Protected -- Device
+    // protection confirmed." while, on the same screen, connected apps were
+    // NOT CHECKED and two people needed review. The headline must be derived
+    // from those checks: unknown is not protected.
+    const { __oslHubUiTest } = ui;
     __oslHubUiTest.reset({
       route: "home",
       coreReady: true,
@@ -108,21 +143,42 @@ describe("home workspace hierarchy", () => {
         launchState: "available",
         supportsNativePreview: true,
         supportsProtectedPreview: true,
-        accounts: [{ id: "discord-local", label: "Local Discord", displayHandle: "local", state: "demoLinked", provider: null }],
+        accounts: [],
       }],
-      hubPeople: [{ personId: "verified", alias: "Verified friend", safetyNumberVerified: true }],
-      notificationsEnabled: true,
-      appNotifications: [],
+      servicesChecked: false,
+      hubPeople: [
+        { personId: "pending-one", alias: "Pending one" },
+        { personId: "pending-two", alias: "Pending two" },
+      ],
     });
-    const protectedHome = __oslHubUiTest.renderWorkspaceContent("home");
-    const protectedCopy = visibleText(protectedHome);
+    const markup = __oslHubUiTest.renderRouteShell("home");
+    const copy = visibleText(markup);
 
-    expect(protectedHome).toContain('data-home-protection-state="protected"');
-    expect(protectedHome).toContain('data-home-primary-issue="protected-conversation"');
-    expect(protectedCopy).toMatch(/\bProtected\b/iu);
-    expect(protectedCopy).toMatch(/1 of \d+ ready/iu);
-    expect(protectedCopy).toMatch(/1 verified/iu);
-    expect(protectedCopy).not.toMatch(/keyservers?|ratchets?|receipts?|browser profiles?|provider adapters?/iu);
+    expect(markup).not.toContain('data-home-protection-state="protected"');
+    expect(copy).not.toMatch(/Device protection confirmed/iu);
+    expect(copy).not.toMatch(/\bProtected\b/u);
+    expect(markup).toContain('data-home-protection-state="needs-attention"');
+    expect(copy).toMatch(/2 things need your attention/u);
+    expect(copy).toMatch(/2 people need your review/u);
+    expect(copy).toMatch(/Connected apps have not been checked/u);
+
+    // With every person verified and only the app check unrun, Home still
+    // must not claim protection: it says what is actually true instead.
+    __oslHubUiTest.reset({
+      route: "home",
+      coreReady: true,
+      storageMethod: "tpm-pcp",
+      services: [],
+      servicesChecked: false,
+      hubPeople: [{ personId: "verified", alias: "Verified friend", safetyNumberVerified: true }],
+    });
+    const uncheckedMarkup = __oslHubUiTest.renderRouteShell("home");
+    const uncheckedCopy = visibleText(uncheckedMarkup);
+
+    expect(uncheckedMarkup).not.toContain('data-home-protection-state="protected"');
+    expect(uncheckedMarkup).toContain('data-home-protection-state="not-checked"');
+    expect(uncheckedCopy).toMatch(/Not checked yet/u);
+    expect(uncheckedCopy).not.toMatch(/\bProtected\b/u);
   });
 
   it("states first-run Home in words an owner can act on, never build jargon", () => {
@@ -135,7 +191,11 @@ describe("home workspace hierarchy", () => {
     // produced it, so the check is against what the WebView actually paints.
     const { __oslHubUiTest } = ui;
     __oslHubUiTest.reset({ route: "home", coreReady: false, storageMethod: null });
-    const copy = visibleText(__oslHubUiTest.renderWorkspaceContent("home"));
+    // The recommendation lives in the bell popover now (owner ruling, 6 Aug);
+    // open it so the rendered copy is what an owner would actually read.
+    __oslHubUiTest.setHomeNotificationsOpenForTest(true);
+    const copy = visibleText(__oslHubUiTest.renderRouteShell("home"));
+    __oslHubUiTest.setHomeNotificationsOpenForTest(false);
 
     expect(copy).not.toMatch(/bootstrap/iu);
     expect(copy).not.toMatch(/source linked/iu);
@@ -149,16 +209,24 @@ describe("home workspace hierarchy", () => {
     expect(copy).toMatch(/Protection cannot start on this device\./u);
   });
 
-  it("implements Home as the protection status destination", () => {
-    expect(home).toContain("${homeDestinationContent()}");
-    expect(destination).toContain('data-home-destination="protection-status"');
-    expect(destination).toContain('data-home-protection-state="${deviceProtected ? "protected" : "needs-attention"}"');
+  it("derives the header data readout from every dependent check", () => {
+    // The headline must be DERIVED from every dependent check via
+    // homeOverallStatus -- never a two-input boolean with an optimistic
+    // default. See home-protection-state.test.ts for the honesty sweep.
+    // The derivation (tasks 0820-0827) lives in homeStatusSnapshot(); the
+    // header readout and the bell popover are its only Home surfaces.
+    const header = functionSource(source, "homeLauncherHeader", "homeFriendsPanelMarkup");
+    const popover = functionSource(source, "homeNotificationsPopoverMarkup", "homeLauncherHeader");
+    expect(header).toContain('data-home-protection-state="${overall.state}"');
+    expect(header).toContain("homeStatusSnapshot()");
+    expect(popover).toContain("homeStatusSnapshot()");
+    expect(destination).toContain("homeOverallStatus({");
+    expect(destination).toContain("connectedApps: connectedAppsState");
+    expect(destination).toContain("pendingFriendReviews");
+    expect(destination).toContain("verifiedFriends");
+    expect(destination).not.toContain('deviceProtected ? "Protected"');
     expect(destination).toContain("identityProtectionStatus(core.readiness.storageMethod)");
     expect(destination).toContain("coreReadinessLabel(core.readiness)");
-    expect(destination).toContain("Connected apps");
-    expect(destination).toContain("Trusted people");
-    expect(destination).toContain("Recent protection");
-    expect(destination).toContain("visibleAppNotifications().at(0)");
   });
 
   it("routes the Home primary action to the highest-priority safe fix", () => {
@@ -206,7 +274,9 @@ describe("home workspace hierarchy", () => {
     expect(home).not.toContain('name: "Servers"');
     expect(home).toMatch(/class="[^"]*\bhome-dashboard\b/);
     expect(home).toMatch(/class="[^"]*\bhome-primary\b/);
-    expect(home).toMatch(/class="[^"]*\bhome-profile-dock\b/);
+    // The fixed profile dock is deliberately GONE: the design has no profile
+    // control on Home (structural-home.md bug 2; DECISIONS.txt rebuild ruling).
+    expect(home).not.toContain("home-profile-dock");
   });
 
   it("uses compact square app launchers instead of a service dropdown", () => {
@@ -228,10 +298,14 @@ describe("home workspace hierarchy", () => {
     expect(home).toContain("data-edit-home");
   });
 
-  it("removes tile and logo-plate chrome while retaining visible keyboard focus", () => {
+  it("draws the launcher tile idiom while retaining visible keyboard focus", () => {
+    // Rebuild ruling: the four OSL modules are EQUAL BORDERED TILES and the
+    // brand rows keep their plates — the old "no tile chrome" look was the
+    // dashboard's, not the design's (canon-Home.png; Home.dc.html:71-77).
     expect(styles).toMatch(/\.app-tile\s*\{[^}]*border:\s*0[^}]*background:\s*transparent/s);
     expect(styles).toMatch(/\.app-tile:hover\s*\{[^}]*border-color:\s*transparent[^}]*background:\s*transparent/s);
-    expect(styles).toMatch(/\.app-logo-plate\s*\{[^}]*border:\s*0[^}]*background:\s*transparent[^}]*box-shadow:\s*none/s);
+    expect(styles).toMatch(/\.home-launcher \.home-module\s*\{[^}]*border:\s*1px solid[^}]*background:/s);
+    expect(styles).toMatch(/\.home-launcher \.home-osl-section \.app-grid\s*\{[^}]*repeat\(4, 1fr\)/s);
     expect(styles).toMatch(/\.app-tile > button:first-child:focus-visible\s*\{[^}]*outline:\s*3px solid var\(--brand\)/s);
   });
 
@@ -291,39 +365,27 @@ describe("home workspace hierarchy", () => {
     expect(styles).toMatch(/\.command-brand \.osl-logo\s*\{[^}]*width:\s*34px[^}]*height:\s*34px/s);
   });
 
-  it("keeps friends, notifications, settings, and profile at the screen edges", () => {
+  it("keeps friends, notifications and settings at the screen edges of the hub bar", () => {
+    // homeHeader() still serves the non-Home hub routes (Inbox/People/...).
     const homeHeader = functionSource(source, "homeHeader", "homeCommandIcon");
     expect(homeHeader).toContain("data-open-friends");
     expect(homeHeader).toContain("data-notification-settings");
     expect(homeHeader).toContain('data-route="settings"');
     expect(styles).toMatch(/\.home-command-bar\s*\{[^}]*padding:\s*0 24px[^}]*justify-content:\s*space-between/s);
-    expect(styles).toMatch(/\.home-profile-dock\s*\{[^}]*position:\s*fixed[^}]*right:\s*26px[^}]*bottom:\s*24px/s);
   });
 
-  it("keeps the Home profile tooltip beside the circular dock and bounded for long names", () => {
-    const profileTooltipRule = styles.match(/\.home-profile-dock > \.in-dom-tooltip\s*\{[^}]*\}/s)?.[0] ?? "";
-    expect(profileTooltipRule).toContain("right: calc(100% + 10px)");
-    expect(profileTooltipRule).toContain("top: 50%");
-    expect(profileTooltipRule).toContain("bottom: auto");
-    expect(profileTooltipRule).toContain("max-width: min(14rem, calc(100vw - 96px))");
-    expect(profileTooltipRule).toContain("transform: translateY(-50%)");
-    expect(profileTooltipRule).toContain("overflow-wrap: anywhere");
+  it("ships no profile dock anywhere on Home", () => {
+    // The fixed 50px dock clipped its own label to ~2 characters against the
+    // viewport edge (structural-home.md bug 2) and the design has no profile
+    // control on Home at all. The rebuild deletes it: markup and every CSS
+    // definition block. If a profile affordance returns to Home, it needs an
+    // owner ruling first.
+    expect(source).not.toContain("home-profile-dock");
+    expect(styles).not.toContain(".home-profile-dock");
 
     const { __oslHubUiTest } = ui;
-
     __oslHubUiTest.reset({ route: "home" });
-    const defaultHome = __oslHubUiTest.renderWorkspaceContent("home");
-    expect(defaultHome).toContain('class="home-profile-dock in-dom-tooltip-anchor"');
-    expect(defaultHome).toContain('class="in-dom-tooltip" role="tooltip">OSL Profile</span>');
-
-    const longName = "OSL Profile for Research Operations and Recovery Testing";
-    __oslHubUiTest.reset({
-      route: "home",
-      hubIdentities: [{ slotId: "slot-long", label: longName, oslUserId: "OSLUSER-long", active: true }],
-    });
-    const longHome = __oslHubUiTest.renderWorkspaceContent("home");
-    expect(longHome).toContain(`<strong>${longName}</strong>`);
-    expect(longHome).toContain(`role="tooltip">${longName}</span>`);
+    expect(__oslHubUiTest.renderRouteShell("home")).not.toContain("home-profile-dock");
   });
 });
 
@@ -404,7 +466,7 @@ describe("home interaction regressions", () => {
     expect(source).toContain("openEmbeddedHomeApp(app, services)");
     expect(source).toContain("setupEmbeddedHomeApp(app,");
     expect(source).not.toContain("Firefox workspace");
-    expect(importedApps).toContain('"tuta"');
+    expect(importedApps).not.toContain('"tuta"');
     expect(importedApps).toContain('"gmail"');
     expect(importedApps).not.toContain('"discord"');
     expect(opening).toMatch(/selectedNativeAppIntent\(app\.id\)[\s\S]*?if \(nativeIntent\)[\s\S]*?openNativeHostedApp/);
@@ -414,12 +476,10 @@ describe("home interaction regressions", () => {
     expect(opening).toContain("else if (app.linked)");
     expect(source).not.toContain("setup-needed");
     expect(home).not.toContain("<small>${module.state}</small>");
-    // The caption is the app's CLAIM, derived in `claim_state.rs` and carried
-    // through `NativeApp.supportStatus`. It used to be the literal string
-    // "Coming soon" on every unlaunchable tile, which said "planned" about
-    // Telegram (already built and driven, D-206) and about WhatsApp (measured
-    // against the live client and refused, D-234).
-    expect(home).toContain('<span class="app-tile-copy"><strong>${escapeHtml(app.displayName)}</strong>${pending ? "<small>Opening…</small>" : available ? "" : `<small>${escapeHtml(caption)}</small>`}</span>');
+    // Every tile keeps its present-tense capability label visible. Launch state
+    // and claim-state roadmap wording no longer supply a second caption.
+    expect(home).toContain('<small data-generated-capability-label>${escapeHtml(app.generatedLabel)}</small>');
+    expect(home).not.toContain('const caption = claim ?');
     expect(home).toContain("Social</h2>");
     expect(home).toContain("Email</h2>");
     expect(home).toContain('aria-label="OSL tools"');
@@ -491,9 +551,8 @@ describe("home interaction regressions", () => {
     const keptTile = "osl-chats";
     const saved = __oslHubUiTest.saveHomeTileArrangementForTest(allTileIds.filter((id) => id !== keptTile));
     const homeMarkup = __oslHubUiTest.renderWorkspaceContent("home");
-    const homeTitle = routeTitle(homeMarkup);
     const visibleTiles = renderedTileIds(homeMarkup);
-    console.info(`TASK_0815 one-kept saved=${saved.saved} kept=${keptTile} visible=${visibleTiles.length} title=${homeTitle}`);
+    console.info(`TASK_0815 one-kept saved=${saved.saved} kept=${keptTile} visible=${visibleTiles.length}`);
 
     expect(saved).toEqual({
       saved: true,
@@ -502,7 +561,8 @@ describe("home interaction regressions", () => {
     });
     expect(JSON.parse(localStore.get("osl-home-tile-hidden-v1") ?? "null")).toEqual(allTileIds.filter((id) => id !== keptTile));
     expect(visibleTiles).toEqual([keptTile]);
-    expect(homeTitle).toBe("Home");
+    // No `<h1>Home</h1>` title assertion any more: the launcher body carries
+    // no page heading (DECISIONS.txt rebuild ruling).
   });
 
   it("preserves explicit native intent and never silently falls back to the web", () => {
@@ -598,5 +658,49 @@ describe("home interaction regressions", () => {
     expect(source).toContain("embeddedAccountsForHomeApp(app, services)");
     expect(source).toContain("serviceAccountPickerOpen = true");
     expect(source).toContain("data-service-account");
+  });
+
+  it("TASK5009 tune edit mode hides, restores, and reloads the Home layout", () => {
+    const { __oslHubUiTest } = ui;
+    __oslHubUiTest.reset({ route: "home", coreReady: true, storageMethod: "tpm-pcp" });
+    const ids = __oslHubUiTest.homeTileIdsForTest();
+    expect(ids.length).toBeGreaterThan(2);
+
+    __oslHubUiTest.setHomeEditModeForTest(true);
+    const editBefore = __oslHubUiTest.renderWorkspaceContent("home");
+    const redMinuses = [...editBefore.matchAll(/class="tile-remove "[^>]*data-tile-visibility="shown"[^>]*>−<\/button>/gu)].length;
+    console.info(`TASK5009 edit_shown=${renderedTileIds(editBefore).length} red_minuses=${redMinuses}`);
+    expect(redMinuses).toBe(ids.length);
+
+    __oslHubUiTest.toggleHomeTileForTest(ids[0]!);
+    __oslHubUiTest.toggleHomeTileForTest(ids[1]!);
+    __oslHubUiTest.setHomeEditModeForTest(false);
+    const afterHide = __oslHubUiTest.renderWorkspaceContent("home");
+    console.info(`TASK5009 after_hide_shown=${renderedTileIds(afterHide).length} hidden=${ids.slice(0, 2).join(",")}`);
+    expect(renderedTileIds(afterHide)).toHaveLength(ids.length - 2);
+
+    __oslHubUiTest.setHomeEditModeForTest(true);
+    const editHidden = __oslHubUiTest.renderWorkspaceContent("home");
+    const greenPluses = [...editHidden.matchAll(/class="tile-remove tile-restore"[^>]*data-tile-visibility="hidden"[^>]*>\+<\/button>/gu)].length;
+    console.info(`TASK5009 hidden_green_pluses=${greenPluses}`);
+    expect(greenPluses).toBe(2);
+
+    __oslHubUiTest.toggleHomeTileForTest(ids[0]!);
+    __oslHubUiTest.setHomeEditModeForTest(false);
+    __oslHubUiTest.reloadHomeTilesForTest();
+    const afterRestart = __oslHubUiTest.renderWorkspaceContent("home");
+    const hiddenAfterRestart = ids.filter((id) => !renderedTileIds(afterRestart).includes(id));
+    console.info(`TASK5009 restart_shown=${renderedTileIds(afterRestart).length} restart_hidden=${hiddenAfterRestart.join(",")}`);
+    expect(hiddenAfterRestart).toEqual([ids[1]!]);
+
+    __oslHubUiTest.reset({ route: "home", coreReady: true, storageMethod: "tpm-pcp", activeOslUserId: "second-profile" });
+    const secondProfileShown = renderedTileIds(__oslHubUiTest.renderWorkspaceContent("home")).length;
+    __oslHubUiTest.reset({ route: "home", coreReady: true, storageMethod: "tpm-pcp" });
+    const firstProfileShown = renderedTileIds(__oslHubUiTest.renderWorkspaceContent("home")).length;
+    console.info(`TASK5009 profile_first_shown=${firstProfileShown} profile_second_shown=${secondProfileShown}`);
+    expect(firstProfileShown).toBe(ids.length - 1);
+    expect(secondProfileShown).toBe(ids.length);
+    expect(source).toContain("socialTiles");
+    expect(source).toContain("emailTiles");
   });
 });

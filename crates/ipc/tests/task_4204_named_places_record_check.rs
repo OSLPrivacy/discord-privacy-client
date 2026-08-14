@@ -56,6 +56,10 @@ fn task4204_signal_broadcast_is_named_unused_place() {
     rows.push(NamedPlace {
         source_task: "1029a".to_owned(),
         place: "Signal broadcast".to_owned(),
+        // NamedPlace grew research_task/build_task when EXPECTED_PLACE_ROWS
+        // became a 5-tuple; this literal predates that.
+        research_task: None,
+        build_task: None,
         disposition: PlaceDisposition::Approved,
     });
     let report = validate_named_places(&rows);

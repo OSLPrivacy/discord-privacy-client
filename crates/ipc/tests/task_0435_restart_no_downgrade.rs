@@ -74,11 +74,11 @@ fn task_0435_restart_keeps_no_downgrade_state() {
     .expect("bob accepts agreement");
 
     let agreement_readable = alice_initial_store
-        .load_pin(&bob_peer)
+        .load_pair_pin(&alice_peer, &bob_peer)
         .expect("alice pin")
         .is_pinned_to_rn()
         && bob_initial_store
-            .load_pin(&alice_peer)
+            .load_pair_pin(&bob_peer, &alice_peer)
             .expect("bob pin")
             .is_pinned_to_rn();
     assert!(agreement_readable, "{AGREEMENT_NAME} must be readable");
@@ -98,7 +98,7 @@ fn task_0435_restart_keeps_no_downgrade_state() {
     let alice_state = wire_enabled_state(alice_identity, Some(alice_messages));
     let strong_selected = select_wire_version(
         &alice_store
-            .load_pin(&bob_peer)
+            .load_pair_pin(&alice_peer, &bob_peer)
             .expect("alice restarted pin"),
         PeerCapabilities::Verified(RN_CAP_WIRE_RN),
         RnPolicy::Opportunistic,
@@ -141,7 +141,7 @@ fn task_0435_restart_keeps_no_downgrade_state() {
 
     let weaker_result = select_wire_version(
         &alice_store
-            .load_pin(&bob_peer)
+            .load_pair_pin(&alice_peer, &bob_peer)
             .expect("pin still readable before downgrade retry"),
         PeerCapabilities::Absent,
         RnPolicy::Opportunistic,

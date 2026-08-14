@@ -1,15 +1,15 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { configuredTopStripApps, embeddedAccountsForHomeApp, escapeHtml, homeAppsFromServices, loadLinkedServices, loadNativeApps, nativeAppGeneratedLabel, notificationIntegrationEligibility, parseEmbeddedServiceHost, parseFirefoxStatus, parseLinkedAccount, parseLinkedServices, parseMullvadStatus, parseNativeAppAction, parseNativeApps, serviceAccountsForProvider } from "./services";
+import { configuredTopStripApps, embeddedAccountsForHomeApp, escapeHtml, homeAppsFromServices, loadLinkedServices, loadNativeApps, nativeAppCapabilitySentence, nativeAppGeneratedLabel, nativeAppStatusPageFor, notificationIntegrationEligibility, parseEmbeddedServiceHost, parseFirefoxStatus, parseLinkedAccount, parseLinkedServices, parseMullvadStatus, parseNativeAppAction, parseNativeApps, serviceAccountsForProvider } from "./services";
 
 const originalAppRoster = [
   "discord", "telegram", "signal", "whatsapp", "messenger",
-  "gmail", "outlook", "proton", "yahoo", "aol", "gmx", "maildotcom", "icloud", "tuta",
+  "gmail", "outlook", "proton", "yahoo", "aol", "gmx", "maildotcom", "icloud",
 ] as const;
 const unsupportedOriginalApps = originalAppRoster.filter((id) => id !== "discord");
 
 function validRegistry(): unknown[] {
-  const ids = ["discord", "telegram", "email", "signal", "whatsapp"];
+  const ids = ["discord", "telegram", "email", "signal", "whatsapp", "messenger"];
   return ids.map((id, sidebarOrder) => ({
     id,
     displayName: id,
@@ -17,6 +17,7 @@ function validRegistry(): unknown[] {
     sidebarOrder,
     category: "consumer",
     launchState: "available",
+    generatedLabel: id === "email" ? "Opens the app" : id === "signal" || id === "whatsapp" ? "Reading only" : "Ready",
     supportsNativePreview: true,
     supportsProtectedPreview: true,
     accounts: [{ id: `${id}-preview`, label: "Personal", displayHandle: "@preview", state: "demoLinked", provider: id === "email" ? "gmail" : null }],
@@ -25,7 +26,7 @@ function validRegistry(): unknown[] {
 
 describe("linked-service contract", () => {
   it("accepts and orders the exact ruled-service Rust payload", () => {
-    expect(parseLinkedServices(validRegistry())).toHaveLength(5);
+    expect(parseLinkedServices(validRegistry())).toHaveLength(6);
   });
 
   it("keeps WhatsApp in the service registry without making it a launch tile", async () => {
@@ -50,7 +51,7 @@ describe("linked-service contract", () => {
     const malformed = validRegistry();
     ((malformed[1] as Record<string, unknown>).accounts as Array<Record<string, unknown>>)[0].id = "../cookie";
     const parsed = parseLinkedServices(malformed);
-    expect(parsed).toHaveLength(5);
+    expect(parsed).toHaveLength(6);
     expect(parsed?.find((service) => service.id === "telegram")?.accounts).toEqual([]);
     expect(parsed?.find((service) => service.id === "discord")?.accounts).toHaveLength(1);
   });
@@ -90,6 +91,12 @@ describe("linked-service contract", () => {
     expect(() => parseNativeApps([{ ...telegram, claimBlockers: "none" }])).toThrow();
     expect(() => parseNativeApps([{ ...telegram, statusPage: { ...telegram.statusPage, generatedLabel: "Available" } }])).toThrow();
     expect(() => parseNativeApps([{ ...telegram, statusPage: { ...telegram.statusPage, explanation: "A second source of truth." } }])).toThrow();
+    const { statusPage: _sent, ...wireTelegram } = { ...telegram, supportStatus: "comingSoon" } as const;
+    const [derived] = parseNativeApps([wireTelegram]);
+    expect(derived.statusPage).toEqual(nativeAppStatusPageFor(wireTelegram));
+    expect(derived.statusPage.generatedLabel).toBe("Coming later");
+    expect(derived.statusPage.explanation).toBe(wireTelegram.claimNote);
+    expect(derived.statusPage.capability).toBe("carrier capability is wired but not live-proven");
     expect(() => parseNativeAppAction({ id: "instagram", started: true }, false)).toThrow();
   });
 
@@ -128,8 +135,8 @@ describe("linked-service contract", () => {
     expect(() => parseLinkedAccount({ id: "../profile", label: "Account 1", displayHandle: "Sign in", state: "notLinked", provider: null })).toThrow();
   });
 
-  it("accepts new and legacy allowlisted email providers", () => {
-    for (const provider of ["aol", "gmx", "maildotcom", "icloud", "tuta"]) {
+  it("accepts every in-scope allowlisted email provider", () => {
+    for (const provider of ["aol", "gmx", "maildotcom", "icloud"]) {
       expect(parseLinkedAccount({ id: `email-${provider}`, label: "Personal", displayHandle: "Sign in", state: "notLinked", provider }).provider).toBe(provider);
     }
   });
@@ -154,7 +161,7 @@ describe("linked-service contract", () => {
       "discord", "telegram", "signal", "whatsapp", "messenger",
     ]);
     expect(launch.filter((app) => app.section === "email").map((app) => app.id)).toEqual([
-      "gmail", "outlook", "proton", "yahoo", "aol", "gmx", "maildotcom", "icloud", "tuta",
+      "gmail", "outlook", "proton", "yahoo", "aol", "gmx", "maildotcom", "icloud",
     ]);
 
     const fallbackLaunch = homeAppsFromServices([]).filter((app) => app.visibility === "launch");
@@ -255,7 +262,6 @@ describe("linked-service contract", () => {
       expect.objectContaining({ id: "gmx", setupEligible: false }),
       expect.objectContaining({ id: "maildotcom", setupEligible: false }),
       expect.objectContaining({ id: "icloud", setupEligible: false }),
-      expect.objectContaining({ id: "tuta", setupEligible: false }),
     ]);
     // Superseded by owner ruling 2026-08-05: the stale later-only Slack and
     // LinkedIn specs must not silently re-enter the active home catalog.
@@ -385,6 +391,10 @@ describe("native app catalog agrees with the Rust support decision", () => {
         .toBe(app.claimNote);
       expect(app.statusPage.capability, `${app.id} status page data does not name the real capability`)
         .toMatch(/\bcapability\b/u);
+      expect(app.statusPage.capability, `${app.id} capability sentence is not derivable from its evidence`)
+        .toBe(nativeAppCapabilitySentence(app.carrierEvidence, app.deliveryEvidence));
+      expect(app.statusPage, `${app.id} status page is not derivable from the rest of its row`)
+        .toEqual(nativeAppStatusPageFor(app));
     }
 
     // The evidence is per surface and is NOT one value stamped on everything --
@@ -483,19 +493,5 @@ describe("native app catalog agrees with the Rust support decision", () => {
       supportStatus: "comingSoon",
       statusPage: { ...promoted.statusPage, generatedLabel: "Coming later" },
     }])).toHaveLength(1);
-  });
-});
-
-describe("Messenger catalogue honesty", () => {
-  it("keeps Messenger visible but not sendable", () => {
-    const catalog = homeAppsFromServices([]);
-    const messenger = catalog.find((app) => app.id === "messenger");
-    expect(messenger).toMatchObject({
-      displayName: "Messenger",
-      visibility: "launch",
-      launchState: "comingSoon",
-      serviceId: null,
-      setupEligible: false,
-    });
   });
 });

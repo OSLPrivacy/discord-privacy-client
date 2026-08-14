@@ -1,0 +1,78 @@
+{
+  "schema": "task-0566-view-once-display/v1",
+  "window": {
+    "width": 1440,
+    "height": 900
+  },
+  "fixture": "/screenshots/fixtures/task-0566-view-once-display.html",
+  "screen": {
+    "viewport": {
+      "width": 1440,
+      "height": 900
+    },
+    "opened": "true",
+    "appBehind": true,
+    "appText": "MMinaView-once message MMinaReady · Verified You10:14 AMI sent a protected note. Sent Mina10:15 AMOpen the view-once message when ready. Received Message View onceKept out of OSL history. OSL asks for the sent copy to be deleted once it is opened, and says here when it cannot confirm that.Send 0 / 1,048,576",
+    "display": {
+      "x": 465,
+      "y": 277.203125,
+      "width": 510,
+      "height": 345.578125,
+      "right": 975,
+      "bottom": 622.78125
+    },
+    "content": {
+      "x": 494,
+      "y": 368.984375,
+      "width": 452,
+      "height": 190,
+      "right": 946,
+      "bottom": 558.984375
+    },
+    "close": {
+      "x": 920,
+      "y": 294.203125,
+      "width": 38,
+      "height": 44,
+      "right": 958,
+      "bottom": 338.203125
+    },
+    "contentText": "This protected note is shown only for this view.",
+    "closeText": "×",
+    "closeLabel": "Close view-once display"
+  },
+  "image": {
+    "path": "view-once-display-linux.png",
+    "bytes": 38124,
+    "sha256": "9ddf7c0c1d0cbe1a61d9ab5438a7c219bfeb17f1a418ed17294ff2bace1d77d7",
+    "width": 1440,
+    "height": 900,
+    "distinctColors": 1159,
+    "crops": {
+      "display": {
+        "width": 510,
+        "height": 346,
+        "pixels": 176460,
+        "distinctColors": 441,
+        "saturatedPixels": 65,
+        "meanColor": "25,25,25"
+      },
+      "content": {
+        "width": 452,
+        "height": 191,
+        "pixels": 86332,
+        "distinctColors": 160,
+        "saturatedPixels": 0,
+        "meanColor": "28,28,28"
+      },
+      "close": {
+        "width": 38,
+        "height": 45,
+        "pixels": 1710,
+        "distinctColors": 58,
+        "saturatedPixels": 65,
+        "meanColor": "35,35,35"
+      }
+    }
+  }
+}

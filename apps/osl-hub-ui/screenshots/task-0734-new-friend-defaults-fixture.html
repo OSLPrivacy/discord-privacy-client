@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark" />
+    <title>New friend defaults</title>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module">
+      import "/src/styles.css";
+      const { NEW_FRIEND_DEFAULTS_TITLE, initialNewFriendDefaults, newFriendDefaultsMarkup } =
+        await import("/src/new-friend-defaults.ts");
+      const response = await fetch("/screenshots/fixtures/task-0734-new-friend-defaults.json");
+      const fixture = await response.json();
+
+      // The Settings shell the screen actually sits in, so the capture is the
+      // screen on its page and not a lone fragment on a white sheet.
+      const sections = ["Account", "Apps", "Friends", "Scrub", "Cleanup", "Notifications", "Appearance", "About"];
+      const nav = sections
+        .map((label) => {
+          const active = label === "Friends";
+          return `<button class="${active ? "active" : ""}" ${active ? 'aria-current="true"' : ""} type="button">${label}</button>`;
+        })
+        .join("");
+
+      // The capture check re-renders the same screen with a different saved
+      // choice so it can prove the pixels it photographed came from the sample
+      // choices and not from the screen merely existing.
+      window.task0734Render = (choices) => {
+        document.querySelector("#app").innerHTML = `
+          <div class="app-frame">
+            <main class="content-viewport settings-page" aria-labelledby="route-heading">
+              <nav class="settings-sidebar" aria-label="Settings">
+                <h1 id="route-heading" tabindex="-1">Settings</h1>
+                ${nav}
+              </nav>
+              <section class="settings-detail">${newFriendDefaultsMarkup(choices)}</section>
+            </main>
+          </div>`;
+        document.title = NEW_FRIEND_DEFAULTS_TITLE;
+        document.documentElement.dataset.task0734 = "ready";
+      };
+
+      window.task0734Defaults = initialNewFriendDefaults();
+      window.task0734Render(fixture.sample);
+    </script>
+  </body>
+</html>

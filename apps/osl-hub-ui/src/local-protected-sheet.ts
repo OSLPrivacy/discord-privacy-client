@@ -1,6 +1,8 @@
 import type { LocalLoopbackContext } from "./adapters";
+import { placementFailureNoticeMarkup, type PlacementFailureNotice } from "./placement-failure";
 import { COVER_MESSAGE_BOX_RULE, PROTECTED_TEXT_BOX_RULE } from "./protected-box-shortcuts";
 import type { SendMode } from "./state";
+import { VIEW_ONCE_DISPLAY_TRUTH, viewOnceControlMarkup } from "./view-once-tier";
 
 export type LocalProtectedPane = "write" | "open";
 
@@ -11,12 +13,20 @@ export interface LocalProtectedSheetModel {
   pane: LocalProtectedPane;
   ttlSeconds: number;
   viewOnce: boolean;
+  /** TASK 0594. Pro on this device; creating a view once message needs it (0590). */
+  viewOnceCreationAllowed: boolean;
   decryptDisplayEnabled: boolean;
   busy: boolean;
   draft: string;
   capsule: string;
   openedPlaintext: string;
   status: string;
+  /**
+   * TASK 3426. Set when OSL tried to put this draft into another app's message
+   * box and could not. Optional so callers that never place keep their existing
+   * models; `null` and absent both mean "nothing failed".
+   */
+  placementFailure?: PlacementFailureNotice | null;
 }
 
 export const LOCAL_CHAT_LABEL_MAX_LENGTH = 48;
@@ -66,12 +76,14 @@ export function blankLocalProtectedModel(open = false): LocalProtectedSheetModel
     pane: "write",
     ttlSeconds: LOCAL_TTL_OPTIONS[0],
     viewOnce: false,
+    viewOnceCreationAllowed: false,
     decryptDisplayEnabled: true,
     busy: false,
     draft: "",
     capsule: "",
     openedPlaintext: "",
     status: "",
+    placementFailure: null,
   };
 }
 
@@ -90,6 +102,18 @@ function ttlLabel(seconds: LocalTtlSeconds): string {
   if (seconds === 86_400) return "1 day";
   if (seconds === 259_200) return "3 days";
   return "7 days";
+}
+
+/** Render the canonical picker inside this detached sheet window. */
+function canonicalTtlPicker(id: string, value: LocalTtlSeconds): string {
+  const selectedLabel = ttlLabel(value);
+  const options = LOCAL_TTL_OPTIONS.map((seconds) => {
+    const selected = seconds === value;
+    const label = ttlLabel(seconds);
+    return `<button class="canonical-select-option" type="button" role="option" aria-selected="${selected}" data-value="${seconds}" data-label="${label}" onclick="const p=this.closest('.canonical-select');const s=p.querySelector('select');s.value=this.dataset.value;s.dispatchEvent(new Event('change',{bubbles:true}));p.querySelector('.canonical-select-trigger-label').textContent=this.dataset.label;p.querySelectorAll('.canonical-select-option').forEach((o)=>{const chosen=o===this;o.setAttribute('aria-selected',String(chosen));o.querySelector('input').checked=chosen;});p.closest('details').open=false;"><input tabindex="-1" aria-hidden="true" type="checkbox" ${selected ? "checked" : ""}/><span>${label}</span></button>`;
+  }).join("");
+  const nativeOptions = LOCAL_TTL_OPTIONS.map((seconds) => `<option value="${seconds}" ${value === seconds ? "selected" : ""}>${ttlLabel(seconds)}</option>`).join("");
+  return `<details class="canonical-select"><summary class="canonical-select-trigger" role="button" aria-haspopup="listbox"><span class="canonical-select-trigger-label">${selectedLabel}</span><span aria-hidden="true">⌄</span></summary><select class="canonical-select-native" id="${id}" tabindex="-1" aria-hidden="true">${nativeOptions}</select><div class="canonical-select-list" role="listbox" aria-label="Opening authorization expires after">${options}</div></details>`;
 }
 
 export function localProtectedSheetMarkup(model: LocalProtectedSheetModel, sendMode: SendMode = "manual"): string {
@@ -121,7 +145,6 @@ export function localProtectedSheetMarkup(model: LocalProtectedSheetModel, sendM
     </aside>`;
   }
 
-  const ttlOptions = LOCAL_TTL_OPTIONS.map((seconds) => `<option value="${seconds}" ${model.ttlSeconds === seconds ? "selected" : ""}>${ttlLabel(seconds)}</option>`).join("");
   const boundedDraft = boundedCopyPayload(model.draft);
   const draftLimitNotice = !boundedDraft.clipped
     ? `${boundedDraft.bytes.toLocaleString("en-US")} / ${maxCopyPayloadBytes.toLocaleString("en-US")} bytes`
@@ -136,11 +159,21 @@ export function localProtectedSheetMarkup(model: LocalProtectedSheetModel, sendM
       : "OSL copies encrypted text only. You choose where to paste it and press Send yourself.";
   const resultCopyLabel = manualMode ? "Copy to clipboard" : "Copy again";
   const resultHint = manualMode ? "Select and place this encrypted text yourself, or copy only by pressing the button." : "Review the destination before you send.";
-  const write = `<form id="local-protect-form" class="local-protected-form">
+  // TASK 3426: a failed placement is announced directly above the person's own
+  // text, so the sentence and the draft it is about are read together.
+  const placementFailure = placementFailureNoticeMarkup(model.placementFailure ?? null);
+  const write = `${placementFailure}<form id="local-protect-form" class="local-protected-form">
       <label for="local-protected-draft">Message</label>
       <textarea id="local-protected-draft" maxlength="1000" data-max-bytes="${maxCopyPayloadBytes}" data-osl-protected-box-rule="${PROTECTED_TEXT_BOX_RULE}" rows="5" autocomplete="off" spellcheck="true" aria-describedby="local-protected-draft-bytes" placeholder="Write privately">${escapeHtml(boundedDraft.value)}</textarea>
       <small id="local-protected-draft-bytes" class="local-draft-bytes" aria-live="polite">${draftLimitNotice}</small>
-      <div class="local-protected-options"><label><span>Opening authorization expires after</span><select id="local-protected-ttl">${ttlOptions}</select></label><label class="local-view-once"><span>View once</span><input id="local-protected-view-once" type="checkbox" ${model.viewOnce ? "checked" : ""}/><small>View Once applies to protected text only; files and images are not view-once.</small></label></div>
+      <div class="local-protected-options"><label><span>Opening authorization expires after</span>${canonicalTtlPicker("local-protected-ttl", model.ttlSeconds as LocalTtlSeconds)}</label>${viewOnceControlMarkup({
+        id: "local-protected-view-once",
+        layout: "compact",
+        className: "local-view-once",
+        checked: model.viewOnce,
+        creationAllowed: model.viewOnceCreationAllowed,
+        detail: VIEW_ONCE_DISPLAY_TRUTH,
+      })}</div>
       <small class="local-authorization-truth">After expiry, OSL refuses to open this text on this device.</small>
       <button class="local-primary" type="submit" ${model.busy ? "disabled" : ""}>${model.busy ? "Encrypting…" : primaryLabel}</button>
       <small class="local-send-truth">${escapeHtml(sendTruth)}</small>

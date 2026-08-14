@@ -1,0 +1,117 @@
+/* Colour values are the canonical OSL design tokens duplicated from
+   src/osl-tokens.ts (CSS cannot import TypeScript). osl-tokens.ts is the
+   authority; token names are noted beside each hex. */
+/* ---------------------------------------------------------------------------
+   TASK 3112 -- the messaging risk page shown before a service is connected.
+
+   The five facts are a plain list, the same weight and order every time, so
+   the page reads as one flat warning rather than ranking one risk above
+   another. Continue is dimmed, not hidden, while the box is unticked, so the
+   reason it cannot be pressed stays visible.
+   --------------------------------------------------------------------------- */
+.messaging-risk-screen {
+  --mr-bg: #080c0d; /* colour.background */
+  --mr-card: #0a0e10; /* colour.surface */
+  --mr-line: #2a343a; /* colour.border */
+  --mr-text: #f4f7f8; /* colour.text */
+  --mr-second: #97a3a9; /* colour.muted1 */
+  --mr-accent: #2ac0f0; /* colour.accent */
+
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 100%;
+  padding: 40px 48px 36px;
+  background: var(--mr-bg);
+  color: var(--mr-text);
+  font-family: "Onest Variable", Onest, var(--font-ui);
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+}
+
+.messaging-risk-screen *,
+.messaging-risk-screen *::before,
+.messaging-risk-screen *::after {
+  box-sizing: border-box;
+}
+
+.mr-head {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.mr-title {
+  margin: 0;
+  font-size: 26px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.mr-lead {
+  margin: 0;
+  max-width: 62ch;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--mr-second);
+}
+
+.mr-facts {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.mr-fact {
+  padding: 12px 16px;
+  background: var(--mr-card);
+  border: 1px solid var(--mr-line);
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.mr-terms {
+  align-self: flex-start;
+}
+
+.mr-agree {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.mr-agree .osl-tick-box {
+  stroke: var(--mr-line);
+  fill: none;
+}
+
+.mr-agree:has(.mr-agree-tick:checked) .osl-tick-box {
+  stroke: var(--mr-accent);
+  fill: none;
+}
+
+.mr-agree .osl-tick-mark {
+  stroke: transparent;
+}
+
+.mr-agree:has(.mr-agree-tick:checked) .osl-tick-mark {
+  stroke: var(--mr-accent);
+}
+
+.mr-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: auto;
+}
+
+.mr-continue[disabled] {
+  opacity: 0.45;
+  cursor: not-allowed;
+}

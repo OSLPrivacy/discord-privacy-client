@@ -1,0 +1,24 @@
+{
+  "markers": {
+    "conversation_names": "REAL-3233-CONVERSATION-NORTHSTAR",
+    "friend_names": "REAL-3233-FRIEND-MIRA-VALE",
+    "keys": "REAL-3233-KEY-7C91-4E2B-A6D0",
+    "files": "REAL-3233-FILE-PROJECT-EMBER.OSL"
+  },
+  "real": {
+    "files": [{ "path": "Documents/empty.txt", "contents": "ordinary file\n" }],
+    "logs": [{ "path": "osl-hub.log", "contents": "workspace opened\n" }],
+    "deep_links": [{ "path": "registered-links.jsonl", "contents": "{\"uri\":\"notes://new\"}\n" }],
+    "notices": [{ "path": "notification-history.json", "contents": "[]\n" }],
+    "recent_files": [{ "path": "AutomaticDestinations/recent-items.txt", "contents": "empty.txt\n" }],
+    "windows_search": [{ "path": "Windows.edb-export.txt", "contents": "System.ItemName=empty.txt\n" }]
+  },
+  "decoy": {
+    "files": [{ "path": "Documents/grocery-list.txt", "contents": "tea\nrice\napples\n" }],
+    "logs": [{ "path": "workspace.log", "contents": "workspace opened\nworkspace closed\n" }],
+    "deep_links": [{ "path": "registered-links.jsonl", "contents": "{\"uri\":\"notes://new\"}\n" }],
+    "notices": [{ "path": "notification-history.json", "contents": "{\"title\":\"Calendar\",\"detail\":\"No events today\"}\n" }],
+    "recent_files": [{ "path": "AutomaticDestinations/recent-items.txt", "contents": "grocery-list.txt\n" }],
+    "windows_search": [{ "path": "Windows.edb-export.txt", "contents": "System.ItemName=grocery-list.txt; System.Search.Contents=tea rice apples\n" }]
+  }
+}

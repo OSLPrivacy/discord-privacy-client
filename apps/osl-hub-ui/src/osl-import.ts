@@ -33,6 +33,9 @@ function sheetBody(text: string, delimiter: "," | "\t"): string | null {
 
 function attribute(source: string, name: string): string | null { return new RegExp(`\\s${name}=["']([^"']+)["']`, "iu").exec(source)?.[1] ?? null; }
 function numberAttribute(source: string, name: string, fallback: number): number { const value = Number(attribute(source, name)); return Number.isFinite(value) && value >= 0 && value <= 2_000 ? value : fallback; }
+// Import whitelist for USER-DOCUMENT colours (must stay in lockstep with
+// osl-office.ts drawingColors — persisted into documents and validated).
+// DELIBERATELY not osl-tokens.ts values: changing them changes validation.
 function safeColor(source: string): string { const value = attribute(source, "fill")?.toLowerCase() ?? "#06b6d4"; return ["#06b6d4", "#8b5cf6", "#49c58a", "#f2b84b", "#ef626b", "#e8e8e8"].includes(value) ? value : "#06b6d4"; }
 function importedDrawingItem(item: Pick<DrawingItem, "id" | "type" | "x" | "y" | "width" | "height" | "text" | "color">): DrawingItem { return { ...item, stroke: item.color, strokeWidth: 4, opacity: 100, rotation: 0, locked: false, hidden: false, name: item.type, gradientTo: null, points: [] }; }
 

@@ -791,10 +791,21 @@ pub const fn landing_profile(provider: NativeAppId) -> ProfileLookup {
                       not Discord's 250.",
         },
         NativeAppId::Whatsapp => ProfileLookup::Measured(&WHATSAPP),
+        NativeAppId::Instagram => ProfileLookup::Unmeasured {
+            provider,
+            missing: "Instagram has been restored to the service catalog, but no native carrier \
+                      landing measurement exists for it and no composer channel is wired.",
+        },
         NativeAppId::Outlook => ProfileLookup::Unmeasured {
             provider,
             missing: "Outlook exists as a native desktop variant and a web surface; whether \
                       one composer shape serves both is a measurement nobody has taken.",
+        },
+        NativeAppId::X => ProfileLookup::Unmeasured {
+            provider,
+            missing: "X is catalogue-only at its fixed web origin until its own browser \
+                      reader and watched send-permission proofs pass; no native landing \
+                      profile is available.",
         },
     }
 }

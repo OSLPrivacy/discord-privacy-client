@@ -40,7 +40,7 @@ function blankPng() {
 
 test("TASK0371 pins the fixed connection choice viewport and screen tree names", () => {
   assert.deepEqual(FIXED_VIEWPORT, { width: 800, height: 620 });
-  assert.deepEqual(REQUIRED_NAMES, ["Connection choice", "Tor", "direct", "Continue", "Back"]);
+  assert.deepEqual(REQUIRED_NAMES, ["Connection choice", "Tor", "Direct", "Mullvad", "You can use both. Neither replaces the other.", "Continue", "Back"]);
 });
 
 test("TASK0371 rejects a blank PNG", () => {

@@ -38,6 +38,59 @@ pub fn send_pro_attachment_from_osl_chat_tray(
     request: &OslChatProAttachmentSendRequest,
     client: &CipherStoreClient,
 ) -> Result<ProChunkedUploadReport, String> {
+    let sealed = open_admitted_sealed_file(tray, request)?;
+    client
+        .upload_attachment_file_pro_chunked(sealed, request.ttl_seconds, &request.fetch_token)
+        .map_err(|error| format!("OSL Chat Pro attachment upload failed: {error}"))
+}
+
+/// Register the upload under its exact message id before the first multipart
+/// request. Burning that message removes the registration and flips the signal
+/// checked around every accepted part and before completion.
+pub fn send_registered_pro_attachment_from_osl_chat_tray(
+    state: &ipc::state::AppState,
+    message_id: &str,
+    tray: &OslChatAttachmentTray,
+    request: &OslChatProAttachmentSendRequest,
+    client: &CipherStoreClient,
+) -> Result<ProChunkedUploadReport, String> {
+    let sealed = open_admitted_sealed_file(tray, request)?;
+    let cancellation = state.active_attachment_uploads.begin(message_id)?;
+    let upload = client.upload_attachment_file_pro_chunked_cancellable(
+        sealed,
+        request.ttl_seconds,
+        &request.fetch_token,
+        &cancellation,
+    );
+    let finished_registration = state
+        .active_attachment_uploads
+        .finish(message_id, &cancellation);
+
+    match (upload, finished_registration) {
+        (Ok(report), Err(error)) => {
+            let _ = client.delete_attachment(&report.completed_file.file_id, &request.fetch_token);
+            Err(error)
+        }
+        (Err(_), Err(error)) => Err(error),
+        (Ok(report), Ok(removed_by_finisher))
+            if cancellation.is_cancelled() || !removed_by_finisher =>
+        {
+            let _ = client.delete_attachment(&report.completed_file.file_id, &request.fetch_token);
+            Err("OSL Chat Pro attachment upload cancelled".to_owned())
+        }
+        (Ok(report), Ok(_)) => Ok(report),
+        (
+            Err(ipc::cipher_store_client::CipherStoreError::AttachmentUploadCancelled),
+            Ok(_),
+        ) => Err("OSL Chat Pro attachment upload cancelled".to_owned()),
+        (Err(error), Ok(_)) => Err(format!("OSL Chat Pro attachment upload failed: {error}")),
+    }
+}
+
+fn open_admitted_sealed_file(
+    tray: &OslChatAttachmentTray,
+    request: &OslChatProAttachmentSendRequest,
+) -> Result<File, String> {
     check_attachment_count(tray.attachments().len())
         .map_err(|_| "OSL Chat attachment count is no longer allowed for Pro".to_owned())?;
     for attachment in tray.attachments() {
@@ -64,11 +117,8 @@ pub fn send_pro_attachment_from_osl_chat_tray(
         return Err("OSL Chat attachment must be sealed before upload".to_owned());
     }
 
-    let sealed = File::open(&request.sealed_path)
-        .map_err(|_| "OSL Chat sealed attachment could not be opened".to_owned())?;
-    client
-        .upload_attachment_file_pro_chunked(sealed, request.ttl_seconds, &request.fetch_token)
-        .map_err(|error| format!("OSL Chat Pro attachment upload failed: {error}"))
+    File::open(&request.sealed_path)
+        .map_err(|_| "OSL Chat sealed attachment could not be opened".to_owned())
 }
 
 fn same_file_path(first: &std::path::Path, second: &std::path::Path) -> bool {

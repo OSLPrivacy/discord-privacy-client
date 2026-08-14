@@ -77,9 +77,9 @@ function toggle(id: string, on: boolean, label: string): string {
 }
 
 function segmented(choice: CleanFilesChoice): string {
-  const segment = (value: CleanFilesChoice, text: string) =>
-    `<label class="bs-segment bs-segment-${value}${choice === value ? " selected" : ""}"><input class="sr-only" type="radio" name="clean-files" value="${value}"${choice === value ? " checked" : ""}/><span>${text}</span></label>`;
-  return `<span class="bs-control"><span class="bs-segmented" role="group" aria-label="Remove metadata from files">${segment("always", "Always")}${segment("ask", "Ask")}${segment("never", "Never")}</span></span>`;
+  const checkbox = (value: CleanFilesChoice, text: string) =>
+    `<label class="bs-choice-row"><input type="checkbox" name="clean-files" value="${value}"${choice === value ? " checked" : ""}/><span>${text}</span></label>`;
+  return `<span class="bs-control bs-choice-control" role="group" aria-label="Remove metadata from files">${checkbox("always", "Always")}${checkbox("ask", "Ask")}${checkbox("never", "Never")}</span>`;
 }
 
 /**

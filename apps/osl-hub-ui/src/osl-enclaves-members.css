@@ -1,0 +1,106 @@
+/* Member profile card — exact OSLServers.dc.html geometry and palette.
+   This stylesheet lives with the roster projection because member rows are
+   the only route into the profile dialog. The five-region Enclaves surface
+   supplies the semantic markup; these rules keep the card independent from
+   global button defaults and preserve the design when it is integrated. */
+
+.enclv-card-overlay {
+  background: rgba(4, 7, 8, 0.72);
+}
+
+.enclv-card {
+  width: 356px;
+  background: #0a0e10;
+  border: 1px solid #1e2326;
+}
+
+.enclv-card-banner {
+  height: 84px;
+}
+
+/* Literal prototype gradients avoid browser-dependent color-mix rounding. */
+.enclv-card-banner.enclv-av-m-banner { background: linear-gradient(120deg, #0e2a33, #12313b); }
+.enclv-card-banner.enclv-av-r-banner { background: linear-gradient(120deg, #122a24, #16342c); }
+.enclv-card-banner.enclv-av-k-banner { background: linear-gradient(120deg, #2c2410, #3a3016); }
+.enclv-card-banner.enclv-av-t-banner { background: linear-gradient(120deg, #251f36, #2e2742); }
+.enclv-card-banner.enclv-av-j-banner { background: linear-gradient(120deg, #33201a, #3d2820); }
+.enclv-card-banner.enclv-av-d-banner { background: linear-gradient(120deg, #10262e, #143039); }
+.enclv-card-banner.enclv-av-s-banner { background: linear-gradient(120deg, #1c2e15, #24391c); }
+.enclv-card-banner.enclv-av-x-banner { background: linear-gradient(120deg, #141a1c, #1a2225); }
+
+.enclv-card-body {
+  margin-top: -30px;
+  padding: 0 20px 20px;
+}
+
+.enclv-card-avatar {
+  width: 62px;
+  height: 62px;
+  border: 3px solid #0a0e10;
+  border-radius: 50%;
+  color: #08161a;
+  font-size: 25px;
+  font-weight: 600;
+}
+
+.enclv-card-name {
+  margin-top: 11px;
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.enclv-card-handle {
+  margin-top: 2px;
+  color: #5b666c;
+  font-family: "Source Sans 3 Variable", "Source Sans 3", sans-serif;
+  font-size: 13px;
+}
+
+.enclv-card-state {
+  margin-top: 10px;
+  font-family: Consolas, "Cascadia Mono", "DejaVu Sans Mono", monospace;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.enclv-card-bio {
+  margin-top: 12px;
+  color: #97a3a9;
+  font-family: "Source Sans 3 Variable", "Source Sans 3", sans-serif;
+  font-size: 13.5px;
+  line-height: 1.5;
+  text-wrap: pretty;
+}
+
+.enclv-card-actions {
+  display: flex;
+  gap: 9px;
+  margin-top: 16px;
+}
+
+.enclv-card-btn {
+  flex: 1;
+  padding: 9px 0;
+  border: 1.5px solid #2a343a;
+  border-radius: 0;
+  background: transparent;
+  color: #f4f7f8;
+  font-size: 12.5px;
+  font-weight: 600;
+  text-align: center;
+}
+
+/* View page remains honestly unavailable, but it is still the same outline
+   control as Message in the reference rather than a filled or faded shape. */
+.enclv-card-btn:disabled {
+  border-color: #2a343a;
+  color: #f4f7f8;
+}
+
+.enclv-card-btn:hover:not(:disabled),
+.enclv-card-btn:focus-visible {
+  border-color: #2ac0f0;
+  color: #2ac0f0;
+}

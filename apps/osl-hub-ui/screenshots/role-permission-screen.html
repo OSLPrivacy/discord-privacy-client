@@ -1,0 +1,58 @@
+<!doctype html>
+<!--
+  TASK 4852 capture fixture: the role permission screen, every row carrying its
+  enforcement tag and the honest sentence for that class.
+
+  Dev-server only. It is deliberately absent from vite.config.ts's rollup inputs,
+  so it mounts the real screen for a screenshot without shipping an extra page in
+  the app bundle. Nothing is stubbed: the rows, the tags and the sentences all
+  come from /src/role-permission-rows.ts, which reads TASK 4851's catalogue.
+-->
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="color-scheme" content="dark" />
+    <title>What Moderator can do</title>
+    <style>
+      body { margin: 0; background: #0a0a0a; }
+      #app { min-height: 100vh; display: grid; justify-content: center; padding: 40px; }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module">
+      import "@fontsource-variable/inter/wght.css";
+      import "/src/styles.css";
+      import { mountRolePermissionScreen } from "/src/role-permission-rows.ts";
+
+      const handle = mountRolePermissionScreen(document.querySelector("#app"), {
+        roleName: "Moderator",
+        allowed: [
+          "read a text channel",
+          "read channel history",
+          "read message reactions",
+          "read attached file names",
+          "see the member list",
+          "send a message",
+          "edit your own message",
+          "delete your own message",
+          "attach pictures",
+          "add reactions",
+          "create a thread",
+          "read a thread",
+          "send in a thread",
+          "join voice",
+          "speak in voice",
+          "timeout a member",
+          "delete another member's message",
+          "request clients hide a delivered message",
+          "pin or unpin a message",
+          "review reported messages",
+          "create invite links",
+        ],
+      });
+      window.oslRolePermissionHandle = handle;
+      document.body.dataset.rolePermissionFixture = "ready";
+    </script>
+  </body>
+</html>

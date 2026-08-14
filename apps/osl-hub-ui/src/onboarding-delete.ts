@@ -20,6 +20,87 @@ export const initialDeleteChoices = (): DeleteChoices => ({
 });
 
 /**
+ * The four limits a person must acknowledge before the first timed delete.
+ *
+ * Keep these as complete sentences: the TASK 3331 proof map keys each visible
+ * factual sentence verbatim, so copy cannot quietly drift away from its named
+ * evidence.
+ */
+export const TIMED_DELETE_WARNING_FACTS = [
+  "Timed delete removes the message from the other person's screen using the app's own delete.",
+  "Most apps leave a “This message was deleted” mark.",
+  "A screenshot they already took is gone forever from our reach.",
+  "Email cannot be recalled at all.",
+] as const;
+
+export const TIMED_DELETE_OTHER_PERSON_OUTCOMES = {
+  nothingLeft: {
+    heading: "Nothing left in the chat",
+    apps: ["Discord", "Telegram", "Instagram"],
+    outcome: "nothing left",
+  },
+  deletionNote: {
+    heading: "A “message was deleted” note remains",
+    apps: ["WhatsApp", "Signal", "Messenger"],
+    outcome: "a note saying the message was deleted remains",
+  },
+  originalRemains: {
+    heading: "The original remains — delivered email cannot be recalled",
+    apps: ["Email"],
+    outcome: "the original remains because delivered email cannot be recalled",
+  },
+} as const;
+
+export const SIGNAL_QUOTED_REPLY_OUTCOME = "Quoted-reply problem: a reply that quoted the deleted message can keep its original words visible";
+
+/** The ordinary defaults screen may continue; timed delete adds one hard gate. */
+export function timedDeleteContinueAllowed(choices: DeleteChoices, agreed: boolean): boolean {
+  return !choices.deleteOldMessages || agreed;
+}
+
+function otherPersonOutcomeMarkup(): string {
+  return Object.entries(TIMED_DELETE_OTHER_PERSON_OUTCOMES).map(([category, group]) => {
+    const apps = group.apps.map((app) => {
+      const signalDetail = app === "Signal"
+        ? `<span class="timed-delete-signal-detail">${SIGNAL_QUOTED_REPLY_OUTCOME}.</span>`
+        : "";
+      return `<li data-timed-delete-outcome data-timed-delete-app="${app}"><strong>${app}</strong>${signalDetail}</li>`;
+    }).join("");
+    return `<section class="timed-delete-outcome-group" data-timed-delete-outcome-group="${category}" aria-labelledby="timed-delete-${category}">
+      <h2 id="timed-delete-${category}">${group.heading}</h2>
+      <ul>${apps}</ul>
+    </section>`;
+  }).join("");
+}
+
+/**
+ * Shown immediately after Old messages is enabled, before setup can continue.
+ * The checkbox and native disabled attribute make the agreement explicit for
+ * pointer, keyboard, and assistive-technology users alike.
+ */
+export function firstTimedDeleteWarningMarkup(agreed: boolean): string {
+  const facts = TIMED_DELETE_WARNING_FACTS.map((fact, index) =>
+    `<li data-timed-delete-fact="${index + 1}"><span>${fact}</span></li>`,
+  ).join("");
+  const disabled = agreed ? 'aria-disabled="false"' : 'aria-disabled="true" disabled';
+
+  return `<section class="del-onboarding timed-delete-warning" data-first-timed-delete-warning aria-labelledby="route-heading">
+    <p class="eyebrow">Before the first timed delete</p>
+    <h1 id="route-heading" tabindex="-1" class="del-title">Know what timed delete can do</h1>
+    <ul class="timed-delete-facts">${facts}</ul>
+    <div class="timed-delete-other-person-outcomes" aria-label="What the other person is left with">${otherPersonOutcomeMarkup()}</div>
+    <label class="timed-delete-agreement">
+      <input id="timed-delete-warning-agreement" type="checkbox" ${agreed ? "checked" : ""}/>
+      <span>I understand these limits</span>
+    </label>
+    <div class="setup-footer onboarding-actions">
+      ${continueButton(`id="continue-defaults-review" ${disabled}`, "del-continue")}
+      <button class="timed-delete-not-now" id="timed-delete-warning-not-now" type="button">Not now</button>
+    </div>
+  </section>`;
+}
+
+/**
  * Both scenes are drawn on the SAME canvas -- same width, same viewBox, content
  * built around the same centre line at x=70 -- so the window on one card and the
  * clock on the other sit on one vertical axis instead of each floating wherever

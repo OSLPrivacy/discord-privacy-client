@@ -9,16 +9,11 @@ use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBe
 use sha2::{Digest, Sha256};
 use std::fmt;
 use std::path::Path;
+use std::time::Duration;
 use thiserror::Error;
 
 const DATABASE_FILE: &str = "person_usage.sqlite";
 const SECONDS_PER_DAY: i64 = 86_400;
-pub const STOPPED_ACCOUNT_RETENTION_DAYS: i64 = 7;
-const STOPPED_ACCOUNT_RETENTION_SECONDS: i64 = STOPPED_ACCOUNT_RETENTION_DAYS * SECONDS_PER_DAY;
-pub const DELETE_ACCOUNT_CONFIRMATION: &str = "ERASE";
-pub const DELETE_ACCOUNT_SUMMARY: &str = "Upload, download and send stop now. Messages, including relay-held undelivered ciphertext, files, server-held keys, settings, sessions and the account row purge seven days later. OSL stores no payment data. A permanent lost-key name tombstone is the sole exception.";
-/// TASK 3120 owner-approved claimant wording. Keep this byte-for-byte stable.
-pub const LOST_KEY_NAME_CLAIM_REFUSAL: &str = "This name belongs to an account whose key was lost. It stays reserved permanently and cannot be claimed by anyone, including its original owner.";
 const MIB: u64 = 1024 * 1024;
 const GIB: u64 = 1024 * MIB;
 
@@ -136,8 +131,6 @@ pub enum UsageCounterError {
     },
     #[error("file not found")]
     FileNotFound,
-    #[error("{0}")]
-    LostKeyNamePermanentlyReserved(&'static str),
 }
 
 pub type Result<T> = std::result::Result<T, UsageCounterError>;
@@ -149,6 +142,13 @@ pub struct PersonUsageCounters {
     pub bytes_sent_today: u64,
     pub bytes_fetched_today: u64,
     pub messages_sent_today: u64,
+}
+
+/// Aggregate live storage and UTC-day transfer use across the service.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ServiceUsageCounters {
+    pub stored_bytes: u64,
+    pub transferred_bytes_today: u64,
 }
 
 /// Operations disabled by the stop-one-account command.
@@ -178,144 +178,6 @@ pub struct StoppedAccount {
     pub stored_bytes: u64,
 }
 
-/// The six service-data kinds removed seven days after an account is stopped.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ServiceDataKind {
-    Messages,
-    Files,
-    Keys,
-    Settings,
-    Sessions,
-    AccountRecords,
-}
-
-/// One shipping writer and the ruled service-data class containing its rows.
-/// This manifest is intentionally public so release checks can reconcile it
-/// against the independently discovered SQLite storage locations.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct AccountDataWriter {
-    pub writer: &'static str,
-    pub location: &'static str,
-    pub kind: ServiceDataKind,
-    pub summary_label: &'static str,
-}
-
-pub const SHIPPING_ACCOUNT_DATA_WRITERS: [AccountDataWriter; 7] = [
-    AccountDataWriter {
-        writer: "store_local_message",
-        location: "service_messages",
-        kind: ServiceDataKind::Messages,
-        summary_label: "Messages",
-    },
-    AccountDataWriter {
-        writer: "store_relay_held_undelivered_ciphertext",
-        location: "relay_held_undelivered_ciphertexts",
-        kind: ServiceDataKind::Messages,
-        summary_label: "relay-held undelivered ciphertext",
-    },
-    AccountDataWriter {
-        writer: "store_file",
-        location: "stored_files",
-        kind: ServiceDataKind::Files,
-        summary_label: "files",
-    },
-    AccountDataWriter {
-        writer: "store_service_data/keys",
-        location: "service_keys",
-        kind: ServiceDataKind::Keys,
-        summary_label: "server-held keys",
-    },
-    AccountDataWriter {
-        writer: "store_service_data/settings",
-        location: "service_settings",
-        kind: ServiceDataKind::Settings,
-        summary_label: "settings",
-    },
-    AccountDataWriter {
-        writer: "store_service_data/sessions",
-        location: "service_sessions",
-        kind: ServiceDataKind::Sessions,
-        summary_label: "sessions",
-    },
-    AccountDataWriter {
-        writer: "store_service_data/account_records",
-        location: "service_account_records",
-        kind: ServiceDataKind::AccountRecords,
-        summary_label: "account row",
-    },
-];
-
-/// The destructive Account-screen choice. Cancel is represented explicitly;
-/// an absent input is a confirmation attempt with an empty string and cannot
-/// stop the account.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DeleteAccountChoice<'a> {
-    Cancel,
-    Confirm(&'a str),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DeleteAccountOutcome {
-    Cancelled,
-    ConfirmationRequired,
-    Stopped(StoppedAccount),
-}
-
-/// Account > Delete account is always the retained stopped-account route.
-/// It must never dispatch the separate immediate Remove everything action.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DeleteAccountRoute {
-    StoppedAccountRetention,
-}
-
-pub const DELETE_ACCOUNT_ROUTE: DeleteAccountRoute = DeleteAccountRoute::StoppedAccountRetention;
-
-impl ServiceDataKind {
-    pub const ALL: [Self; 6] = [
-        Self::Messages,
-        Self::Files,
-        Self::Keys,
-        Self::Settings,
-        Self::Sessions,
-        Self::AccountRecords,
-    ];
-
-    fn table(self) -> &'static str {
-        match self {
-            Self::Messages => "service_messages",
-            Self::Files => "stored_files",
-            Self::Keys => "service_keys",
-            Self::Settings => "service_settings",
-            Self::Sessions => "service_sessions",
-            Self::AccountRecords => "service_account_records",
-        }
-    }
-}
-
-/// Account-scoped counts for every data kind covered by the stopped-account
-/// retention promise.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct ServiceDataCounts {
-    pub messages: u64,
-    pub files: u64,
-    pub keys: u64,
-    pub settings: u64,
-    pub sessions: u64,
-    pub account_records: u64,
-}
-
-/// Audit detail for one account removed by a due purge.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PurgedStoppedAccount {
-    pub person_id: String,
-    /// Counts observed immediately before the account-scoped cascade.
-    pub deleted: ServiceDataCounts,
-    /// Independent counts observed in the same transaction after the cascade.
-    pub remaining: ServiceDataCounts,
-    /// Permanent non-account tombstones observed after the cascade.
-    pub lost_key_name_tombstones: u64,
-}
-
 /// Open a counter ledger rooted at an account's application-data directory.
 pub struct UsageCounterStore {
     conn: Connection,
@@ -325,6 +187,10 @@ impl UsageCounterStore {
     pub fn open(app_data_dir: &Path) -> Result<Self> {
         std::fs::create_dir_all(app_data_dir)?;
         let conn = Connection::open(app_data_dir.join(DATABASE_FILE))?;
+        // Upload admission uses BEGIN IMMEDIATE. Give simultaneous upload
+        // workers time to serialize at that boundary instead of surfacing a
+        // transient SQLITE_BUSY as a quota decision.
+        conn.busy_timeout(Duration::from_secs(10))?;
         conn.execute_batch(
             "PRAGMA journal_mode = WAL;
              PRAGMA foreign_keys = ON;
@@ -349,48 +215,6 @@ impl UsageCounterStore {
                 person_id TEXT PRIMARY KEY NOT NULL,
                 stopped_at INTEGER NOT NULL,
                 FOREIGN KEY (person_id) REFERENCES person_usage(person_id) ON DELETE CASCADE
-             );
-             CREATE INDEX IF NOT EXISTS stopped_accounts_due
-                ON stopped_accounts(stopped_at, person_id);
-             CREATE TABLE IF NOT EXISTS service_messages (
-                person_id TEXT NOT NULL,
-                data_id TEXT NOT NULL,
-                PRIMARY KEY (person_id, data_id),
-                FOREIGN KEY (person_id) REFERENCES person_usage(person_id) ON DELETE CASCADE
-             );
-             CREATE TABLE IF NOT EXISTS relay_held_undelivered_ciphertexts (
-                person_id TEXT NOT NULL,
-                data_id TEXT NOT NULL,
-                PRIMARY KEY (person_id, data_id),
-                FOREIGN KEY (person_id) REFERENCES person_usage(person_id) ON DELETE CASCADE
-             );
-             CREATE TABLE IF NOT EXISTS service_keys (
-                person_id TEXT NOT NULL,
-                data_id TEXT NOT NULL,
-                PRIMARY KEY (person_id, data_id),
-                FOREIGN KEY (person_id) REFERENCES person_usage(person_id) ON DELETE CASCADE
-             );
-             CREATE TABLE IF NOT EXISTS service_settings (
-                person_id TEXT NOT NULL,
-                data_id TEXT NOT NULL,
-                PRIMARY KEY (person_id, data_id),
-                FOREIGN KEY (person_id) REFERENCES person_usage(person_id) ON DELETE CASCADE
-             );
-             CREATE TABLE IF NOT EXISTS service_sessions (
-                person_id TEXT NOT NULL,
-                data_id TEXT NOT NULL,
-                PRIMARY KEY (person_id, data_id),
-                FOREIGN KEY (person_id) REFERENCES person_usage(person_id) ON DELETE CASCADE
-             );
-             CREATE TABLE IF NOT EXISTS service_account_records (
-                person_id TEXT NOT NULL,
-                data_id TEXT NOT NULL,
-                PRIMARY KEY (person_id, data_id),
-                FOREIGN KEY (person_id) REFERENCES person_usage(person_id) ON DELETE CASCADE
-             );
-             CREATE TABLE IF NOT EXISTS lost_key_name_tombstones (
-                public_name TEXT PRIMARY KEY NOT NULL,
-                locked_at INTEGER NOT NULL
              );",
         )?;
         Ok(Self { conn })
@@ -450,6 +274,24 @@ impl UsageCounterStore {
         })
     }
 
+    /// Sum live storage and this UTC day's sent/fetched bytes across the
+    /// service from the per-person source of truth.
+    pub fn read_service_at(&self, unix_seconds: i64) -> Result<ServiceUsageCounters> {
+        let day = utc_day(unix_seconds)?;
+        let (stored_bytes, transferred_bytes): (i64, i64) = self.conn.query_row(
+            "SELECT COALESCE(SUM(stored_bytes), 0),
+                    COALESCE(SUM(CASE WHEN sent_day = ?1 THEN bytes_sent ELSE 0 END), 0)
+                    + COALESCE(SUM(CASE WHEN fetched_day = ?1 THEN bytes_fetched ELSE 0 END), 0)
+               FROM person_usage",
+            params![day],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        Ok(ServiceUsageCounters {
+            stored_bytes: as_u64(stored_bytes)?,
+            transferred_bytes_today: as_u64(transferred_bytes)?,
+        })
+    }
+
     /// Check all four counters and, only if they are below their ceilings,
     /// invoke the operation that accepts the upload bytes.
     ///
@@ -475,6 +317,7 @@ impl UsageCounterStore {
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        reject_if_stopped(&tx, person_id, AccountAction::Upload)?;
         ensure_person(&tx, person_id)?;
         let usage = read_at_tx(&tx, person_id, day)?;
         let old: Option<i64> = tx
@@ -600,35 +443,8 @@ impl UsageCounterStore {
     /// Stop one account without removing its stored files or changing usage.
     /// Repeating the command preserves the original stop time.
     pub fn stop_account(&mut self, person_id: &str) -> Result<StoppedAccount> {
-        self.stop_account_at(person_id, now_unix_seconds())
-    }
-
-    /// Account-screen Delete account boundary. Only the exact, case-sensitive
-    /// confirmation word dispatches the stopped-account command. Cancel,
-    /// missing text, and every other spelling leave the account active.
-    pub fn delete_account_at(
-        &mut self,
-        person_id: &str,
-        choice: DeleteAccountChoice<'_>,
-        stopped_at_unix_seconds: i64,
-    ) -> Result<DeleteAccountOutcome> {
-        match choice {
-            DeleteAccountChoice::Cancel => Ok(DeleteAccountOutcome::Cancelled),
-            DeleteAccountChoice::Confirm(DELETE_ACCOUNT_CONFIRMATION) => self
-                .stop_account_at(person_id, stopped_at_unix_seconds)
-                .map(DeleteAccountOutcome::Stopped),
-            DeleteAccountChoice::Confirm(_) => Ok(DeleteAccountOutcome::ConfirmationRequired),
-        }
-    }
-
-    /// Deterministic counterpart of [`Self::stop_account`]. Repeating the
-    /// command preserves the first stop time.
-    pub fn stop_account_at(
-        &mut self,
-        person_id: &str,
-        stopped_at_unix_seconds: i64,
-    ) -> Result<StoppedAccount> {
         validate_id(person_id, "person id")?;
+        let stopped_at = now_unix_seconds();
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -636,7 +452,7 @@ impl UsageCounterStore {
         tx.execute(
             "INSERT INTO stopped_accounts (person_id, stopped_at) VALUES (?1, ?2)
              ON CONFLICT(person_id) DO NOTHING",
-            params![person_id, stopped_at_unix_seconds],
+            params![person_id, stopped_at],
         )?;
         let (stopped_at_unix_seconds, stored_bytes): (i64, i64) = tx.query_row(
             "SELECT stopped_accounts.stopped_at, person_usage.stored_bytes
@@ -652,172 +468,6 @@ impl UsageCounterStore {
             stopped_at_unix_seconds,
             stored_bytes: as_u64(stored_bytes)?,
         })
-    }
-
-    /// Store one opaque service-data record for an active account. Files use
-    /// the existing stored-file ledger; all kinds are idempotent by data id.
-    pub fn store_service_data(
-        &mut self,
-        person_id: &str,
-        kind: ServiceDataKind,
-        data_id: &str,
-    ) -> Result<()> {
-        validate_id(person_id, "person id")?;
-        validate_id(data_id, "service data id")?;
-        if kind == ServiceDataKind::Files {
-            return self.store_file(person_id, data_id, 1);
-        }
-
-        let tx = self
-            .conn
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        reject_if_stopped(&tx, person_id, AccountAction::Upload)?;
-        ensure_person(&tx, person_id)?;
-        let sql = format!(
-            "INSERT INTO {} (person_id, data_id) VALUES (?1, ?2) \
-             ON CONFLICT(person_id, data_id) DO NOTHING",
-            kind.table()
-        );
-        tx.execute(&sql, params![person_id, data_id])?;
-        tx.commit()?;
-        Ok(())
-    }
-
-    /// Write through one independently inventoried shipping location. This is
-    /// intentionally location-specific because the Messages class has two
-    /// distinct writers: local messages and relay-held undelivered ciphertext.
-    pub fn store_account_data_at_location(
-        &mut self,
-        person_id: &str,
-        location: &str,
-        data_id: &str,
-    ) -> Result<()> {
-        validate_id(person_id, "person id")?;
-        validate_id(data_id, "service data id")?;
-        let writer = SHIPPING_ACCOUNT_DATA_WRITERS
-            .iter()
-            .find(|writer| writer.location == location)
-            .ok_or(UsageCounterError::Invalid("account data location"))?;
-        if writer.kind == ServiceDataKind::Files {
-            return self.store_file(person_id, data_id, 1);
-        }
-
-        let tx = self
-            .conn
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        reject_if_stopped(&tx, person_id, AccountAction::Upload)?;
-        ensure_person(&tx, person_id)?;
-        let sql = format!(
-            "INSERT INTO {} (person_id, data_id) VALUES (?1, ?2) \
-             ON CONFLICT(person_id, data_id) DO NOTHING",
-            writer.location
-        );
-        tx.execute(&sql, params![person_id, data_id])?;
-        tx.commit()?;
-        Ok(())
-    }
-
-    /// Count only the named account's six service-data kinds.
-    pub fn service_data_counts(&self, person_id: &str) -> Result<ServiceDataCounts> {
-        validate_id(person_id, "person id")?;
-        service_data_counts(&self.conn, person_id)
-    }
-
-    /// Record the one ruled non-account exception. It has no account id,
-    /// identity key, recovery secret, or finite expiry and therefore cannot be
-    /// reached by the stopped-account foreign-key cascade.
-    pub fn store_lost_key_name_tombstone(
-        &mut self,
-        public_name: &str,
-        locked_at_unix_seconds: i64,
-    ) -> Result<()> {
-        validate_id(public_name, "public name")?;
-        self.conn.execute(
-            "INSERT INTO lost_key_name_tombstones (public_name, locked_at)
-             VALUES (?1, ?2) ON CONFLICT(public_name) DO NOTHING",
-            params![public_name, locked_at_unix_seconds],
-        )?;
-        Ok(())
-    }
-
-    pub fn lost_key_name_tombstone_count(&self) -> Result<u64> {
-        let count: i64 =
-            self.conn
-                .query_row("SELECT COUNT(*) FROM lost_key_name_tombstones", [], |row| {
-                    row.get(0)
-                })?;
-        as_u64(count)
-    }
-
-    /// Claim-path preflight for the permanent ruling 3120 reservation.
-    pub fn claim_public_name(&self, public_name: &str) -> Result<()> {
-        validate_id(public_name, "public name")?;
-        let locked = self
-            .conn
-            .query_row(
-                "SELECT 1 FROM lost_key_name_tombstones WHERE public_name = ?1",
-                params![public_name],
-                |_| Ok(()),
-            )
-            .optional()?
-            .is_some();
-        if locked {
-            return Err(UsageCounterError::LostKeyNamePermanentlyReserved(
-                LOST_KEY_NAME_CLAIM_REFUSAL,
-            ));
-        }
-        Ok(())
-    }
-
-    /// Purge every account that has been stopped for seven full days.
-    pub fn purge_due_stopped_accounts(&mut self) -> Result<Vec<PurgedStoppedAccount>> {
-        self.purge_due_stopped_accounts_at(now_unix_seconds())
-    }
-
-    /// Deterministic counterpart of [`Self::purge_due_stopped_accounts`]. The
-    /// delete is one transaction and is scoped to ids selected by the cutoff.
-    pub fn purge_due_stopped_accounts_at(
-        &mut self,
-        now_unix_seconds: i64,
-    ) -> Result<Vec<PurgedStoppedAccount>> {
-        let cutoff = now_unix_seconds
-            .checked_sub(STOPPED_ACCOUNT_RETENTION_SECONDS)
-            .ok_or(UsageCounterError::Overflow)?;
-        let tx = self
-            .conn
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let person_ids = {
-            let mut statement = tx.prepare(
-                "SELECT person_id FROM stopped_accounts \
-                 WHERE stopped_at <= ?1 ORDER BY person_id",
-            )?;
-            let selected = statement
-                .query_map(params![cutoff], |row| row.get::<_, String>(0))?
-                .collect::<std::result::Result<Vec<_>, _>>()?;
-            selected
-        };
-
-        let mut purged = Vec::with_capacity(person_ids.len());
-        for person_id in person_ids {
-            let deleted = service_data_counts(&tx, &person_id)?;
-            tx.execute(
-                "DELETE FROM person_usage WHERE person_id = ?1",
-                params![person_id],
-            )?;
-            let remaining = service_data_counts(&tx, &person_id)?;
-            let lost_key_name_tombstones: i64 =
-                tx.query_row("SELECT COUNT(*) FROM lost_key_name_tombstones", [], |row| {
-                    row.get(0)
-                })?;
-            purged.push(PurgedStoppedAccount {
-                person_id,
-                deleted,
-                remaining,
-                lost_key_name_tombstones: as_u64(lost_key_name_tombstones)?,
-            });
-        }
-        tx.commit()?;
-        Ok(purged)
     }
 
     pub fn remove_file(&mut self, person_id: &str, file_id: &str) -> Result<()> {
@@ -951,38 +601,6 @@ impl UsageCounterStore {
     }
 }
 
-fn service_data_counts(conn: &Connection, person_id: &str) -> Result<ServiceDataCounts> {
-    let counts: (i64, i64, i64, i64, i64, i64) = conn.query_row(
-        "SELECT
-            ((SELECT COUNT(*) FROM service_messages WHERE person_id = ?1) +
-             (SELECT COUNT(*) FROM relay_held_undelivered_ciphertexts WHERE person_id = ?1)),
-            (SELECT COUNT(*) FROM stored_files WHERE person_id = ?1),
-            (SELECT COUNT(*) FROM service_keys WHERE person_id = ?1),
-            (SELECT COUNT(*) FROM service_settings WHERE person_id = ?1),
-            (SELECT COUNT(*) FROM service_sessions WHERE person_id = ?1),
-            (SELECT COUNT(*) FROM service_account_records WHERE person_id = ?1)",
-        params![person_id],
-        |row| {
-            Ok((
-                row.get(0)?,
-                row.get(1)?,
-                row.get(2)?,
-                row.get(3)?,
-                row.get(4)?,
-                row.get(5)?,
-            ))
-        },
-    )?;
-    Ok(ServiceDataCounts {
-        messages: as_u64(counts.0)?,
-        files: as_u64(counts.1)?,
-        keys: as_u64(counts.2)?,
-        settings: as_u64(counts.3)?,
-        sessions: as_u64(counts.4)?,
-        account_records: as_u64(counts.5)?,
-    })
-}
-
 #[derive(Clone, Copy)]
 enum DailyCounter {
     Sent,
@@ -1106,115 +724,4 @@ fn as_i64(value: u64) -> Result<i64> {
 }
 fn as_u64(value: i64) -> Result<u64> {
     u64::try_from(value).map_err(|_| UsageCounterError::Overflow)
-}
-
-#[cfg(test)]
-mod task_3709_tests {
-    use super::*;
-
-    const MINUTE_SECONDS: i64 = 60;
-    const STOPPED_AT: i64 = 30_000 * SECONDS_PER_DAY;
-    const STOPPED_ACCOUNT: &str = "task-3709-stopped-account";
-    const OTHER_ACCOUNT: &str = "task-3709-other-account";
-
-    fn seed_two_of_each_kind(store: &mut UsageCounterStore, account: &str) {
-        for kind in ServiceDataKind::ALL {
-            for data_id in ["first", "second"] {
-                store
-                    .store_service_data(account, kind, data_id)
-                    .expect("seed service-data item");
-            }
-        }
-    }
-
-    fn two_of_each_kind() -> ServiceDataCounts {
-        ServiceDataCounts {
-            messages: 2,
-            files: 2,
-            keys: 2,
-            settings: 2,
-            sessions: 2,
-            account_records: 2,
-        }
-    }
-
-    fn total(counts: ServiceDataCounts) -> u64 {
-        counts.messages
-            + counts.files
-            + counts.keys
-            + counts.settings
-            + counts.sessions
-            + counts.account_records
-    }
-
-    #[test]
-    fn task_3709_keeps_twelve_items_until_after_the_stopped_account_deadline() {
-        let dir = tempfile::tempdir().expect("temporary service-data directory");
-        let mut store = UsageCounterStore::open(dir.path()).expect("open service-data store");
-
-        seed_two_of_each_kind(&mut store, STOPPED_ACCOUNT);
-        seed_two_of_each_kind(&mut store, OTHER_ACCOUNT);
-        store
-            .stop_account_at(STOPPED_ACCOUNT, STOPPED_AT)
-            .expect("stop the account at the test clock");
-
-        let stopped_before = store
-            .service_data_counts(STOPPED_ACCOUNT)
-            .expect("count stopped account before cleanup");
-        let other_before = store
-            .service_data_counts(OTHER_ACCOUNT)
-            .expect("count other account before cleanup");
-        assert_eq!(stopped_before, two_of_each_kind());
-        assert_eq!(other_before, two_of_each_kind());
-        assert_eq!(total(stopped_before), 12, "stopped total before cleanup");
-
-        let deadline = STOPPED_AT + STOPPED_ACCOUNT_RETENTION_DAYS * SECONDS_PER_DAY;
-        let early_purge = store
-            .purge_due_stopped_accounts_at(deadline - MINUTE_SECONDS)
-            .expect("run cleanup one minute before the deadline");
-        assert!(
-            early_purge.is_empty(),
-            "cleanup must not purge before the deadline"
-        );
-        let stopped_one_minute_before = store
-            .service_data_counts(STOPPED_ACCOUNT)
-            .expect("count stopped account one minute before deadline");
-        assert_eq!(stopped_one_minute_before, two_of_each_kind());
-        assert_eq!(
-            total(stopped_one_minute_before),
-            12,
-            "stopped total one minute before deadline"
-        );
-
-        let late_purge = store
-            .purge_due_stopped_accounts_at(deadline + MINUTE_SECONDS)
-            .expect("run cleanup one minute after the deadline");
-        assert_eq!(late_purge.len(), 1, "exactly the due account is purged");
-        assert_eq!(late_purge[0].person_id, STOPPED_ACCOUNT);
-        assert_eq!(late_purge[0].deleted, two_of_each_kind());
-        assert_eq!(total(late_purge[0].deleted), 12, "purge deleted total");
-
-        let stopped_one_minute_after = store
-            .service_data_counts(STOPPED_ACCOUNT)
-            .expect("count stopped account one minute after deadline");
-        let other_after = store
-            .service_data_counts(OTHER_ACCOUNT)
-            .expect("count other account after both cleanup runs");
-        assert_eq!(stopped_one_minute_after, ServiceDataCounts::default());
-        assert_eq!(other_after, two_of_each_kind());
-        assert_eq!(
-            total(stopped_one_minute_after),
-            0,
-            "stopped total one minute after deadline"
-        );
-        assert_eq!(total(other_after), 12, "other account total after cleanup");
-
-        println!(
-            "TASK3709 before={} one_minute_before={} one_minute_after={} other={}",
-            total(stopped_before),
-            total(stopped_one_minute_before),
-            total(stopped_one_minute_after),
-            total(other_after),
-        );
-    }
 }

@@ -8,7 +8,7 @@ use ipc::state::AppState;
 use tempfile::TempDir;
 
 #[test]
-fn whatsapp_kinds_command_returns_exactly_three_named_kinds() {
+fn whatsapp_kinds_command_returns_exactly_six_named_kinds() {
     let kinds = cmd_osl_list_whatsapp_whitelist_kinds().expect("whatsapp whitelist kinds");
     let legacy_name =
         cmd_osl_get_whatsapp_whitelist_kinds().expect("legacy whatsapp whitelist kinds command");
@@ -20,7 +20,17 @@ fn whatsapp_kinds_command_returns_exactly_three_named_kinds() {
         names.join(", ")
     );
     assert_eq!(kinds, legacy_name);
-    assert_eq!(names, vec!["direct message", "group chat", "channel"]);
+    assert_eq!(
+        names,
+        vec![
+            "direct message",
+            "group chat",
+            "channel",
+            "community",
+            "community group",
+            "broadcast list"
+        ]
+    );
     assert_eq!(
         kinds
             .iter()
@@ -29,7 +39,10 @@ fn whatsapp_kinds_command_returns_exactly_three_named_kinds() {
         vec![
             "whatsapp:direct_message",
             "whatsapp:group_chat",
-            "whatsapp:channel"
+            "whatsapp:channel",
+            "whatsapp:community",
+            "whatsapp:community_group",
+            "whatsapp:broadcast_list"
         ]
     );
     assert_eq!(
@@ -37,7 +50,14 @@ fn whatsapp_kinds_command_returns_exactly_three_named_kinds() {
             .iter()
             .map(|kind| kind.allowed_place_kind.as_str())
             .collect::<Vec<_>>(),
-        vec!["direct_message", "group_chat", "channel"]
+        vec![
+            "direct_message",
+            "group_chat",
+            "channel",
+            "community",
+            "community_group",
+            "broadcast_list"
+        ]
     );
 }
 

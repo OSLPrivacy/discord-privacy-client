@@ -18,6 +18,11 @@ interface RedemptionRow {
   expires_at: number | null;
 }
 
+function revokedMessage(reason: string | null): string | undefined {
+  if (reason === "manual") return "this code was refunded";
+  return undefined;
+}
+
 export async function handleLicenseRedeem(
   request: Request,
   env: Env,
@@ -82,7 +87,7 @@ export async function handleLicenseRedeem(
   ).bind(licenseHash).first<RedemptionRow>();
   if (!license) return json({ status: "UNKNOWN", checksum_ok: true });
   if (license.revoked_at !== null) {
-    const message = revokedLicenseMessage(license);
+    const message = revokedLicenseMessage(license) ?? revokedMessage(license.revoked_reason);
     return json({
       status: "REVOKED",
       checksum_ok: true,

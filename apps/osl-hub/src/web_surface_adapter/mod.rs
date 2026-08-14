@@ -10,6 +10,7 @@ use std::fmt;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WebPageControlRefusal {
     MissingBody,
+    BodyNotEditable,
     MissingSend,
 }
 
@@ -17,6 +18,7 @@ impl fmt::Display for WebPageControlRefusal {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
             WebPageControlRefusal::MissingBody => "missing Body",
+            WebPageControlRefusal::BodyNotEditable => "GMX Body not editable",
             WebPageControlRefusal::MissingSend => "missing Send",
         })
     }
@@ -25,6 +27,7 @@ impl fmt::Display for WebPageControlRefusal {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct WebPageControls {
     pub body_present: bool,
+    pub body_editable: bool,
     pub send_present: bool,
 }
 
@@ -32,6 +35,7 @@ impl WebPageControls {
     pub const fn complete() -> Self {
         Self {
             body_present: true,
+            body_editable: true,
             send_present: true,
         }
     }
@@ -40,6 +44,9 @@ impl WebPageControls {
         if !self.body_present {
             return Err(WebPageControlRefusal::MissingBody);
         }
+        if !self.body_editable {
+            return Err(WebPageControlRefusal::BodyNotEditable);
+        }
         if !self.send_present {
             return Err(WebPageControlRefusal::MissingSend);
         }
@@ -47,6 +54,27 @@ impl WebPageControls {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WebPlacementCommandAction {
+    Place,
+    Submit,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WebPlacementCommandRefusal {
+    PlacementCannotSubmit,
+}
+
+impl fmt::Display for WebPlacementCommandRefusal {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            WebPlacementCommandRefusal::PlacementCannotSubmit => "placement cannot submit",
+        })
+    }
+}
+
+/// AOL Mail fake page target map for the task 1257 email flow.
+pub mod aol;
 /// GMX Mail target map. Kept as service-local data until a live GMX backend
 /// proves the fixed-origin controls against a signed-in account.
 pub mod gmx;
@@ -150,6 +178,21 @@ impl<B: WebSurfaceBackend> WebSurfaceAdapter<B> {
             elapsed_ms: 0,
         }
     }
+
+    pub fn run_placement_command(
+        &self,
+        binding: &SurfaceBinding,
+        authorization: &PlacementAuthorization,
+        carrier: &Carrier,
+        requested_action: WebPlacementCommandAction,
+    ) -> Result<PlacementReceipt, WebPlacementCommandRefusal> {
+        match requested_action {
+            WebPlacementCommandAction::Place => Ok(self.place(binding, authorization, carrier)),
+            WebPlacementCommandAction::Submit => {
+                Err(WebPlacementCommandRefusal::PlacementCannotSubmit)
+            }
+        }
+    }
 }
 
 impl<B: WebSurfaceBackend> SurfaceAdapter for WebSurfaceAdapter<B> {
@@ -208,10 +251,7 @@ impl<B: WebSurfaceBackend> SurfaceAdapter for WebSurfaceAdapter<B> {
         carrier: &Carrier,
     ) -> PlacementReceipt {
         if !self.validates_binding(binding)
-            || !same_scope(
-                &binding.scope_binding_hash,
-                authorization.scope_binding_hash(),
-            )
+            || !same_scope_and_message_box(binding, authorization)
             || !self.supports(adapter_profile::Capability::PlaceProtectedPayload)
         {
             return Self::placement_refused();
@@ -459,7 +499,7 @@ mod tests {
             adapter
                 .place(
                     &stale,
-                    &PlacementAuthorization::for_scope("scope"),
+                    &PlacementAuthorization::for_scope_and_provider("scope", "gmail").unwrap(),
                     &Carrier("carrier".into()),
                 )
                 .status,

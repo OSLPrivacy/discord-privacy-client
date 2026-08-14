@@ -4,6 +4,7 @@
 //! a Tor choice with no ready tunnel is a refusal, never permission to use a
 //! direct client.
 
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -11,7 +12,7 @@ use std::sync::{Arc, Mutex};
 use ipc::cipher_store_client::CipherStoreClient;
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
-use transport::tor::{ArtiProxyConfig, TorTransport};
+use transport::tor::{TorSidecarConfig, TorTransport};
 
 const PREFERENCE_FILE_VERSION: u8 = 1;
 const MAX_PREFERENCE_BYTES: u64 = 1024;
@@ -75,7 +76,7 @@ impl AuthorizedStoreRoute {
                 }
                 _ => "OSL store transport is unavailable".to_owned(),
             }),
-            Self::Tor { http } => Ok(CipherStoreClient::with_http_client(base_url, http.clone())),
+            Self::Tor { http } => Ok(CipherStoreClient::with_tor_http_client(base_url, http.clone())),
         }
     }
 
@@ -88,7 +89,7 @@ impl AuthorizedStoreRoute {
             Self::Direct => Ok(None),
             Self::Tor { http } => {
                 let base_url = ipc::commands::resolve_keyserver_base_url(config_dir);
-                keystore::KeyServerClient::with_http_client(base_url, http.clone())
+                keystore::KeyServerClient::with_tor_http_client(base_url, http.clone())
                     .map(Some)
                     .map_err(|_| "OSL key server transport is unavailable".to_owned())
             }
@@ -98,15 +99,19 @@ impl AuthorizedStoreRoute {
 
 #[derive(Clone)]
 struct TorClientFactory {
+    /// The loopback address the sidecar reported for its SOCKS listener;
+    /// `None` only for test factories that inject a ready client directly.
+    socks_addr: Option<SocketAddr>,
     store_client: Arc<dyn Fn() -> Result<Client, String> + Send + Sync>,
 }
 
 impl TorClientFactory {
-    fn new<F>(store_client: F) -> Self
+    fn new<F>(socks_addr: Option<SocketAddr>, store_client: F) -> Self
     where
         F: Fn() -> Result<Client, String> + Send + Sync + 'static,
     {
         Self {
+            socks_addr,
             store_client: Arc::new(store_client),
         }
     }
@@ -126,40 +131,25 @@ struct PersistedPreference {
 /// The native authority for the route selected during onboarding.
 ///
 /// A missing or malformed preference is deliberately kept as `None`: network
-/// operations then refuse before a store request is constructed. T1-71 owns
-/// tunnel lifecycle; until it reports a ready tunnel, a Tor choice also
-/// refuses rather than falling back to direct traffic.
+/// operations then refuse before a store request is constructed. The hub owns
+/// the sidecar lifecycle; until the sidecar reports its listening address, a
+/// Tor choice also refuses rather than falling back to direct traffic.
 pub struct TorPreferenceState {
     path: PathBuf,
     preference: Mutex<Option<TorPreference>>,
-    tor_config: Option<ArtiProxyConfig>,
-    /// Why no sidecar is available (e.g. the packaged osl-tor-sidecar file
-    /// is missing). Choosing Tor while this is set refuses with this exact
-    /// message instead of silently accepting a route that can never start.
-    tor_refusal: Option<String>,
+    tor_config: Option<TorSidecarConfig>,
     tor_client: Mutex<Option<TorClientFactory>>,
 }
 
 impl TorPreferenceState {
     pub fn load(path: PathBuf) -> Self {
-        Self::load_with_arti_proxy_config(path, None)
+        Self::load_with_tor_sidecar_config(path, None)
     }
 
-    pub fn load_with_arti_proxy_config(path: PathBuf, tor_config: Option<ArtiProxyConfig>) -> Self {
-        Self::load_with_arti_proxy_resolution(path, tor_config.ok_or(None))
-    }
-
-    /// Load with the outcome of sidecar resolution: either a launchable
-    /// config, or the reason none exists. `Err(None)` keeps the legacy
-    /// "no Tor configured, refuse quietly at authorization" behavior.
-    pub fn load_with_arti_proxy_resolution(
+    pub fn load_with_tor_sidecar_config(
         path: PathBuf,
-        resolution: Result<ArtiProxyConfig, Option<String>>,
+        tor_config: Option<TorSidecarConfig>,
     ) -> Self {
-        let (tor_config, tor_refusal) = match resolution {
-            Ok(config) => (Some(config), None),
-            Err(refusal) => (None, refusal),
-        };
         let preference = read_preference(&path).unwrap_or(None);
         let tor_client = if preference == Some(TorPreference::Tor) {
             tor_config
@@ -172,7 +162,6 @@ impl TorPreferenceState {
             path,
             preference: Mutex::new(preference),
             tor_config,
-            tor_refusal,
             tor_client: Mutex::new(tor_client),
         };
         state.publish_process_route();
@@ -189,9 +178,19 @@ impl TorPreferenceState {
             path,
             preference: Mutex::new(preference),
             tor_config: None,
-            tor_refusal: None,
-            tor_client: Mutex::new(Some(TorClientFactory::new(factory))),
+            tor_client: Mutex::new(Some(TorClientFactory::new(None, factory))),
         }
+    }
+
+    /// The SOCKS address of the tunnel the hub currently holds, exactly as
+    /// the sidecar reported it on its status channel. `None` while no
+    /// sidecar-owned tunnel is up; the hub has no other source for a port.
+    pub fn tor_socks_addr(&self) -> Result<Option<SocketAddr>, String> {
+        let tor_client = self
+            .tor_client
+            .lock()
+            .map_err(|_| "OSL Tor transport state is unavailable".to_owned())?;
+        Ok(tor_client.as_ref().and_then(|factory| factory.socks_addr))
     }
 
     pub fn preference(&self) -> Result<Option<TorPreference>, String> {
@@ -199,6 +198,15 @@ impl TorPreferenceState {
             .lock()
             .map(|preference| *preference)
             .map_err(|_| "OSL network preference is unavailable".to_owned())
+    }
+
+    /// Exact SOCKS address reported by the hub-owned sidecar, when running.
+    /// This is diagnostic metadata; route construction uses the same factory.
+    pub fn owned_socks_addr(&self) -> Result<Option<std::net::SocketAddr>, String> {
+        self.tor_client
+            .lock()
+            .map(|factory| factory.as_ref().and_then(|factory| factory.socks_addr))
+            .map_err(|_| "OSL Tor transport state is unavailable".to_owned())
     }
 
     pub fn set_preference(&self, preference: TorPreference) -> Result<TorPreference, String> {
@@ -284,14 +292,6 @@ impl TorPreferenceState {
                 *tor_client = None;
             }
             TorPreference::Tor if tor_client.is_none() => {
-                // No sidecar at all is a named refusal at selection time:
-                // the user must not be allowed to "choose" a route whose
-                // launcher is known to be missing from the installation.
-                if self.tor_config.is_none() {
-                    if let Some(refusal) = &self.tor_refusal {
-                        return Err(refusal.clone());
-                    }
-                }
                 *tor_client = self
                     .tor_config
                     .clone()
@@ -320,88 +320,114 @@ impl TorPreferenceState {
     }
 }
 
-/// File name of the Tor sidecar that Tauri packages next to the hub
-/// executable (`bundle.externalBin` in tauri.conf.json).
-pub const TOR_SIDECAR_FILE_NAME: &str = if cfg!(windows) {
-    "osl-tor-sidecar.exe"
-} else {
-    "osl-tor-sidecar"
-};
-
-/// Where the packaged sidecar lives: the directory of the running
-/// executable. This is Tauri's external-binary contract on every bundle
-/// format this app ships (NSIS install dir, deb/rpm usr/bin).
-pub fn bundled_tor_sidecar_path() -> Result<PathBuf, String> {
-    let exe = std::env::current_exe()
-        .map_err(|_| "OSL could not resolve its own executable path".to_owned())?;
-    let dir = exe
-        .parent()
-        .ok_or_else(|| "OSL executable has no parent directory".to_owned())?;
-    Ok(dir.join(TOR_SIDECAR_FILE_NAME))
+/// Locate the signed OSL Tor sidecar, preferring the explicit developer
+/// override and otherwise using the exact binary packaged beside the app.
+pub fn tor_sidecar_config_from_env_or_bundle(config_dir: &Path) -> Option<TorSidecarConfig> {
+    if let Some(program) =
+        std::env::var_os("OSL_ARTI_PROXY_PATH").or_else(|| std::env::var_os("OSL_ARTI_PROXY"))
+    {
+        let mut config = default_tor_sidecar_config(program, config_dir, "tor-sidecar");
+        if let Ok(args) = std::env::var("OSL_ARTI_PROXY_ARGS") {
+            config.args = args
+                .split_whitespace()
+                .filter(|part| !part.is_empty())
+                .map(str::to_owned)
+                .collect();
+        }
+        return Some(config);
+    }
+    bundled_tor_sidecar_config_from_executable(&std::env::current_exe().ok()?, config_dir)
 }
 
-/// Find the Tor sidecar executable for this run.
-///
-/// An explicit `OSL_ARTI_PROXY_PATH` override wins (development and tests);
-/// otherwise the sidecar packaged next to the app executable is used. A
-/// missing packaged sidecar is a refusal that names the missing file --
-/// never a silent fallback to some other Tor implementation on the machine.
+/// Resolve the exact sidecar program used by this run and refuse a missing
+/// packaged binary instead of silently selecting another Tor installation.
 pub fn resolve_tor_sidecar_program() -> Result<PathBuf, String> {
-    if let Some(config) = arti_proxy_config_from_env() {
-        return Ok(config.program);
+    if let Some(program) =
+        std::env::var_os("OSL_ARTI_PROXY_PATH").or_else(|| std::env::var_os("OSL_ARTI_PROXY"))
+    {
+        return Ok(program.into());
     }
-    let path = bundled_tor_sidecar_path()?;
+    let executable = std::env::current_exe()
+        .map_err(|_| "OSL could not resolve its own executable path".to_owned())?;
+    let path = executable
+        .parent()
+        .ok_or_else(|| "OSL executable has no parent directory".to_owned())?
+        .join(bundled_sidecar_name());
     if path.is_file() {
         Ok(path)
     } else {
         Err(format!(
-            "OSL refuses to start Tor: the packaged {TOR_SIDECAR_FILE_NAME} is missing at {}",
+            "OSL refuses to start Tor: the packaged {} is missing at {}",
+            bundled_sidecar_name(),
             path.display()
         ))
     }
 }
 
-/// Resolve the full sidecar launch configuration.
-///
-/// The env override keeps its own args (`OSL_ARTI_PROXY_ARGS`). The packaged
-/// sidecar is told to listen on the transport's fixed loopback SOCKS address
-/// and to keep Arti state under the app's local data directory, so no Tor
-/// material lands outside OSL-owned paths.
-pub fn resolve_arti_proxy_config(tor_data_dir: &Path) -> Result<ArtiProxyConfig, String> {
-    if let Some(config) = arti_proxy_config_from_env() {
-        return Ok(config);
-    }
-    let program = resolve_tor_sidecar_program()?;
-    let mut config = ArtiProxyConfig::new(program);
+/// Build the production sidecar configuration from a known packaged app path.
+pub fn bundled_tor_sidecar_config_from_executable(
+    application_executable: &Path,
+    config_dir: &Path,
+) -> Option<TorSidecarConfig> {
+    let package_dir = application_executable.parent()?;
+    Some(default_tor_sidecar_config(
+        package_dir.join(bundled_sidecar_name()),
+        config_dir,
+        "tor-sidecar",
+    ))
+}
+
+/// Compatibility name retained for focused packaging tests from the earlier
+/// Arti-proxy implementation.
+pub fn bundled_arti_proxy_config_from_executable(
+    application_executable: &Path,
+    config_dir: &Path,
+) -> Option<TorSidecarConfig> {
+    let package_dir = application_executable.parent()?;
+    Some(default_tor_sidecar_config(
+        package_dir.join(bundled_sidecar_name()),
+        config_dir,
+        "arti",
+    ))
+}
+
+fn default_tor_sidecar_config(
+    program: impl Into<PathBuf>,
+    config_dir: &Path,
+    data_directory: &str,
+) -> TorSidecarConfig {
+    let mut config = TorSidecarConfig::new(program);
+    let tor_data = config_dir.join(data_directory);
     config.args = vec![
+        "--dial-mode".to_owned(),
+        "tor".to_owned(),
         "--listen".to_owned(),
-        config.socks_addr.to_string(),
+        DEFAULT_BUNDLED_SOCKS_LISTEN.to_owned(),
         "--state-dir".to_owned(),
-        tor_data_dir.join("state").display().to_string(),
+        tor_data.join("state").to_string_lossy().into_owned(),
         "--cache-dir".to_owned(),
-        tor_data_dir.join("cache").display().to_string(),
+        tor_data.join("cache").to_string_lossy().into_owned(),
     ];
-    Ok(config)
+    config
 }
 
-pub fn arti_proxy_config_from_env() -> Option<ArtiProxyConfig> {
-    let program =
-        std::env::var_os("OSL_ARTI_PROXY_PATH").or_else(|| std::env::var_os("OSL_ARTI_PROXY"))?;
-    let mut config = ArtiProxyConfig::new(program);
-    if let Ok(args) = std::env::var("OSL_ARTI_PROXY_ARGS") {
-        config.args = args
-            .split_whitespace()
-            .filter(|part| !part.is_empty())
-            .map(str::to_owned)
-            .collect();
-    }
-    Some(config)
+const DEFAULT_BUNDLED_SOCKS_LISTEN: &str = "127.0.0.1:9150";
+
+#[cfg(target_os = "windows")]
+const fn bundled_sidecar_name() -> &'static str {
+    "osl-tor-sidecar.exe"
 }
 
-fn start_tor_client(config: ArtiProxyConfig) -> Result<TorClientFactory, String> {
+#[cfg(not(target_os = "windows"))]
+const fn bundled_sidecar_name() -> &'static str {
+    "osl-tor-sidecar"
+}
+
+fn start_tor_client(config: TorSidecarConfig) -> Result<TorClientFactory, String> {
     let transport =
         Arc::new(TorTransport::start(config).map_err(|_| "OSL Tor transport is unavailable")?);
-    Ok(TorClientFactory::new(move || {
+    let socks_addr = transport.socks_addr();
+    Ok(TorClientFactory::new(Some(socks_addr), move || {
         transport
             .store_client()
             .map_err(|_| "OSL Tor transport is unavailable".to_owned())
@@ -838,12 +864,8 @@ mod tests {
         "reset_hub_main_password_after_recovery",
         "check_hub_password_reset_phrase",
         "check_hub_recovery_word_retype",
-        "pick_hub_recovery_kit_file",
-        "derive_hub_recovery_kit_identity",
         "get_hub_recovery_kit_unsaved",
         "set_hub_recovery_kit_unsaved",
-        "get_coach_tip_state",
-        "save_coach_tip_state",
         "lock_hub_session",
         "emit_active_session_reset",
         "get_hub_password_role_status",
@@ -909,6 +931,7 @@ mod tests {
         "request_native_discord_visible_row_qa_receipt",
         "send_native_discord_overlay_carrier",
         "set_native_discord_covertext_enabled",
+        "select_native_discord_covertext_writer",
         "get_native_discord_overlay_state",
         "set_native_discord_overlay_security",
         "prepare_native_discord_overlay_text",
@@ -1024,6 +1047,7 @@ mod tests {
         "get_hub_revocation_status",
         "ai_carrier_status",
         "set_ai_carrier_preview_enabled",
+        "set_ai_covertext_selected",
         "build_integrity_status",
         "verify_peer_build_integrity",
         "list_bad_message_rules",

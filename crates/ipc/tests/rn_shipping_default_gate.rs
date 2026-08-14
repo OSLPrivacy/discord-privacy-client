@@ -222,6 +222,7 @@ fn new_eligible_direct_chat_reports_forward_secrecy_on_without_user_setting() {
     let config_dir = tempfile::tempdir().expect("isolated OSL config dir");
     let _config_guard = use_osl_config_dir(config_dir.path());
     let alice = generate_identity("rn-default-alice".to_owned());
+    let alice_pub = *alice.x25519_public.as_bytes();
     let bob = generate_identity("rn-default-bob".to_owned());
     let port = start_keyserver(vec![
         ("GET /v1/pubkeys/", signed_pubkeys_response(&bob)),
@@ -253,7 +254,7 @@ fn new_eligible_direct_chat_reports_forward_secrecy_on_without_user_setting() {
         .expect("load persisted RN session")
         .is_some();
     let pin_rn = store
-        .load_pin(bob.x25519_public.as_bytes())
+        .load_pair_pin(&alice_pub, bob.x25519_public.as_bytes())
         .expect("load RN pin")
         .is_pinned_to_rn();
     assert!(
@@ -276,6 +277,7 @@ fn direct_chat_peer_downgrade_command_is_refused_and_saved_state_is_unchanged() 
     let config_dir = tempfile::tempdir().expect("isolated OSL config dir");
     let _config_guard = use_osl_config_dir(config_dir.path());
     let alice = generate_identity("rn-downgrade-alice".to_owned());
+    let alice_pub = *alice.x25519_public.as_bytes();
     let bob = generate_identity("rn-downgrade-bob".to_owned());
     let (port, requests) = start_keyserver_with_request_log(vec![
         ("GET /v1/pubkeys/", signed_pubkeys_response(&bob)),
@@ -306,7 +308,7 @@ fn direct_chat_peer_downgrade_command_is_refused_and_saved_state_is_unchanged() 
         .expect("load agreed RN session")
         .is_some());
     assert!(store
-        .load_pin(bob.x25519_public.as_bytes())
+        .load_pair_pin(&alice_pub, bob.x25519_public.as_bytes())
         .expect("load agreed RN pin")
         .is_pinned_to_rn());
     let (before_sha256, before_files) = snapshot_rn_saved_state(config_dir.path());
@@ -335,7 +337,7 @@ fn direct_chat_peer_downgrade_command_is_refused_and_saved_state_is_unchanged() 
         "refused downgrade must leave saved RN state bytes unchanged"
     );
     assert!(store
-        .load_pin(bob.x25519_public.as_bytes())
+        .load_pair_pin(&alice_pub, bob.x25519_public.as_bytes())
         .expect("reload RN pin after refusal")
         .is_pinned_to_rn());
 

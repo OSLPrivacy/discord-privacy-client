@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>OSL friend account reach fixture</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+    <style>
+      body { min-height: 100vh; display: grid; place-items: center; margin: 0; padding: 40px; background: var(--bg); }
+      .friend-page { width: min(100%, 720px); padding: 30px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); box-shadow: var(--shadow); }
+      .friend-page header { display: flex; align-items: center; gap: 14px; padding-bottom: 22px; border-bottom: 1px solid var(--line); }
+      .friend-avatar { display: grid; width: 46px; height: 46px; place-items: center; border-radius: 50%; background: #155e75; color: #ecfeff; font-size: 19px; font-weight: 750; }
+      .friend-page h1 { margin: 0; font-size: 24px; line-height: 1.15; }
+      .friend-page header p { margin: 4px 0 0; color: var(--muted); font-size: 14px; }
+      .friend-page section { margin-top: 24px; }
+      .friend-page section > p { margin: 6px 0 16px; color: var(--muted); font-size: 14px; line-height: 1.45; }
+      .account-reach-sources { min-width: 0; margin: 0; padding: 0; border: 0; }
+      .account-reach-sources legend { padding: 0; color: var(--text); font-size: 17px; font-weight: 720; }
+      .account-reach-list { overflow: hidden; border: 1px solid var(--line); border-radius: 9px; background: var(--panel-2); }
+      .account-reach-item { display: flex; align-items: center; justify-content: space-between; min-height: 59px; padding: 0 18px; gap: 20px; color: var(--text); font-size: 16px; font-weight: 620; cursor: pointer; }
+      .account-reach-item + .account-reach-item { border-top: 1px solid var(--line); }
+      .account-reach-item span { overflow-wrap: anywhere; }
+      .account-reach-item input[type="checkbox"]:not(.sr-only) { position: relative; width: 28px; height: 28px; min-width: 28px; min-height: 28px; flex: 0 0 auto; margin: 0; appearance: none; border: 2px solid #94a3b8; border-radius: 5px; background: var(--panel); }
+      .account-reach-item input[type="checkbox"]:not(.sr-only):checked { border-color: var(--brand); background: var(--brand); }
+      .account-reach-item input[type="checkbox"]:not(.sr-only):checked::after { position: absolute; top: 3px; left: 8px; width: 7px; height: 13px; content: ""; border: solid #061218; border-width: 0 3px 3px 0; transform: rotate(45deg); }
+      .account-reach-item:has(input:focus-visible) { outline: 3px solid var(--brand); outline-offset: -3px; }
+      .state-key { display: flex; gap: 17px; margin: 14px 0 0; color: var(--muted); font-size: 13px; }
+      .state-key span { display: inline-flex; align-items: center; gap: 6px; }
+      .state-key i { display: inline-block; width: 12px; height: 12px; border: 1px solid var(--muted); border-radius: 3px; }
+      .state-key .on { border-color: var(--brand); background: var(--brand); }
+    </style>
+  </head>
+  <body>
+    <main class="friend-page" aria-label="Friend page for Vera">
+      <header><div class="friend-avatar" aria-hidden="true">V</div><div><h1>Vera</h1><p>Friend settings</p></div></header>
+      <section aria-labelledby="account-reach-heading">
+        <h2 id="account-reach-heading" class="sr-only">Account reach</h2>
+        <p>Choose which of your accounts Vera can reach.</p>
+        <div id="account-reach-fixture"></div>
+        <p class="state-key"><span><i class="on"></i>Ticked: can reach Vera</span><span><i></i>Unticked: cannot reach Vera</span></p>
+      </section>
+    </main>
+    <script type="module">
+      import { accountReachListMarkup } from "/src/account-reach-list.ts";
+      const accounts = [
+        { serviceId: "gmail", accountId: "gmail-primary", label: "Gmail (primary)", checked: true },
+        { serviceId: "discord", accountId: "discord-alt", label: "Discord (alt)", checked: false },
+        { serviceId: "signal", accountId: "signal-personal", label: "Signal (personal)", checked: true },
+        { serviceId: "telegram", accountId: "telegram-work", label: "Telegram (work)", checked: false },
+      ];
+      document.querySelector("#account-reach-fixture").innerHTML = accountReachListMarkup(accounts);
+      window.task0246Fixture = { accounts };
+      document.documentElement.dataset.fixtureReady = "task-0246";
+    </script>
+  </body>
+</html>

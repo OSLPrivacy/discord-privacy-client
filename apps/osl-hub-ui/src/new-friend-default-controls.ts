@@ -10,6 +10,27 @@ export interface NewFriendDefaultControlsModel {
   idPrefix?: string;
 }
 
+export const GET_NEW_FRIEND_DEFAULTS_COMMAND = "cmd_osl_get_new_friend_defaults";
+export const SAVE_NEW_FRIEND_DEFAULTS_COMMAND = "cmd_osl_save_new_friend_defaults";
+
+export type NewFriendDefaultsCommand =
+  | typeof GET_NEW_FRIEND_DEFAULTS_COMMAND
+  | typeof SAVE_NEW_FRIEND_DEFAULTS_COMMAND;
+
+/** The serde field names on ipc::commands::NewFriendDefaultsDto. */
+export interface NewFriendDefaultsDto {
+  account_reach: string;
+  auto_whitelist: string;
+  verification_warnings: string;
+}
+
+export interface NewFriendDefaultsCommandPort {
+  invoke(
+    command: NewFriendDefaultsCommand,
+    args?: { defaults: NewFriendDefaultsDto },
+  ): Promise<unknown>;
+}
+
 interface ControlChoice {
   value: string;
   label: string;
@@ -100,4 +121,95 @@ export function newFriendDefaultControlsFixtureMarkup(): string {
     busy: false,
     idPrefix: "task-0252-new-friend",
   })}</section>`;
+}
+
+function normalizedChoice(value: unknown): string {
+  return typeof value === "string"
+    ? value.trim().toLowerCase().replace(/[ -]/gu, "_")
+    : "";
+}
+
+/**
+ * The Rust command echoes human-readable auto-whitelist labels (for example,
+ * `only if a friend`) while the radio values use stable ids. Normalize both
+ * forms here so a save response and the following read draw the same choice.
+ */
+export function newFriendDefaultModelFromDto(raw: unknown): NewFriendDefaultControlsModel | null {
+  if (typeof raw !== "object" || raw === null) return null;
+  const dto = raw as Partial<NewFriendDefaultsDto>;
+  const accountReach = normalizedChoice(dto.account_reach);
+  const autoWhitelist = normalizedChoice(dto.auto_whitelist);
+  const verificationWarnings = normalizedChoice(dto.verification_warnings);
+  if (accountReach !== "approved_chats_only" && accountReach !== "all_shared_chats") return null;
+  if (!["never", "ask_me", "always", "only_if_a_friend"].includes(autoWhitelist)) return null;
+  if (verificationWarnings !== "always" && verificationWarnings !== "never") return null;
+  return {
+    accountReach,
+    autoWhitelist: autoWhitelist as NewFriendAutoWhitelist,
+    verificationWarnings,
+    busy: false,
+  };
+}
+
+export function newFriendDefaultsDtoFromControls(root: ParentNode): NewFriendDefaultsDto | null {
+  const checked = (control: string): string =>
+    root.querySelector<HTMLInputElement>(
+      `[data-new-friend-control="${control}"] input[type="radio"]:checked`,
+    )?.value ?? "";
+  const model = newFriendDefaultModelFromDto({
+    account_reach: checked("account-reach"),
+    auto_whitelist: checked("auto-whitelist"),
+    verification_warnings: checked("verification-warnings"),
+  });
+  return model ? {
+    account_reach: model.accountReach,
+    auto_whitelist: model.autoWhitelist,
+    verification_warnings: model.verificationWarnings,
+  } : null;
+}
+
+export async function loadNewFriendDefaults(
+  port: NewFriendDefaultsCommandPort,
+): Promise<NewFriendDefaultControlsModel | null> {
+  return newFriendDefaultModelFromDto(await port.invoke(GET_NEW_FRIEND_DEFAULTS_COMMAND));
+}
+
+export async function saveNewFriendDefaults(
+  root: ParentNode,
+  port: NewFriendDefaultsCommandPort,
+): Promise<NewFriendDefaultControlsModel | null> {
+  const defaults = newFriendDefaultsDtoFromControls(root);
+  if (!defaults) return null;
+  const saved = await port.invoke(SAVE_NEW_FRIEND_DEFAULTS_COMMAND, { defaults });
+  return newFriendDefaultModelFromDto(saved);
+}
+
+/**
+ * Connect the gate-0252 button to the actual defaults write. Only a response
+ * containing all three saved choices is reported as success. While the write
+ * is in flight, every control is disabled so a later click cannot be mistaken
+ * for the values that were sent.
+ */
+export function connectNewFriendDefaultControls(
+  root: ParentNode,
+  port: NewFriendDefaultsCommandPort,
+  onSaved: (saved: NewFriendDefaultControlsModel) => void = () => undefined,
+): () => void {
+  const save = root.querySelector<HTMLButtonElement>('[data-new-friend-action="save-defaults"]');
+  if (!save) return () => undefined;
+  const fields = [...root.querySelectorAll<HTMLInputElement>("input[data-new-friend-choice]")];
+  const handleSave = async (): Promise<void> => {
+    save.disabled = true;
+    fields.forEach((field) => { field.disabled = true; });
+    try {
+      const saved = await saveNewFriendDefaults(root, port);
+      if (saved) onSaved(saved);
+    } finally {
+      save.disabled = false;
+      fields.forEach((field) => { field.disabled = false; });
+    }
+  };
+  const listener = (): void => { void handleSave(); };
+  save.addEventListener("click", listener);
+  return () => save.removeEventListener("click", listener);
 }

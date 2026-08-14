@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="stylesheet" href="/src/styles.css" />
+    <title>Look</title>
+  </head>
+  <body>
+    <main class="content-viewport dashboard">
+      <div id="look-fixture-root"></div>
+      <script type="module">
+        import { applyLookState, defaultLookState, lookScreenMarkup } from "/src/look-screen.ts";
+        const fixtureLook = { ...defaultLookState, mode: "computer", named: "midnight", accent: "violet", corners: "soft", glow: true, text: "comfortable", spacing: "compact" };
+        applyLookState(document.documentElement, fixtureLook);
+        document.querySelector("#look-fixture-root").innerHTML = lookScreenMarkup(fixtureLook);
+      </script>
+    </main>
+  </body>
+</html>

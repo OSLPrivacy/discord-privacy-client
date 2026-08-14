@@ -48,21 +48,22 @@ import {
 } from "./endpoints/link.js";
 import { handleHealthz } from "./endpoints/healthz.js";
 import { handleLanding, handleRobots } from "./lib/landing.js";
-import { clientIp, error, json, notFound, serverError } from "./lib/http.js";
+import { clientIp, error, notFound, serverError } from "./lib/http.js";
 import { rateLimit, sweepRateCounters } from "./lib/rate-limit.js";
-import { CYCLE_MARKER } from "./lib/d2-proof-contract.js";
 import {
-  registerUploadReservation,
-  verifyUploadGrant,
-} from "./lib/upload-capacity.js";
-import { adaptPersonFacingResponse } from "./lib/person-facing-result.js";
+  limitDownloadResponse,
+  sweepTransferLimits,
+  withUploadTransferLimit,
+} from "./lib/transfer-limits.js";
+import { CYCLE_MARKER } from "./lib/d2-proof-contract.js";
+import { runAttachmentCleanupTimer } from "./lib/attachment-cleanup-timer.js";
+import { verifyStorageGrant } from "./lib/storage-grant.js";
 import {
   sweepExpired,
   sweepExpiredAttachments,
   sweepExpiredLinkGrantConsumptions,
   sweepExpiredLinks,
 } from "./lib/sweep.js";
-import { drainTerminalRetentionReports } from "./lib/retention-cleanup-recovery.js";
 
 // Wrangler resolves Durable Object classes from the Worker module's exports.
 // Keeping this re-export beside the default Worker entry makes the binding in
@@ -80,18 +81,19 @@ export default {
   ): Promise<Response> {
     void ctx;
     try {
-      return await adaptPersonFacingResponse(request, await dispatch(request, env));
+      return limitDownloadResponse(await dispatch(request, env), env, clientIp(request));
     } catch {
       console.error("[fetch] unhandled failure");
-      return await adaptPersonFacingResponse(request, serverError());
+      return serverError();
     }
   },
 
   async scheduled(
-    _event: ScheduledEvent,
+    event: ScheduledEvent,
     env: Env,
     _ctx: ExecutionContext
   ): Promise<void> {
+    await runAttachmentCleanupTimer(env, event.scheduledTime);
     try {
       await sweepExpired(env);
     } catch {
@@ -113,11 +115,6 @@ export default {
       console.error("[attachment-sweep] failed");
     }
     try {
-      await drainTerminalRetentionReports(env);
-    } catch {
-      console.error("[retention-terminal-report] failed");
-    }
-    try {
       await sweepExpiredLinks(env);
     } catch {
       console.error("[link-sweep] failed");
@@ -132,13 +129,23 @@ export default {
     } catch {
       console.error("[rate-counter-sweep] failed");
     }
+    try {
+      await sweepTransferLimits(env);
+    } catch {
+      console.error("[transfer-limit-sweep] failed");
+    }
   },
 };
 
 async function dispatch(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
   const path = url.pathname;
-  const boundaryRequestId = request.headers.get("cf-ray")?.trim() || crypto.randomUUID();
+
+  if (path === "/v1/realtime") {
+    if (request.method !== "GET") return notFound();
+    const id = env.PUSH_CONNECTION.newUniqueId();
+    return env.PUSH_CONNECTION.get(id).fetch(request);
+  }
 
   if (path === "/v1/healthz" && request.method === "GET") {
     return handleHealthz(env);
@@ -157,14 +164,14 @@ async function dispatch(request: Request, env: Env): Promise<Response> {
 
   const linkFetchMatch = /^\/v\/([^/]{1,128})\/fetch$/.exec(path);
   if (linkFetchMatch && request.method === "POST") {
-    const rl = await rateLimit(env, clientIp(request), "link-fetch", { requestId: boundaryRequestId });
+    const rl = await rateLimit(env, clientIp(request), "link-fetch");
     if (!rl.allowed) return error(429, "rate_limited", "fetch rate limit hit");
     return handleLinkFetch(request, env, linkFetchMatch[1]!);
   }
 
   const linkBurnMatch = /^\/v\/([^/]{1,128})\/burn$/.exec(path);
   if (linkBurnMatch && request.method === "POST") {
-    const rl = await rateLimit(env, clientIp(request), "link-fetch", { requestId: boundaryRequestId });
+    const rl = await rateLimit(env, clientIp(request), "link-fetch");
     if (!rl.allowed) return error(429, "rate_limited", "fetch rate limit hit");
     return handleLinkBurn(request, env, linkBurnMatch[1]!);
   }
@@ -194,29 +201,22 @@ async function dispatch(request: Request, env: Env): Promise<Response> {
   }
   // ------------------------------------------------------------------
 
-  if (path === "/v1/upload-reservation" && request.method === "PUT") {
-    const reservation = await registerUploadReservation(request, env);
-    if (!reservation.ok) return error(reservation.status, reservation.code, reservation.message);
-    return json({
-      reservation_id: reservation.value.reservationId,
-      authority: reservation.value.authority,
-      capacity_bytes: reservation.value.capacityBytes,
-      effective_expiry: reservation.value.effectiveExpiry,
-    }, 201);
-  }
-
   if (path === "/v1/blob" && request.method === "PUT") {
-    // Verified reservations, rather than source address, bound large sold
-    // grants. This must precede body/R2 work and have no rate-limit bypass.
-    const grant = await verifyUploadGrant(request, env);
+    // Admission is checked before rate limiting, body reads, R2, or D1 blob
+    // state.  There must be no route around this one-time anonymous grant.
+    const grant = await verifyStorageGrant(request, env);
     if (!grant.ok) return error(grant.status, grant.code, grant.message);
-    return handleUpload(request, env, grant.value);
+    const rl = await rateLimit(env, clientIp(request), "upload");
+    if (!rl.allowed) {
+      return error(429, "rate_limited", "upload rate limit hit");
+    }
+    return withUploadTransferLimit(request, env, clientIp(request), (limited) => handleUpload(limited, env));
   }
 
   if (path === "/v1/attachment" && request.method === "POST") {
     const rl = await rateLimit(env, clientIp(request), "attachment-upload");
     if (!rl.allowed) return error(429, "rate_limited", "upload rate limit hit");
-    return handleAttachmentUpload(request, env);
+    return withUploadTransferLimit(request, env, clientIp(request), (limited) => handleAttachmentUpload(limited, env));
   }
 
   // Session creation has its own small budget: it reserves storage before any
@@ -232,12 +232,12 @@ async function dispatch(request: Request, env: Env): Promise<Response> {
   if (attachmentPartMatch && request.method === "PUT") {
     const rl = await rateLimit(env, clientIp(request), "attachment-upload");
     if (!rl.allowed) return error(429, "rate_limited", "upload rate limit hit");
-    return handleAttachmentPartUpload(
-      request,
+    return withUploadTransferLimit(request, env, clientIp(request), (limited) => handleAttachmentPartUpload(
+      limited,
       env,
       attachmentPartMatch[1]!,
       Number(attachmentPartMatch[2]),
-    );
+    ));
   }
 
   const attachmentCompleteMatch = /^\/v1\/attachment\/([0-9a-f]{32})\/complete$/.exec(path);
@@ -251,7 +251,7 @@ async function dispatch(request: Request, env: Env): Promise<Response> {
   if (attachmentMatch) {
     const id = attachmentMatch[1]!;
     if (request.method === "GET") {
-      const rl = await rateLimit(env, clientIp(request), "attachment-fetch", { requestId: boundaryRequestId });
+      const rl = await rateLimit(env, clientIp(request), "attachment-fetch");
       if (!rl.allowed) return error(429, "rate_limited", "fetch rate limit hit");
       return handleAttachmentFetch(request, env, id);
     }
@@ -275,7 +275,7 @@ async function dispatch(request: Request, env: Env): Promise<Response> {
   if (blobMatch) {
     const idHex = blobMatch[1]!;
     if (request.method === "GET") {
-      const rl = await rateLimit(env, clientIp(request), "fetch", { requestId: boundaryRequestId });
+      const rl = await rateLimit(env, clientIp(request), "fetch");
       if (!rl.allowed) {
         return error(429, "rate_limited", "fetch rate limit hit");
       }

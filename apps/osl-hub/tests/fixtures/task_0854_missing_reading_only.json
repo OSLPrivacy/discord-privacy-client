@@ -1,0 +1,67 @@
+{
+  "tiles": [
+    {
+      "tileId": "ready-control",
+      "capabilityFacts": {
+        "serviceId": "discord",
+        "placing": true,
+        "reading": true,
+        "opening": true,
+        "realTwoPersonProtectedMessaging": true
+      },
+      "deliveryProof": {
+        "serviceId": "discord",
+        "protectedMessageId": "protected-msg-0854",
+        "senderPersonId": "person-alice-0854",
+        "recipientPersonId": "person-bob-0854",
+        "protectedMessageReceived": true,
+        "receivedByRealOtherPerson": true
+      },
+      "statusData": { "generatedLabel": "Ready" }
+    },
+    {
+      "tileId": "placing-and-reading-control",
+      "capabilityFacts": {
+        "serviceId": "discord",
+        "placing": true,
+        "reading": true,
+        "opening": true,
+        "realTwoPersonProtectedMessaging": true
+      },
+      "statusData": { "generatedLabel": "Placing and reading" }
+    },
+    {
+      "tileId": "placing-only-control",
+      "capabilityFacts": {
+        "serviceId": "telegram",
+        "placing": true,
+        "reading": false,
+        "opening": true,
+        "realTwoPersonProtectedMessaging": false
+      },
+      "statusData": { "generatedLabel": "Placing only" }
+    },
+    {
+      "tileId": "opens-the-app-control",
+      "capabilityFacts": {
+        "serviceId": "email",
+        "placing": false,
+        "reading": false,
+        "opening": true,
+        "realTwoPersonProtectedMessaging": false
+      },
+      "statusData": { "generatedLabel": "Opens the app" }
+    },
+    {
+      "tileId": "not-started-control",
+      "capabilityFacts": {
+        "serviceId": "signal",
+        "placing": false,
+        "reading": false,
+        "opening": false,
+        "realTwoPersonProtectedMessaging": false
+      },
+      "statusData": { "generatedLabel": "Not started" }
+    }
+  ]
+}

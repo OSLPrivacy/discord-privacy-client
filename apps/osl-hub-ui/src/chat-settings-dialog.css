@@ -1,0 +1,206 @@
+/* The 380px chat sheet follows the OSLChats handoff rather than the generic
+   friends dialog. It is centred in the conversation pane (317px begins the
+   thread at the audit viewport), 40px below the 58px application header. */
+.osl-chat-settings-dialog {
+  position: fixed;
+  inset: 98px 0 auto 317px;
+  width: min(380px, calc(100vw - 349px));
+  height: min(661px, calc(100vh - 139px));
+  max-width: none;
+  max-height: none;
+  margin: 0 auto;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid #1e2326;
+  border-radius: 0;
+  background: #0b1013;
+  color: #f4f7f8;
+  box-shadow: none;
+  box-sizing: content-box;
+}
+
+.osl-chat-settings-dialog::backdrop {
+  background: linear-gradient(to right, transparent 0 317px, rgba(4, 7, 8, .68) 317px);
+  backdrop-filter: none;
+}
+
+.osl-chat-settings-card {
+  height: 100%;
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+.osl-chat-settings-card::-webkit-scrollbar { width: 0; height: 0; }
+
+.osl-chat-settings-top {
+  height: 42px;
+  padding: 0 18px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.osl-chat-settings-top .machine-fact,
+.osl-chat-settings-profile .machine-fact,
+.osl-chat-settings-actions span,
+.osl-chat-settings-groups h3,
+.osl-chat-settings-row > b {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.osl-chat-settings-top .machine-fact {
+  color: #4a555b;
+  font-size: 10.5px;
+  letter-spacing: .18em;
+}
+
+.osl-chat-settings-top > button {
+  width: 24px;
+  height: 24px;
+  padding: 0 2px;
+  border: 0;
+  background: transparent;
+  color: #5b666c;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.osl-chat-settings-top > button:hover { color: #f4f7f8; }
+
+.osl-chat-settings-profile {
+  padding: 15px 18px 20px;
+  border-bottom: 1px solid #161b1e;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+
+.osl-chat-settings-avatar {
+  width: 78px;
+  height: 78px;
+  display: grid;
+  place-items: center;
+  border-radius: 50% !important;
+  background: #2ac0f0;
+  color: #08161a;
+  font-size: 30px;
+  font-weight: 600;
+}
+
+.osl-chat-settings-profile > strong { font-size: 19px; font-weight: 600; }
+.osl-chat-settings-profile .machine-fact { font-size: 11px; letter-spacing: .1em; }
+.osl-chat-settings-profile .machine-fact.is-safe { color: #3dd68c; }
+.osl-chat-settings-profile .machine-fact.is-warning { color: #f0a93a; }
+
+.osl-chat-settings-actions {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  border-bottom: 1px solid #161b1e;
+}
+
+.osl-chat-settings-actions button {
+  min-height: 61px;
+  padding: 10px 2px;
+  border: 0;
+  border-right: 1px solid #161b1e;
+  background: transparent;
+  color: #8d989e;
+  display: grid;
+  justify-items: center;
+  align-content: center;
+  gap: 6px;
+  cursor: pointer;
+}
+
+.osl-chat-settings-actions button:last-child { border-right: 0; }
+.osl-chat-settings-actions button:hover { color: #2ac0f0; }
+.osl-chat-settings-actions b { font: 15px/1 var(--font-mono); font-weight: 400; }
+.osl-chat-settings-actions span { font-size: 9.5px; letter-spacing: .12em; }
+
+.osl-chat-settings-groups > section {
+  padding: 6px 0 10px;
+  border-bottom: 1px solid #161b1e;
+}
+
+.osl-chat-settings-groups > section:last-child { border-bottom: 0; }
+
+.osl-chat-settings-groups h3 {
+  margin: 0;
+  padding: 12px 18px 6px;
+  color: #3d474c;
+  font-size: 10px;
+  letter-spacing: .18em;
+}
+
+.osl-chat-settings-row {
+  width: 100%;
+  min-height: 0;
+  padding: 11px 18px;
+  border: 0;
+  background: transparent;
+  color: #f4f7f8;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  text-align: left;
+  cursor: pointer;
+  box-sizing: border-box;
+}
+
+.osl-chat-settings-row:hover { background: #10171a; }
+.osl-chat-settings-row.is-disabled { cursor: not-allowed; opacity: .55; }
+.osl-chat-settings-row > span:first-child { min-width: 0; flex: 1; }
+.osl-chat-settings-row strong, .osl-chat-settings-row small { display: block; }
+.osl-chat-settings-row strong { font-size: 13.5px; font-weight: 600; }
+.osl-chat-settings-row small { margin-top: 2px; color: #4a555b; font: 12px/1.35 var(--font-prose); text-wrap: pretty; }
+.osl-chat-settings-row > b { flex: 0 0 auto; color: #8d989e; font-size: 10.5px; letter-spacing: .12em; }
+.osl-chat-settings-row > b.is-lifetime { color: #f0b429; }
+.osl-chat-settings-row > b.is-cipher { color: #3dd68c; }
+
+.osl-chat-timer-value {
+  flex: 0 0 auto;
+  color: #f0b429;
+  font: 700 10.5px var(--font-mono);
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.osl-chat-timer-value { display: none; }
+.osl-chat-auto-delete:has(#osl-chat-auto-delete-off:checked) .is-off,
+.osl-chat-auto-delete:has(#osl-chat-auto-delete-1h:checked) .is-1h,
+.osl-chat-auto-delete:has(#osl-chat-auto-delete-24h:checked) .is-24h,
+.osl-chat-auto-delete:has(#osl-chat-auto-delete-7d:checked) .is-7d { display: block; }
+
+/* onOffToggle() is the single shared switch renderer. These dimensions mirror
+   its 9 August square-control ruling even on lanes whose shared CSS predates it. */
+.osl-chat-settings-dialog .osl-toggle { flex: 0 0 34px; }
+.osl-chat-settings-dialog .osl-toggle-track {
+  width: 34px;
+  height: 18px;
+  border-radius: 0 !important;
+}
+.osl-chat-settings-dialog .osl-toggle-knob {
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 0 !important;
+}
+.osl-chat-settings-dialog .osl-toggle input:checked + .osl-toggle-track .osl-toggle-knob { left: 18px; }
+
+.osl-chat-settings-groups > .is-danger h3,
+.osl-chat-settings-groups > .is-danger .osl-chat-settings-row:last-child strong,
+.osl-chat-settings-groups > .is-danger .is-danger-value { color: #e05656; }
+
+@media (max-width: 760px) {
+  .osl-chat-settings-dialog {
+    inset: 32px 16px auto;
+    width: auto;
+    height: calc(100vh - 64px);
+    margin: 0;
+  }
+  .osl-chat-settings-dialog::backdrop { background: rgba(4, 7, 8, .68); }
+}

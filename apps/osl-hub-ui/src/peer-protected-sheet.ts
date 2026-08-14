@@ -2,6 +2,8 @@ import { peerIsVerified, type HubPerson, type ManualPeerContext } from "./adapte
 import { LOCAL_TTL_OPTIONS, type LocalTtlSeconds } from "./local-protected-sheet";
 import { utf8Length } from "./overlay-state";
 import { COVER_MESSAGE_BOX_RULE, PROTECTED_TEXT_BOX_RULE } from "./protected-box-shortcuts";
+import { verificationTickMarkup, type AllowedPlaceDirectionStateModel } from "./verification-tick";
+import { VIEW_ONCE_DISPLAY_TRUTH, viewOnceControlMarkup } from "./view-once-tier";
 
 const PEER_PROTECTED_DRAFT_BYTES = 1_000;
 
@@ -22,6 +24,12 @@ export interface PeerProtectedSheetModel {
   pane: PeerProtectedPane;
   ttlSeconds: LocalTtlSeconds;
   viewOnce: boolean;
+  /**
+   * TASK 0594. Pro (or offline grace) on this device, which is what *creating*
+   * a view once message needs (0590). False draws the control off with both
+   * halves of the split in words. Opening one stays free (0591).
+   */
+  viewOnceCreationAllowed: boolean;
   decryptDisplayEnabled: boolean;
   busy: boolean;
   draft: string;
@@ -37,6 +45,12 @@ export interface PeerProtectedSheetModel {
    */
   handshakeConfirmed: boolean;
   status: string;
+  /**
+   * The compared direct-message whitelist directions for this conversation,
+   * as the backend reported them. Null until a comparison has been loaded;
+   * the verification tick draws only for a two-way report.
+   */
+  directionState: AllowedPlaceDirectionStateModel | null;
 }
 
 export function blankPeerProtectedModel(open = false): PeerProtectedSheetModel {
@@ -48,6 +62,7 @@ export function blankPeerProtectedModel(open = false): PeerProtectedSheetModel {
     pane: "write",
     ttlSeconds: LOCAL_TTL_OPTIONS[0],
     viewOnce: false,
+    viewOnceCreationAllowed: false,
     decryptDisplayEnabled: true,
     busy: false,
     draft: "",
@@ -57,6 +72,7 @@ export function blankPeerProtectedModel(open = false): PeerProtectedSheetModel {
     receipt: null,
     handshakeConfirmed: false,
     status: "",
+    directionState: null,
   };
 }
 
@@ -118,6 +134,18 @@ function ttlLabel(seconds: LocalTtlSeconds): string {
   return "7 days";
 }
 
+/** Render the canonical picker inside this detached sheet window. */
+function canonicalTtlPicker(id: string, value: LocalTtlSeconds): string {
+  const selectedLabel = ttlLabel(value);
+  const options = LOCAL_TTL_OPTIONS.map((seconds) => {
+    const selected = seconds === value;
+    const label = ttlLabel(seconds);
+    return `<button class="canonical-select-option" type="button" role="option" aria-selected="${selected}" data-value="${seconds}" data-label="${label}" onclick="const p=this.closest('.canonical-select');const s=p.querySelector('select');s.value=this.dataset.value;s.dispatchEvent(new Event('change',{bubbles:true}));p.querySelector('.canonical-select-trigger-label').textContent=this.dataset.label;p.querySelectorAll('.canonical-select-option').forEach((o)=>{const chosen=o===this;o.setAttribute('aria-selected',String(chosen));o.querySelector('input').checked=chosen;});p.closest('details').open=false;"><input tabindex="-1" aria-hidden="true" type="checkbox" ${selected ? "checked" : ""}/><span>${label}</span></button>`;
+  }).join("");
+  const nativeOptions = LOCAL_TTL_OPTIONS.map((seconds) => `<option value="${seconds}" ${value === seconds ? "selected" : ""}>${ttlLabel(seconds)}</option>`).join("");
+  return `<details class="canonical-select"><summary class="canonical-select-trigger" role="button" aria-haspopup="listbox"><span class="canonical-select-trigger-label">${selectedLabel}</span><span aria-hidden="true">⌄</span></summary><select class="canonical-select-native" id="${id}" tabindex="-1" aria-hidden="true">${nativeOptions}</select><div class="canonical-select-list" role="listbox" aria-label="Relay copy expires after">${options}</div></details>`;
+}
+
 function closeButton(): string {
   return `<button class="local-protected-close" id="local-protected-close" type="button" aria-label="Close protection">×</button>`;
 }
@@ -149,13 +177,19 @@ function approvalMarkup(model: PeerProtectedSheetModel): string {
 }
 
 function readyMarkup(model: PeerProtectedSheetModel): string {
-  const ttlOptions = LOCAL_TTL_OPTIONS.map((seconds) => `<option value="${seconds}" ${model.ttlSeconds === seconds ? "selected" : ""}>${ttlLabel(seconds)}</option>`).join("");
   const boundedDraft = boundedPeerProtectedDraft(model.draft);
   const write = `<form id="peer-protect-form" class="local-protected-form">
       <label for="peer-protected-draft">Message</label>
       <textarea id="peer-protected-draft" rows="5" autocomplete="off" spellcheck="true" data-osl-protected-box-rule="${PROTECTED_TEXT_BOX_RULE}" aria-describedby="peer-protected-draft-bytes" placeholder="Write privately">${escapeHtml(boundedDraft)}</textarea>
       <small id="peer-protected-draft-bytes" class="peer-draft-bytes" aria-live="polite">${peerProtectedDraftByteFeedback(boundedDraft)}</small>
-      <div class="local-protected-options"><label class="peer-ttl"><span>Relay copy expires after</span><select id="peer-protected-ttl">${ttlOptions}</select><small>Copies already opened remain.</small></label><label class="local-view-once"><span>View once</span><input id="peer-protected-view-once" type="checkbox" ${model.viewOnce ? "checked" : ""}/><small>View Once applies to protected text only; files and images are not view-once.</small></label></div>
+      <div class="local-protected-options"><label class="peer-ttl"><span>Relay copy expires after</span>${canonicalTtlPicker("peer-protected-ttl", model.ttlSeconds)}<small>Copies already opened remain.</small></label>${viewOnceControlMarkup({
+        id: "peer-protected-view-once",
+        layout: "compact",
+        className: "local-view-once",
+        checked: model.viewOnce,
+        creationAllowed: model.viewOnceCreationAllowed,
+        detail: VIEW_ONCE_DISPLAY_TRUTH,
+      })}</div>
       <button class="local-primary" type="submit" ${model.busy ? "disabled" : ""}>${model.busy ? "Encrypting…" : "Encrypt & copy"}</button>
       <small class="local-send-truth">OSL copies protected text. It never presses Send.</small>
     </form>
@@ -170,7 +204,7 @@ function readyMarkup(model: PeerProtectedSheetModel): string {
     ? `<div class="peer-message-receipt" role="status"><span>${model.receipt.direction === "sent" ? "You" : escapeHtml(model.displayName)}</span><strong>${model.receipt.state === "opened-once" ? "Received · opened once" : model.receipt.state === "received" ? "Received" : model.receipt.state === "sent" ? "Sent" : "Prepared"}</strong></div>`
     : "";
   return `<aside class="local-protected-sheet peer-protected-sheet ready" aria-labelledby="peer-protected-title">
-    <header><div><button class="peer-back" id="peer-protected-back" type="button">← Protect</button><h2 id="peer-protected-title">${escapeHtml(model.displayName)}</h2></div>${closeButton()}</header>
+    <header><div><button class="peer-back" id="peer-protected-back" type="button">← Protect</button><h2 id="peer-protected-title">${escapeHtml(model.displayName)}${verificationTickMarkup(model.directionState)}</h2></div>${closeButton()}</header>
     <nav class="local-protected-tabs" aria-label="Person-to-person protection"><button type="button" data-peer-pane="write" class="${model.pane === "write" ? "active" : ""}">Write</button><button type="button" data-peer-pane="open" class="${model.pane === "open" ? "active" : ""}">Open</button></nav>
     <div class="local-protected-body">${model.pane === "write" ? write : open}</div>
     ${receipt}<output class="local-protected-status" aria-live="polite">${escapeHtml(model.status)}</output>

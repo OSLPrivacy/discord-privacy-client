@@ -1,0 +1,70 @@
+{
+  "url": "http://127.0.0.1:5173/screenshots/task-0627-attachment-tray-fixture.html",
+  "window": {
+    "width": 1280,
+    "height": 800
+  },
+  "screen": {
+    "fixtureOs": "linux",
+    "addedCount": 2,
+    "cards": [
+      {
+        "kind": "picture",
+        "name": "harbour sunrise.png",
+        "type": "Picture · image/png",
+        "size": "418 KB",
+        "preview": "picture",
+        "previewDecoded": true,
+        "removeLabel": "Remove harbour sunrise.png",
+        "previewBox": {
+          "x": 54,
+          "y": 117.765625,
+          "width": 88,
+          "height": 66
+        }
+      },
+      {
+        "kind": "document",
+        "name": "Quarterly Report.pdf",
+        "type": "Document · application/pdf",
+        "size": "4 KB",
+        "preview": "none",
+        "previewDecoded": false,
+        "removeLabel": "Remove Quarterly Report.pdf",
+        "previewBox": {
+          "x": 54,
+          "y": 222.640625,
+          "width": 88,
+          "height": 66
+        }
+      }
+    ],
+    "cardCount": 2,
+    "previewCount": 1,
+    "removeCount": 2,
+    "text": "Attachments 2 files attached harbour sunrise.png Picture · image/png 418 KB Remove DOC Quarterly Report.pdf Document · application/pdf 4 KB Remove"
+  },
+  "facts": {
+    "width": 1280,
+    "height": 800,
+    "distinctColors": 2227,
+    "crops": {
+      "picturePreview": {
+        "width": 88,
+        "height": 67,
+        "pixels": 5896,
+        "distinctColors": 314,
+        "saturatedPixels": 5504,
+        "meanColor": "118,104,89"
+      },
+      "documentPreview": {
+        "width": 88,
+        "height": 67,
+        "pixels": 5896,
+        "distinctColors": 110,
+        "saturatedPixels": 87,
+        "meanColor": "34,34,34"
+      }
+    }
+  }
+}

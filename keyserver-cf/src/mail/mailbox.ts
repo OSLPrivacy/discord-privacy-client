@@ -41,9 +41,7 @@ interface MessageRow extends Record<string, SqlStorageValue> {
   opened_at: number | null;
 }
 
-export type MailAckResult =
-  | { deleted: boolean; replay: boolean }
-  | { deleted: false; replay: false; refused: "never_opened"; message_id: string };
+type MessageListRow = Omit<MessageRow, "ciphertext_b64" | "envelope_json" | "opened_at">;
 
 export class Mailbox extends DurableObject<Env> {
   private readonly sql: SqlStorage;
@@ -92,14 +90,16 @@ export class Mailbox extends DurableObject<Env> {
         PRIMARY KEY (bucket_start, recipient_user_id)
       ) WITHOUT ROWID;
     `);
-    this.addColumnIfMissing("messages", "opened_at", "INTEGER");
+    this.ensureColumn("messages", "opened_at", "INTEGER");
+    this.sql.exec(
+      "INSERT OR IGNORE INTO mailbox_state(key, value) VALUES ('dropped_without_acknowledgement', '0')",
+    );
   }
 
-  private addColumnIfMissing(table: string, column: string, definition: string): void {
-    const columns = this.sql.exec<{ name: string }>(`PRAGMA table_info(${table})`).toArray();
-    if (!columns.some((row) => row.name === column)) {
-      this.sql.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
-    }
+  private ensureColumn(table: string, column: string, definition: string): void {
+    const rows = this.sql.exec<{ name: string }>(`PRAGMA table_info(${table})`).toArray();
+    if (rows.some((row) => row.name === column)) return;
+    this.sql.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
   }
 
   private assertOwner(ownerUserId: string): void {
@@ -218,12 +218,12 @@ export class Mailbox extends DurableObject<Env> {
     return { stored: true, replay: false };
   }
 
-  list(ownerUserId: string, limit = 50): Omit<MessageRow, "ciphertext_b64" | "envelope_json">[] {
+  list(ownerUserId: string, limit = 50): MessageListRow[] {
     this.assertOwner(ownerUserId);
     const bounded = Math.max(1, Math.min(100, Math.trunc(limit)));
-    return this.sql.exec<Omit<MessageRow, "ciphertext_b64" | "envelope_json">>(
+    return this.sql.exec<MessageListRow>(
       `SELECT message_id, kind, sender_user_id, opaque_thread_token,
-       recipient_key_fingerprint, received_at, expires_at, byte_length
+       recipient_key_fingerprint, received_at, expires_at, byte_length, opened_at
        FROM messages WHERE expires_at > ? ORDER BY received_at DESC LIMIT ?`,
       Date.now(),
       bounded,
@@ -231,11 +231,9 @@ export class Mailbox extends DurableObject<Env> {
   }
 
   /**
-   * The one authoritative unread decision.  Arrival creates a row with a
-   * null `opened_at`; `fetchMessage` records the first time its ciphertext is
-   * handed to the client to show.  Keeping this beside those transitions makes
-   * the count durable across desktop restarts and prevents each caller from
-   * inventing its own definition of unread.
+   * The one authoritative unread decision. Arrival creates a row with a null
+   * `opened_at`; only an explicit mark records that the user handled it.
+   * Fetching is deliberately observational and cannot change this count.
    */
   unreadCount(ownerUserId: string): number {
     this.assertOwner(ownerUserId);
@@ -247,38 +245,36 @@ export class Mailbox extends DurableObject<Env> {
 
   fetchMessage(ownerUserId: string, messageId: string): MessageRow | null {
     this.assertOwner(ownerUserId);
-    const now = Date.now();
-    let message: MessageRow | null = null;
-    this.ctx.storage.transactionSync(() => {
-      const row = this.sql.exec<MessageRow>(
-        "SELECT * FROM messages WHERE message_id = ? AND expires_at > ?",
-        messageId,
-        now,
-      ).toArray()[0] ?? null;
-      if (!row) return;
-      if (row.opened_at === null) {
-        this.sql.exec("UPDATE messages SET opened_at = ? WHERE message_id = ?", now, messageId);
-        message = { ...row, opened_at: now };
-      } else {
-        message = row;
-      }
-    });
-    return message;
+    return this.sql.exec<MessageRow>(
+      "SELECT * FROM messages WHERE message_id = ? AND expires_at > ?",
+      messageId,
+      Date.now(),
+    ).toArray()[0] ?? null;
   }
 
-  ack(ownerUserId: string, requestId: string, messageId: string, now: number): MailAckResult {
+  markRead(ownerUserId: string, messageId: string, now: number): boolean {
+    this.assertOwner(ownerUserId);
+    return this.sql.exec(
+      "UPDATE messages SET opened_at = COALESCE(opened_at, ?) WHERE message_id = ? AND expires_at > ?",
+      now,
+      messageId,
+      now,
+    ).rowsWritten > 0;
+  }
+
+  ack(ownerUserId: string, requestId: string, messageId: string, now: number): { deleted: boolean; replay: boolean } {
     this.assertOwner(ownerUserId);
     const prior = this.sql.exec<{ outcome: string }>(
       "SELECT outcome FROM request_receipts WHERE request_id = ? AND operation = 'ack'",
       requestId,
     ).toArray()[0];
     if (prior) return { deleted: prior.outcome === "deleted", replay: true };
-    const message = this.sql.exec<{ opened_at: number | null }>(
+    const held = this.sql.exec<{ opened_at: number | null }>(
       "SELECT opened_at FROM messages WHERE message_id = ?",
       messageId,
     ).toArray()[0];
-    if (message && message.opened_at === null) {
-      return { deleted: false, replay: false, refused: "never_opened", message_id: messageId };
+    if (held && held.opened_at === null) {
+      throw new Error(`message was never opened: ${messageId}`);
     }
     let deleted = false;
     this.ctx.storage.transactionSync(() => {
@@ -295,16 +291,10 @@ export class Mailbox extends DurableObject<Env> {
     return { deleted, replay: false };
   }
 
-  retentionStats(ownerUserId: string): { held: number; opened: number; dropped_without_acknowledgement: number } {
-    this.assertOwner(ownerUserId);
-    const messages = this.sql.exec<{ held: number; opened: number }>(
-      "SELECT COUNT(*) held, COUNT(opened_at) opened FROM messages",
-    ).one()!;
-    return {
-      held: messages.held,
-      opened: messages.opened,
-      dropped_without_acknowledgement: this.stateNumber("dropped_without_acknowledgement"),
-    };
+  droppedWithoutAcknowledgement(): number {
+    return Number(this.sql.exec<{ value: string }>(
+      "SELECT value FROM mailbox_state WHERE key = 'dropped_without_acknowledgement'",
+    ).toArray()[0]?.value ?? "0");
   }
 
   deleteAll(ownerUserId: string, requestId: string, now: number): { deleted: number; receipt: string; replay: boolean } {
@@ -333,16 +323,15 @@ export class Mailbox extends DurableObject<Env> {
   override async alarm(): Promise<void> {
     const now = Date.now();
     this.ctx.storage.transactionSync(() => {
-      const expired = this.sql.exec<{ count: number }>(
+      const dropped = this.sql.exec<{ count: number }>(
         "SELECT COUNT(*) count FROM messages WHERE expires_at <= ?",
         now,
       ).one()!.count;
-      if (expired > 0) {
+      if (dropped > 0) {
         this.sql.exec(
           `INSERT INTO mailbox_state(key, value) VALUES ('dropped_without_acknowledgement', ?)
-           ON CONFLICT(key) DO UPDATE SET value = CAST(CAST(value AS INTEGER) + ? AS TEXT)`,
-          String(expired),
-          expired,
+           ON CONFLICT(key) DO UPDATE SET value = CAST(CAST(value AS INTEGER) + excluded.value AS TEXT)`,
+          String(dropped),
         );
       }
       this.sql.exec("DELETE FROM messages WHERE expires_at <= ?", now);
@@ -350,14 +339,6 @@ export class Mailbox extends DurableObject<Env> {
       this.sql.exec("DELETE FROM send_buckets WHERE bucket_start < ?", now - 86_400_000);
     });
     await this.scheduleNextAlarm();
-  }
-
-  private stateNumber(key: string): number {
-    const row = this.sql.exec<{ value: string }>(
-      "SELECT value FROM mailbox_state WHERE key = ?",
-      key,
-    ).toArray()[0];
-    return row ? Number.parseInt(row.value, 10) || 0 : 0;
   }
 
   private async scheduleNextAlarm(): Promise<void> {

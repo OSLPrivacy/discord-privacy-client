@@ -80,6 +80,8 @@ describe("TASK 4503 OSL Mail unread count", () => {
     const opened = await signedMailRead("FETCH", recipient, { message_id: "mail_task4503_arrived_1" });
     expect(opened.status).toBe(200);
     expect((await opened.json() as { message_id: string }).message_id).toBe("mail_task4503_arrived_1");
+    expect(await unreadStatus(recipient)).toBe(4);
+    expect(await mailbox.markRead(recipient.userId, "mail_task4503_arrived_1", Date.now())).toBe(true);
     const afterOpen = await unreadStatus(recipient);
     expect(afterOpen).toBe(3);
     console.log("TASK4503 arrived=4 opened=1 unread_count=3");

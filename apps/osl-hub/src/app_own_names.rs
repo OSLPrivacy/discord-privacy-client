@@ -228,9 +228,12 @@ const fn service_rank(service_id: ServiceKind) -> u8 {
     match service_id {
         ServiceKind::Discord => 1,
         ServiceKind::Telegram => 2,
-        ServiceKind::WhatsApp => 3,
-        ServiceKind::Email => 4,
-        ServiceKind::Signal => 5,
+        ServiceKind::Instagram => 3,
+        ServiceKind::WhatsApp => 4,
+        ServiceKind::Email => 5,
+        ServiceKind::Signal => 6,
+        ServiceKind::X => 7,
+        ServiceKind::Messenger => 8,
     }
 }
 

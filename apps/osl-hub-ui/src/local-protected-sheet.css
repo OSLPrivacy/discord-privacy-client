@@ -54,16 +54,14 @@
 .local-capsule-result > label { color: var(--text); font-size: 12px; font-weight: 600; }
 
 .local-protected-sheet input,
-.local-protected-sheet textarea,
-.local-protected-sheet select {
+.local-protected-sheet textarea {
   width: 100%;
   border: 1px solid var(--line);
   background: var(--bg);
   color: var(--text);
 }
 
-.local-protected-sheet input,
-.local-protected-sheet select { padding: 0 12px; }
+.local-protected-sheet input { padding: 0 12px; }
 .local-protected-sheet textarea { min-height: 112px; padding: 12px; resize: vertical; line-height: 1.45; }
 .local-capsule-result textarea { font-family: var(--font-mono); font-size: 12px; }
 .local-context-form p { margin: -2px 0 4px; font-size: 11px; }
@@ -88,6 +86,10 @@
 .local-view-once { min-width: 0; justify-items: start; }
 .local-view-once input { width: 22px; min-height: 22px; }
 .local-view-once small { max-width: 180px; line-height: 1.35; }
+/* TASK 0594: the reason the control is off, next to the control. */
+.view-once-tier-note { color: var(--text); font-weight: 600; }
+[data-osl-view-once-state="off"] { opacity: .72; }
+[data-osl-view-once-state="off"] .view-once-tier-note { opacity: 1; }
 .local-capsule-result { margin-top: 18px; padding-top: 18px; border-top: 1px solid var(--line-soft); }
 .local-capsule-result small { color: var(--muted); text-align: center; }
 .local-send-truth { color: var(--muted); font-size: 11px; line-height: 1.4; text-align: center; }
@@ -152,6 +154,56 @@
 .peer-approval p { margin: 0; color: var(--muted); line-height: 1.5; }
 .peer-ttl { display: grid; gap: 7px; color: var(--muted); font-size: 11px; }
 
+/* Canonical select, rendered here because these sheets are separate windows. */
+.canonical-select { position: relative; }
+.canonical-select-trigger {
+  min-height: 38px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  color: var(--text);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 12px;
+  list-style: none;
+}
+.canonical-select-trigger::-webkit-details-marker { display: none; }
+.canonical-select[open] .canonical-select-trigger { border-color: var(--brand); }
+.canonical-select-native { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+.canonical-select-list {
+  position: absolute;
+  z-index: 2;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, .25);
+}
+.canonical-select-option {
+  width: 100%;
+  min-height: 34px;
+  padding: 0 10px;
+  border: 0;
+  border-bottom: 1px solid var(--line-soft);
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  text-align: left;
+}
+.canonical-select-option:last-child { border-bottom: 0; }
+.canonical-select-option:hover,
+.canonical-select-option[aria-selected="true"] { background: var(--brand-wash); }
+.canonical-select-option input { width: 14px; min-height: 14px; margin: 0; padding: 0; accent-color: var(--brand); pointer-events: none; }
+.canonical-select-trigger:focus-visible,
+.canonical-select-option:focus-visible { outline: 3px solid var(--brand); outline-offset: 2px; }
+
 @keyframes local-sheet-enter {
   from { opacity: 0; transform: translateX(18px); }
   to { opacity: 1; transform: translateX(0); }
@@ -171,3 +223,20 @@
 
 .peer-message-receipt span { color: var(--muted); }
 .peer-message-receipt strong { color: var(--text); font-weight: 600; }
+
+/* TASK 3426 - the failed-placement notice, shown above the person's own text. */
+.placement-failure {
+  background: color-mix(in srgb, var(--danger) 9%, var(--panel));
+  border: 1px solid color-mix(in srgb, var(--danger) 52%, var(--line));
+  display: grid;
+  gap: 6px;
+  margin: 0 0 14px;
+  padding: 14px 16px;
+}
+
+.placement-failure p { margin: 0; line-height: 1.5; }
+.placement-failure-headline { color: var(--danger); font-size: 14px; font-weight: 700; }
+.placement-failure-reason { color: var(--text); font-size: 13px; }
+.placement-failure-not-sent { color: var(--text); font-size: 13px; font-weight: 700; }
+.placement-failure-where { color: var(--muted); font-size: 12px; }
+.placement-failure-detail { color: var(--muted); font-size: 11px; word-break: break-word; }

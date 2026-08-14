@@ -60,11 +60,13 @@ KEYVAULT.md
 graphify-out/
 *.log
 apps/osl-hub-ui/screenshots/*.png
+evidence/task-3532-resize-redraw/
 
 # Build outputs
 *.msi
 *.exe
 *.dmg
+apps/osl-hub/binaries/
 
 # Keyserver runtime artifacts
 keyserver/keyserver.db

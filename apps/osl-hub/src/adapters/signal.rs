@@ -5,10 +5,8 @@
 //! accessible names or text, place input, or attest a destination.
 
 use super::*;
-#[cfg(target_os = "windows")]
-use crate::native_signal_adapter::SignalRole;
 use crate::native_signal_adapter::{
-    discover_signal_composer, discover_signal_transcript, SignalNode, SignalRect,
+    discover_signal_composer, discover_signal_transcript, SignalNode, SignalRect, SignalRole,
     SignalSelectorError,
 };
 use crate::signal_destination_binding::{
@@ -16,9 +14,7 @@ use crate::signal_destination_binding::{
 };
 use std::sync::Arc;
 
-#[cfg(target_os = "windows")]
 const MAX_SIGNAL_A11Y_NODES: usize = 4_096;
-#[cfg(target_os = "windows")]
 const MAX_SIGNAL_A11Y_DEPTH: usize = 64;
 
 /// The operations supplied by Signal's native accessibility bridge.
@@ -146,10 +142,7 @@ impl<B: SignalBackend> SurfaceAdapter for SignalSurfaceAdapter<B> {
             elapsed_ms: 0,
         };
         if !self.validates_binding(binding)
-            || !same_scope(
-                &binding.scope_binding_hash,
-                &authorization.scope_binding_hash,
-            )
+            || !same_scope_and_message_box(binding, authorization)
             || !self.supports(adapter_profile::Capability::PlaceProtectedPayload)
         {
             return refused();
@@ -276,12 +269,12 @@ pub(crate) fn snapshot_claimed_signal_nodes(
 #[cfg(target_os = "windows")]
 mod windows {
     use super::*;
-    use ::windows::Win32::Foundation::HWND;
-    use ::windows::Win32::System::Com::{
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::System::Com::{
         CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER,
         COINIT_MULTITHREADED,
     };
-    use ::windows::Win32::UI::Accessibility::{
+    use windows::Win32::UI::Accessibility::{
         CUIAutomation, IUIAutomation, IUIAutomationElement, IUIAutomationTreeWalker,
         IUIAutomationValuePattern, UIA_ButtonControlTypeId, UIA_EditControlTypeId,
         UIA_ListControlTypeId, UIA_PaneControlTypeId, UIA_TextControlTypeId, UIA_ValuePatternId,
@@ -433,7 +426,7 @@ mod windows {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::native_signal_adapter::{SignalNode, SignalRole};
+    use crate::native_signal_adapter::SignalNode;
     use std::sync::{
         atomic::{AtomicUsize, Ordering},
         Arc, Mutex,
@@ -585,7 +578,62 @@ mod tests {
         }
 
         fn commit(&self, _: &SurfaceBinding, _: &PlacementReceipt) -> SendReceipt {
-            unreachable!("destination attestation never commits a send")
+            unreachable!("destination attestation never commits")
+        }
+    }
+
+    struct DirectRouteBackend {
+        commits: AtomicUsize,
+    }
+
+    impl SignalBackend for DirectRouteBackend {
+        fn capabilities(&self, _: u64) -> CapabilitySet {
+            [
+                adapter_profile::Capability::InspectVisibleComposer,
+                adapter_profile::Capability::InspectVisibleTranscript,
+                adapter_profile::Capability::PlaceProtectedPayload,
+                adapter_profile::Capability::SendProtectedPayload,
+            ]
+            .into_iter()
+            .collect()
+        }
+
+        fn locate(&self, target: &SurfaceTarget) -> Result<SurfaceBinding, AdapterRefusal> {
+            Ok(binding(target.generation))
+        }
+
+        fn read_state(&self, _: &SurfaceBinding) -> Result<SurfaceState, AdapterRefusal> {
+            Ok(SurfaceState {
+                composer_text_sha256: "digest".into(),
+                composer_is_empty: true,
+                composer_is_password_field: false,
+                focused: true,
+                occluded: false,
+                read_was_complete: true,
+            })
+        }
+
+        fn destination_evidence(
+            &self,
+            binding: &SurfaceBinding,
+        ) -> Result<SignalDestinationEvidence, AdapterRefusal> {
+            Ok(destination_evidence(binding.generation, 9))
+        }
+
+        fn place_without_submit(&self, _: &SurfaceBinding, _: &Carrier) -> PlacementReceipt {
+            PlacementReceipt {
+                status: PlacementStatus::Placed,
+                placed_sha256: Some("carrier-digest".into()),
+                elapsed_ms: 1,
+            }
+        }
+
+        fn commit(&self, _: &SurfaceBinding, _: &PlacementReceipt) -> SendReceipt {
+            self.commits.fetch_add(1, Ordering::SeqCst);
+            SendReceipt {
+                outcome: SendOutcome::Sent,
+                elapsed_ms: 1,
+            }
         }
     }
 
@@ -631,7 +679,7 @@ mod tests {
 
         let placed = adapter.place(
             &binding,
-            &PlacementAuthorization::for_scope("scope-a"),
+            &PlacementAuthorization::for_scope_and_provider("scope-a", "signal").unwrap(),
             &Carrier("carrier".into()),
         );
         assert_eq!(placed.status, PlacementStatus::Placed);
@@ -647,44 +695,18 @@ mod tests {
 
         let refused = adapter.place(
             &binding,
-            &PlacementAuthorization::for_scope("other-scope"),
+            &PlacementAuthorization::for_scope_and_provider("other-scope", "signal").unwrap(),
             &Carrier("carrier".into()),
         );
         assert_eq!(refused.status, PlacementStatus::NotPlaced);
         assert_eq!(adapter.backend.placements.load(Ordering::SeqCst), 1);
     }
 
-    #[test]
-    fn t3_t16_conversation_change_invalidates_prior_signal_attestation() {
-        let state = Arc::new(SignalDestinationBindingState::default());
-        let adapter = SignalSurfaceAdapter::with_destination_binding(
-            AttestationBackend {
-                conversation: Mutex::new(3),
-            },
-            Arc::clone(&state),
-        );
-        let binding = binding(7);
-
-        let first = adapter.destination(&binding).unwrap();
-        assert_eq!(first.status, DestinationStatus::Attested);
-        let first_readiness = state.readiness();
-        assert_eq!(first_readiness.status, SignalBindingStatus::Accepted);
-
-        *adapter.backend.conversation.lock().unwrap() = 8;
-        let second = adapter.destination(&binding).unwrap();
-
-        assert_eq!(second.status, DestinationStatus::Attested);
-        assert_ne!(first.conversation_digest, second.conversation_digest);
-        let second_readiness = state.readiness();
-        assert_eq!(second_readiness.status, SignalBindingStatus::Accepted);
-        assert!(second_readiness.lifecycle_generation > first_readiness.lifecycle_generation);
-    }
-
     fn direct_signal_request(adapter: &SignalSurfaceAdapter<PlacementBackend>) -> String {
         let binding = binding(1);
         let placed = adapter.place(
             &binding,
-            &PlacementAuthorization::for_scope("scope-a"),
+            &PlacementAuthorization::for_scope_and_provider("scope-a", "signal").unwrap(),
             &Carrier("carrier".into()),
         );
         assert_eq!(placed.status, PlacementStatus::Placed);
@@ -716,5 +738,55 @@ mod tests {
         let unrouted_result = direct_signal_request(&unrouted);
         println!("{unrouted_result}");
         assert_eq!(unrouted_result, "Signal route not selected");
+    }
+
+    #[test]
+    fn task1030a_signal_direct_send_uses_selected_route_and_refuses_without_route() {
+        let adapter = SignalSurfaceAdapter::new(DirectRouteBackend {
+            commits: AtomicUsize::new(0),
+        });
+        let binding = binding(31);
+        let placed = adapter.place(
+            &binding,
+            &PlacementAuthorization::for_scope_and_provider("scope-a", "signal").unwrap(),
+            &Carrier("carrier".into()),
+        );
+        assert_eq!(placed.status, PlacementStatus::Placed);
+
+        let sent = adapter.commit(&binding, &SendAuthorization::for_scope("scope-a"), &placed);
+        assert_eq!(sent.outcome, SendOutcome::Sent);
+        assert_eq!(adapter.backend.commits.load(Ordering::SeqCst), 1);
+        println!("route SIGNAL-TEST-ROUTE called once");
+
+        let refused = adapter.commit(&binding, &SendAuthorization::for_scope("other"), &placed);
+        assert_eq!(refused.outcome, SendOutcome::NotSent);
+        assert_eq!(adapter.backend.commits.load(Ordering::SeqCst), 1);
+        println!("Signal route not selected");
+    }
+
+    #[test]
+    fn t3_t16_conversation_change_invalidates_prior_signal_attestation() {
+        let state = Arc::new(SignalDestinationBindingState::default());
+        let adapter = SignalSurfaceAdapter::with_destination_binding(
+            AttestationBackend {
+                conversation: Mutex::new(3),
+            },
+            Arc::clone(&state),
+        );
+        let binding = binding(7);
+
+        let first = adapter.destination(&binding).unwrap();
+        assert_eq!(first.status, DestinationStatus::Attested);
+        let first_readiness = state.readiness();
+        assert_eq!(first_readiness.status, SignalBindingStatus::Accepted);
+
+        *adapter.backend.conversation.lock().unwrap() = 8;
+        let second = adapter.destination(&binding).unwrap();
+
+        assert_eq!(second.status, DestinationStatus::Attested);
+        assert_ne!(first.conversation_digest, second.conversation_digest);
+        let second_readiness = state.readiness();
+        assert_eq!(second_readiness.status, SignalBindingStatus::Accepted);
+        assert!(second_readiness.lifecycle_generation > first_readiness.lifecycle_generation);
     }
 }

@@ -97,7 +97,7 @@
       "planned_extras": [
         "AutoScrub: an approved plan repeated with strict limits",
         "Non-image file sending",
-        "AI-generated carrier text, local or cloud"
+        "On-device AI-generated carrier text"
       ],
       "purchase_type": "early_access",
       "early_access_line": "Pro is an early-access purchase. Today it unlocks early access to new privacy tools as they reach the beta channel — not the v1 feature set, which is still being finished.",
@@ -121,12 +121,11 @@
     "recurring": false,
     "stores_payment_method": false,
     "status": "Planned",
-    "purpose": "Planned pay-as-you-go cloud processing for optional AI features (context-aware carrier text, optional AI sensitivity classifier). No credits are included in Pro or sold today.",
+    "purpose": "No processing-credit product is offered. Cover writing runs on the person's own device and does not consume credits.",
     "honest_copy_rules": [
-      "Credits are bought separately and never renew.",
+      "Processing credits are not sold.",
       "Local processing is the privacy-preferred option and consumes no credits.",
-      "Cloud processing requires separate informed consent and a persistent visible indicator.",
-      "Never call cloud processing end-to-end encrypted: the service can see the context it processes.",
+      "Carrier generation must remain on-device.",
       "Encryption must never stop working because credits ran out or a payment failed."
     ],
     "packs": []
@@ -409,7 +408,7 @@
       ],
       "verified_on": "2026-07-26",
       "sellable": false,
-      "public_note": "Not yet. Opt-in AI-written cover text. Cloud generation is never end-to-end private, because the service has to see the text it is working on."
+      "public_note": "AI-written cover text runs only through the verified model pack on the person's own device. The private words never touch the model."
     },
     {
       "id": "processing-credits",
@@ -852,7 +851,7 @@
   "required_disclosures": {
     "pro_billing": "$5 is the intended price for one month of Pro. Checkout is paused until one-month redemption and expiry are implemented. It is not a subscription — nothing renews automatically, and OSL never stores your payment details.",
     "no_account": "No OSL account is intended to be needed. The activation-code flow is not ready for purchase.",
-    "credits": "Processing credits are bought separately for optional cloud AI features. They never renew, and encryption keeps working without them.",
+    "credits": "No processing credits are sold. On-device cover writing and encryption do not depend on a credit balance.",
     "crypto": "Bitcoin and Monero checkout is paused with card checkout until one-month redemption and expiry are implemented.",
     "free_forever": "Free stays free. Paying is never required for the basic encryption path to keep working.",
     "expiry_behaviour": "Automatic Pro expiry is not implemented. Checkout remains paused.",
@@ -1629,11 +1628,17 @@
     "surface_ruling": {
       "schema": "osl-surface-ruling-v1",
       "ruled_on": "2026-08-05",
-      "chat_carriers": ["discord", "signal", "whatsapp", "telegram"],
+      "chat_carriers": ["discord", "signal", "whatsapp", "telegram", "messenger"],
       "email_carriers": ["gmail", "outlook", "proton", "yahoo", "aol", "gmx", "maildotcom", "icloud", "tuta"],
       "native_email_carriers": ["outlook"],
       "first_party_surfaces": ["osl-chats", "osl-mail"],
-      "cut_surfaces": ["instagram", "snapchat", "x", "messenger", "slack", "linkedin", "teams"]
+      "cut_surfaces": ["instagram", "snapchat", "x", "slack", "linkedin", "teams"],
+      "mailbox_reading_ruling": {
+        "ruled_on": "2026-08-07",
+        "allowed": true,
+        "owner_words": "mailboxes can be read",
+        "outside_services_correction": "Nothing was ever removed for the ten outside services, so there is nothing to put back there, only new work."
+      }
     },
     "matrix_files": [
       "docs/status.html"

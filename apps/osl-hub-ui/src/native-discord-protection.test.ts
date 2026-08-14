@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 const source = readFileSync(fileURLToPath(new URL("./main.ts", import.meta.url)), "utf8");
+const coverControls = readFileSync(fileURLToPath(new URL("./cover-writing-controls.ts", import.meta.url)), "utf8");
 const nativeMain = readFileSync(fileURLToPath(new URL("../../osl-hub/src/main.rs", import.meta.url)), "utf8");
 const nativeAdapter = readFileSync(fileURLToPath(new URL("../../osl-hub/src/native_discord_adapter.rs", import.meta.url)), "utf8");
 const nativeOverlay = readFileSync(fileURLToPath(new URL("../../osl-hub/src/native_discord_overlay.rs", import.meta.url)), "utf8");
@@ -60,10 +61,14 @@ describe("native Discord protected overlay routing", () => {
     const styles = readFileSync(fileURLToPath(new URL("./styles.css", import.meta.url)), "utf8");
     expect(source).toContain('class="native-discord-header-controls"');
     expect(source).toContain('data-open-burn="chat"');
-    expect(source).toContain('id="native-discord-covertext"');
-    expect(source).toContain('id="native-discord-ai-covertext"');
-    expect(source).toContain("Model pack needed");
-    expect(source).toContain("no cloud AI is used");
+    expect(source).toContain('coverWritingControlsMarkup("discord"');
+    expect(source).toContain('covertextId: "native-discord-covertext"');
+    expect(source).toContain('aiCovertextId: "native-discord-ai-covertext"');
+    expect(source).toContain("aiAvailable: nativeDiscordAiModelReady");
+    expect(coverControls).toContain("<button${covertextId}");
+    expect(coverControls).toContain("<button${aiCovertextId}");
+    expect(coverControls).toContain("Model pack needed");
+    expect(coverControls).toContain("no cloud AI is used");
     expect(styles).toContain(".native-discord-header-controls");
     expect(overlay).not.toContain('id="ai-covertext-mode"');
     expect(overlay).toContain('class="overlay-runtime-controls" hidden');

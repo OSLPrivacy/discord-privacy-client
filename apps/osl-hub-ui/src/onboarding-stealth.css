@@ -1,3 +1,6 @@
+/* Colour values are the canonical OSL design tokens duplicated from
+   src/osl-tokens.ts (CSS cannot import TypeScript). osl-tokens.ts is the
+   authority; token names are noted beside each hex. */
 /* ---------------------------------------------------------------------------
    Stealth password. 2026-08-06 restyle.
 
@@ -21,13 +24,13 @@
 }
 
 .stealth-screen {
-  --st-card: #141719;
-  --st-input: #101315;
-  --st-input-line: #2a2f33;
-  --st-card-line: #1e2326;
-  --st-link: #8a969c;
-  --st-quiet-line: #4a555b;
-  --st-error: #e5383b;
+  --st-card: #0a0e10; /* colour.surface */
+  --st-input: #0f1416; /* colour.inputFill */
+  --st-input-line: #2a343a; /* colour.border */
+  --st-card-line: #1e2326; /* colour.borderQuiet */
+  --st-link: #8d989e; /* colour.muted2 */
+  --st-quiet-line: #4a555b; /* colour.muted5 */
+  --st-error: #e5383b; /* colour.dangerAlt */
 
   width: 600px;
   max-width: 100%;
@@ -66,7 +69,7 @@
 .st-dot { fill: var(--osl-setup-muted); stroke: none; }
 .st-bubble { stroke: var(--osl-setup-quiet); stroke-width: 1.4; fill: none; }
 .st-badge-disc { fill: var(--osl-setup-accent); stroke: none; }
-.st-badge-mark { stroke: #04181c; stroke-width: 1.2; fill: none; stroke-linecap: round; stroke-linejoin: round; }
+.st-badge-mark { stroke: #071013; /* checkbox.onCheck — dark ink on the cyan fill */ stroke-width: 1.2; fill: none; stroke-linecap: round; stroke-linejoin: round; }
 /* Red, and a cross rather than a struck-through eye. Stealth empties the
    workspace; burn ends it. The two screens are otherwise identical, so the
    badge is the only thing telling them apart at a glance -- it has to. */
@@ -386,6 +389,11 @@
 /* ---------------------------------------------------------------------------
    This device can no longer open your account. 2026-08-06 restyle.
    --------------------------------------------------------------------------- */
+/* The whole window, not just the shell and panel: canon is one uninterrupted
+   #080c0d field, and the frame around the shell kept the theme `--bg`, which
+   banded the screen into three tones whenever the two values diverged. */
+.app-frame:has(.keylost-screen) { background: var(--osl-setup-bg); }
+
 .onboarding-shell:has(.keylost-screen),
 .onboarding-panel:has(.keylost-screen) {
   width: 100%;
@@ -460,6 +468,6 @@
   margin: 18px 0 0;
   font-family: inherit;
   font-size: 13px;
-  color: var(--st-quiet-line, #4a555b);
+  color: var(--st-quiet-line, #4a555b /* colour.muted5 */);
   text-align: center;
 }

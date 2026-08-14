@@ -24,6 +24,9 @@ export interface DocumentComment { id: string; blockId: string; body: string; qu
 export interface DocumentChange { id: string; blockId: string; before: string; after: string; createdAt: number; }
 export interface DocumentModel { format: "osl-document-v3"; page: { size: "letter" | "a4"; orientation: "portrait" | "landscape"; margin: number; columns: 1 | 2 | 3; header: string; footer: string; }; blocks: DocumentBlock[]; review: { trackChanges: boolean; comments: DocumentComment[]; changes: DocumentChange[]; }; }
 
+// USER-DOCUMENT palette, not UI chrome: these colours are persisted inside
+// documents and validated on import (parseDrawing/osl-import.ts safeColor).
+// Changing them changes what validates. DELIBERATELY not osl-tokens.ts values.
 const drawingColors = new Set(["#06b6d4", "#8b5cf6", "#49c58a", "#f2b84b", "#ef626b", "#e8e8e8"]);
 const escapeHtml = (value: string) => value.replace(/[&<>'"]/gu, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" })[character] ?? character);
 const record = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);

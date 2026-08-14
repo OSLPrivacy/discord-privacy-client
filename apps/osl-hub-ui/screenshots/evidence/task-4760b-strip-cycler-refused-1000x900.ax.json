@@ -1,0 +1,34 @@
+[
+  {
+    "role": "RootWebArea",
+    "name": "Who can find me"
+  },
+  {
+    "role": "button",
+    "name": "Who can find me shared-room"
+  },
+  {
+    "role": "StaticText",
+    "name": "Who can find me"
+  },
+  {
+    "role": "StaticText",
+    "name": "discovery: anyone needs the consent gate"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Who can find me"
+  },
+  {
+    "role": "StaticText",
+    "name": "shared-room"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "discovery: anyone needs the consent gate"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "shared-room"
+  }
+]

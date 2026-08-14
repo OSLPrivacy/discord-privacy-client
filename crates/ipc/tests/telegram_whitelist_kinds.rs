@@ -1,7 +1,7 @@
 use ipc::commands::cmd_osl_list_telegram_whitelist_kinds;
 
 #[test]
-fn telegram_kinds_command_returns_exactly_four_named_kinds() {
+fn telegram_kinds_command_returns_the_allowed_named_kinds() {
     let kinds = cmd_osl_list_telegram_whitelist_kinds();
     let names: Vec<&str> = kinds.iter().map(|kind| kind.name.as_str()).collect();
 
@@ -14,10 +14,16 @@ fn telegram_kinds_command_returns_exactly_four_named_kinds() {
         );
     }
 
-    assert_eq!(kinds.len(), 4);
+    assert_eq!(kinds.len(), 5);
     assert!(kinds.iter().all(|kind| kind.app == "telegram"));
     assert_eq!(
         names,
-        vec!["direct_message", "group_chat", "channel", "public_post"]
+        vec![
+            "direct_message",
+            "group_chat",
+            "channel",
+            "public_post",
+            "supergroup",
+        ]
     );
 }

@@ -6,6 +6,15 @@
 //! narrow and read-only: bind a real top-level Outlook window and read its
 //! title through Win32.
 
+use crate::native_outlook_desktop_mail_delete::{
+    OutlookDesktopMailRow, OutlookDesktopMailTrashSurface,
+};
+use crate::services::{
+    open_shared_mailbox_message, read_shared_mailbox_folders, read_shared_mailbox_messages,
+    MailboxFolderCandidate, MailboxMessageCandidate, MailboxReaderSnapshot, SharedMailboxFolder,
+    SharedMailboxMessage, SharedMailboxMessageSummary,
+};
+
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub struct OutlookDesktopControlTarget {
     pub name: &'static str,
@@ -283,4 +292,261 @@ mod tests {
             driver.title_reader_command
         );
     }
+}
+
+// Outlook desktop read-only adapter pieces.
+//
+// The mailbox reader is deliberately local and read-only. It adapts Outlook
+// desktop message facts into the shared mailbox reader contract used by Scrub.
+// The deleting half is `crate::native_outlook_desktop_mail_delete` (TASK 3055);
+// `outlook_desktop_trash_surface_from_mailbox` below is the bridge, so one
+// seeded Outlook desktop mailbox feeds the reader and the deleter alike.
+
+pub const OUTLOOK_DESKTOP_MAIL_READER_ID: &str = "outlook-desktop-shared-mailbox-reader";
+pub const OUTLOOK_DESKTOP_SERVICE_ID: &str = "outlook";
+pub const OUTLOOK_DESKTOP_SEEDED_OWNER: &str = "osl_task_3053_owner";
+pub const OUTLOOK_DESKTOP_SEEDED_ACCOUNT: &str = "outlook-desktop-scrub";
+pub const OUTLOOK_DESKTOP_SEEDED_SIGNED_IN_ADDRESS: &str = "scrub.owner@example.test";
+pub const OUTLOOK_DESKTOP_MINE_MARKER: &str = "SCRUB-OD-MINE";
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct OutlookDesktopMailbox {
+    owner_osl_user_id: String,
+    account_id: String,
+    signed_in_address: String,
+    snapshot: MailboxReaderSnapshot,
+}
+
+impl OutlookDesktopMailbox {
+    pub fn new(
+        owner_osl_user_id: impl Into<String>,
+        account_id: impl Into<String>,
+        signed_in_address: impl Into<String>,
+        snapshot: MailboxReaderSnapshot,
+    ) -> Self {
+        Self {
+            owner_osl_user_id: owner_osl_user_id.into(),
+            account_id: account_id.into(),
+            signed_in_address: signed_in_address.into(),
+            snapshot,
+        }
+    }
+
+    pub fn signed_in_address(&self) -> &str {
+        &self.signed_in_address
+    }
+
+    pub fn read_folders(&self) -> Result<Vec<SharedMailboxFolder>, String> {
+        read_shared_mailbox_folders(
+            &self.owner_osl_user_id,
+            OUTLOOK_DESKTOP_SERVICE_ID,
+            &self.account_id,
+            &self.snapshot,
+        )
+    }
+
+    pub fn read_messages(
+        &self,
+        folder_id: &str,
+    ) -> Result<Vec<SharedMailboxMessageSummary>, String> {
+        read_shared_mailbox_messages(
+            &self.owner_osl_user_id,
+            OUTLOOK_DESKTOP_SERVICE_ID,
+            &self.account_id,
+            folder_id,
+            &self.snapshot,
+        )
+    }
+
+    pub fn open_message(
+        &self,
+        folder_id: &str,
+        message_id: &str,
+    ) -> Result<SharedMailboxMessage, String> {
+        open_shared_mailbox_message(
+            &self.owner_osl_user_id,
+            OUTLOOK_DESKTOP_SERVICE_ID,
+            &self.account_id,
+            folder_id,
+            message_id,
+            &self.snapshot,
+        )
+    }
+}
+
+/// Carries all mailbox rows, including existing Deleted Items rows, into the
+/// Outlook desktop fill-in of the shared mail deleter.
+pub fn outlook_desktop_trash_surface_from_mailbox(
+    mailbox: &OutlookDesktopMailbox,
+) -> Result<OutlookDesktopMailTrashSurface, String> {
+    let mut rows = Vec::new();
+    for folder in mailbox.read_folders()? {
+        for summary in mailbox.read_messages(&folder.folder_id)? {
+            rows.push(OutlookDesktopMailRow::new(
+                summary.folder_id,
+                summary.message_id,
+                summary.subject,
+                summary.sender,
+            ));
+        }
+    }
+    Ok(OutlookDesktopMailTrashSurface::new(rows))
+}
+
+pub fn seeded_outlook_desktop_scrub_mailbox() -> OutlookDesktopMailbox {
+    OutlookDesktopMailbox::new(
+        OUTLOOK_DESKTOP_SEEDED_OWNER,
+        OUTLOOK_DESKTOP_SEEDED_ACCOUNT,
+        OUTLOOK_DESKTOP_SEEDED_SIGNED_IN_ADDRESS,
+        MailboxReaderSnapshot::new(
+            [
+                MailboxFolderCandidate::new("Inbox", "Inbox"),
+                MailboxFolderCandidate::new("Sent Items", "Sent Items"),
+                MailboxFolderCandidate::new("Archive", "Archive"),
+                MailboxFolderCandidate::new("Deleted Items", "Deleted Items"),
+            ],
+            [
+                MailboxMessageCandidate::new(
+                    "Sent Items",
+                    "outlook-desktop-sent-001",
+                    "SCRUB-OD-MINE",
+                    1_786_032_000,
+                    OUTLOOK_DESKTOP_SEEDED_SIGNED_IN_ADDRESS,
+                    "Outlook desktop seeded owner message.",
+                ),
+                MailboxMessageCandidate::new(
+                    "Sent Items",
+                    "outlook-desktop-sent-002",
+                    "Outlook desktop cleanup receipt",
+                    1_786_035_600,
+                    "delegate@example.test",
+                    "Second seeded Sent Items body.",
+                ),
+                MailboxMessageCandidate::new(
+                    "Sent Items",
+                    "outlook-desktop-sent-003",
+                    "Outlook desktop account notice",
+                    1_786_039_200,
+                    "noreply@example.test",
+                    "Third seeded Sent Items body.",
+                ),
+                MailboxMessageCandidate::new(
+                    "Inbox",
+                    "outlook-desktop-inbox-001",
+                    "Inbox task 3053 first",
+                    1_786_042_800,
+                    "friend@example.test",
+                    "First seeded Inbox body.",
+                ),
+                MailboxMessageCandidate::new(
+                    "Inbox",
+                    "outlook-desktop-inbox-002",
+                    "Inbox task 3053 second",
+                    1_786_046_400,
+                    "alerts@example.test",
+                    "Second seeded Inbox body.",
+                ),
+            ],
+        ),
+    )
+}
+pub const OUTLOOK_DESKTOP_TASK_1286_MARKER: &str = "OSL-OUTLOOK-DESKTOP-1286";
+pub const OUTLOOK_DESKTOP_TASK_1286_COVER_WORDS: &str = "OSL-OUTLOOK-DESKTOP-1286 cover message";
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct OutlookDesktopMappedControl {
+    pub name: &'static str,
+}
+
+pub const OUTLOOK_DESKTOP_TASK_1286_CONTROLS: &[OutlookDesktopMappedControl] = &[
+    OutlookDesktopMappedControl { name: "Place" },
+    OutlookDesktopMappedControl { name: "Read" },
+    OutlookDesktopMappedControl { name: "Send" },
+];
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct OutlookDesktopTask1286Fixture {
+    controls: Vec<&'static str>,
+    placed_messages: Vec<String>,
+    sent_messages: Vec<String>,
+}
+
+impl Default for OutlookDesktopTask1286Fixture {
+    fn default() -> Self {
+        Self {
+            controls: OUTLOOK_DESKTOP_TASK_1286_CONTROLS
+                .iter()
+                .map(|control| control.name)
+                .collect(),
+            placed_messages: Vec::new(),
+            sent_messages: Vec::new(),
+        }
+    }
+}
+
+impl OutlookDesktopTask1286Fixture {
+    pub fn start() -> Self {
+        Self::default()
+    }
+
+    pub fn control_names(&self) -> Vec<&'static str> {
+        self.controls.clone()
+    }
+
+    pub fn placed_message_count(&self) -> usize {
+        self.placed_messages.len()
+    }
+
+    pub fn sent_count(&self) -> usize {
+        self.sent_messages.len()
+    }
+
+    pub fn place(&mut self) -> Result<&'static str, String> {
+        self.require_control("Place")?;
+        self.placed_messages
+            .push(OUTLOOK_DESKTOP_TASK_1286_COVER_WORDS.to_owned());
+        Ok(OUTLOOK_DESKTOP_TASK_1286_COVER_WORDS)
+    }
+
+    pub fn read(&self) -> Result<&str, String> {
+        self.require_control("Read")?;
+        self.placed_messages
+            .last()
+            .map(String::as_str)
+            .ok_or_else(|| "Outlook desktop fixture has no placed cover message".to_owned())
+    }
+
+    pub fn send(&mut self) -> Result<usize, String> {
+        self.require_control("Send")?;
+        let message = self
+            .placed_messages
+            .last()
+            .cloned()
+            .ok_or_else(|| "Outlook desktop fixture has no placed cover message".to_owned())?;
+        self.sent_messages.push(message);
+        Ok(self.sent_messages.len())
+    }
+
+    pub fn remove_control(&mut self, name: &str) -> Result<bool, String> {
+        if name == "Send" {
+            return Err("Outlook desktop fixture refused removing Send".to_owned());
+        }
+        let before = self.controls.len();
+        self.controls.retain(|control| *control != name);
+        Ok(self.controls.len() != before)
+    }
+
+    fn require_control(&self, name: &str) -> Result<(), String> {
+        if self.controls.contains(&name) {
+            Ok(())
+        } else {
+            Err(format!(
+                "Outlook desktop fixture control {name} is unavailable"
+            ))
+        }
+    }
+}
+
+pub fn fake_outlook_desktop_task_1286_fixture() -> OutlookDesktopTask1286Fixture {
+    OutlookDesktopTask1286Fixture::start()
 }

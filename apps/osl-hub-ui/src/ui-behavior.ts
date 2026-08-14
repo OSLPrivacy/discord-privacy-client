@@ -252,8 +252,8 @@ export function friendVerificationCopy(
     heading: `Your verification code for ${alias ?? "this friend"}. Their device shows this same code:`,
     code: safetyNumber && safetyNumber.length > 0 ? safetyNumber : "Unavailable",
     instruction: "Ask your friend to read out the code on their screen, over a channel that is not this app, and type it here",
-    consequence: "The code must match exactly: the codes match only if you are talking to the device OSL holds keys for. Accepting lets OSL encrypt to that key. It does not turn on decryption in any chat or approve any conversation.",
-    invalidationNotice: "A changed key can mean a new device or an attack. Verifications recorded by earlier versions of OSL have been cleared. Those compared a code OSL generated against itself, so they proved nothing; every friend has to be verified again.",
+    consequence: "The codes match only if you are talking to the device OSL holds keys for. Accepting lets OSL encrypt to that key. It does not turn on decryption in any chat or approve any conversation.",
+    invalidationNotice: "Verifications recorded by earlier versions of OSL have been cleared. Those compared a code OSL generated against itself, so they proved nothing; every friend has to be verified again.",
   };
 }
 
@@ -324,6 +324,79 @@ export async function removeHubFriend(
   }
 }
 
+export interface PendingFriendRequestEntry {
+  readonly requestId: string;
+  readonly recipientName: string;
+}
+
+/**
+ * The add-friend-by-name box: a name field, the Send Request action, a status
+ * line for a refusal, and the list the sent request lands in. The list starts
+ * empty in markup -- entries are painted by `pendingFriendRequestListMarkup`
+ * from whatever the caller's pending state actually holds, never guessed here.
+ */
+export function addFriendByNameBoxMarkup(): string {
+  return `<form id="add-friend-by-name-form" class="friend-add-by-name-form"><label for="friend-osl-name-input"><span>Their OSL name</span><input id="friend-osl-name-input" placeholder="OSL name" autocomplete="off" autocapitalize="none" spellcheck="false"/></label><button class="button primary" id="send-friend-request-by-name" type="button">Send Request</button></form><p class="form-status" id="friend-name-request-status" role="status"></p><ul class="pending-friend-requests" id="pending-friend-requests-list" aria-live="polite"></ul>`;
+}
+
+export function pendingFriendRequestEntryMarkup(
+  entry: PendingFriendRequestEntry,
+  escapeHtml: (value: string) => string,
+): string {
+  return `<li class="pending-friend-request" data-request-id="${escapeHtml(entry.requestId)}">Pending: ${escapeHtml(entry.recipientName)}</li>`;
+}
+
+export function pendingFriendRequestListMarkup(
+  entries: readonly PendingFriendRequestEntry[],
+  escapeHtml: (value: string) => string,
+): string {
+  return entries.map((entry) => pendingFriendRequestEntryMarkup(entry, escapeHtml)).join("");
+}
+
+/**
+ * The refusal shown for the add-friend-by-name box. Names the submitted name
+ * so a refusal for "an unknown name" reads as a refusal of *that* name, not a
+ * generic failure indistinguishable from an offline backend.
+ */
+export function friendNameRequestRefusal(name: string): string {
+  const trimmed = name.trim();
+  return trimmed.length > 0
+    ? `${trimmed} is not a known OSL name. No request was sent.`
+    : "Enter an OSL name before sending a request.";
+}
+
+export interface FriendNameRequestDependencies {
+  createRequest(name: string): Promise<PendingFriendRequestEntry | null>;
+}
+
+export type FriendNameRequestOutcome =
+  | { readonly ok: true; readonly entry: PendingFriendRequestEntry }
+  | { readonly ok: false; readonly refusal: string };
+
+/**
+ * Submits the add-friend-by-name box. A blank field is refused locally
+ * without a round trip; anything else is handed to `createRequest`, whose
+ * `null` (offline, invalid, or -- the case this box exists to show -- an
+ * unknown name) becomes the same named refusal either way. Adds nothing to
+ * the caller's pending list itself: the caller decides that from `ok`.
+ */
+export async function submitFriendNameRequest(
+  name: string,
+  dependencies: FriendNameRequestDependencies,
+): Promise<FriendNameRequestOutcome> {
+  const trimmed = name.trim();
+  if (trimmed.length === 0) return { ok: false, refusal: friendNameRequestRefusal(trimmed) };
+  const entry = await dependencies.createRequest(trimmed);
+  return entry ? { ok: true, entry } : { ok: false, refusal: friendNameRequestRefusal(trimmed) };
+}
+
+export function addPendingFriendRequest(
+  entries: readonly PendingFriendRequestEntry[],
+  entry: PendingFriendRequestEntry,
+): PendingFriendRequestEntry[] {
+  return [...entries, entry];
+}
+
 export function friendRemovalButtonMarkup(
   personId: string,
   escapeAttribute: (value: string) => string,
@@ -334,22 +407,67 @@ export function friendRemovalButtonMarkup(
 export const FRIEND_WHITELIST_EVERYWHERE_SELECTOR = "[data-whitelist-everywhere-person]";
 export const FRIEND_WHITELIST_NOWHERE_SELECTOR = "[data-whitelist-nowhere-person]";
 
+export interface FriendWhitelistEverywhereControl extends EventTarget {
+  readonly dataset: { readonly whitelistEverywherePerson?: string };
+}
+
+export interface FriendWhitelistEverywhereRoot {
+  querySelectorAll(selector: string): Iterable<FriendWhitelistEverywhereControl>;
+}
+
+export interface FriendWhitelistNowhereControl extends EventTarget {
+  readonly dataset: { readonly whitelistNowherePerson?: string };
+}
+
+export interface FriendWhitelistNowhereRoot {
+  querySelectorAll(selector: string): Iterable<FriendWhitelistNowhereControl>;
+}
+
 /**
- * Friend-wide reach buttons operate on every current account for this friend,
- * unlike the individual chat approvals displayed above them.
+ * Friend-wide reach buttons: one action that ticks every current owned
+ * account for this friend, and one that unticks all of them. They operate on
+ * the whole friend at once, distinct from the per-chat approvals above.
  */
 export function friendWhitelistEverywhereButtonMarkup(
   personId: string,
   escapeAttribute: (value: string) => string,
 ): string {
-  return `<button class="button compact" type="button" data-whitelist-everywhere-person="${escapeAttribute(personId)}">Whitelist everywhere</button>`;
+  const escapedPersonId = escapeAttribute(personId);
+  return `<button class="button compact" type="button" data-whitelist-everywhere-person="${escapedPersonId}" data-whitelist-everywhere="${escapedPersonId}">Whitelist everywhere</button>`;
 }
 
 export function friendWhitelistNowhereButtonMarkup(
   personId: string,
   escapeAttribute: (value: string) => string,
 ): string {
-  return `<button class="button compact danger" type="button" data-whitelist-nowhere-person="${escapeAttribute(personId)}">Whitelist nowhere</button>`;
+  const escapedPersonId = escapeAttribute(personId);
+  return `<button class="button compact danger" type="button" data-whitelist-nowhere-person="${escapedPersonId}" data-whitelist-nowhere="${escapedPersonId}">Whitelist nowhere</button>`;
+}
+
+/** Render both friend-wide reach actions using the shared single-button definitions. */
+export function friendWideWhitelistButtonsMarkup(
+  personId: string,
+  escapeAttribute: (value: string) => string,
+): string {
+  return `<div class="friend-wide-whitelist-actions friend-whitelist-reach">${friendWhitelistEverywhereButtonMarkup(personId, escapeAttribute)}${friendWhitelistNowhereButtonMarkup(personId, escapeAttribute)}</div>`;
+}
+
+export function bindFriendWhitelistEverywhereControls(
+  root: FriendWhitelistEverywhereRoot,
+  requestWhitelistEverywhere: (personId: string) => void,
+): void {
+  for (const control of root.querySelectorAll(FRIEND_WHITELIST_EVERYWHERE_SELECTOR)) {
+    control.addEventListener("click", () => requestWhitelistEverywhere(control.dataset.whitelistEverywherePerson ?? ""));
+  }
+}
+
+export function bindFriendWhitelistNowhereControls(
+  root: FriendWhitelistNowhereRoot,
+  requestWhitelistNowhere: (personId: string) => void,
+): void {
+  for (const control of root.querySelectorAll(FRIEND_WHITELIST_NOWHERE_SELECTOR)) {
+    control.addEventListener("click", () => requestWhitelistNowhere(control.dataset.whitelistNowherePerson ?? ""));
+}
 }
 
 export function bindFriendRemovalControls(
@@ -359,4 +477,55 @@ export function bindFriendRemovalControls(
   for (const control of root.querySelectorAll(FRIEND_REMOVAL_SELECTOR)) {
     control.addEventListener("click", () => requestFriendRemoval(control.dataset.removePerson ?? ""));
   }
+}
+
+export interface AddFriendByNameFormElements {
+  readonly nameInput: { value: string };
+  readonly sendButton: EventTarget;
+  readonly statusElement: { textContent: string };
+  readonly listElement: { innerHTML: string };
+}
+
+export interface AddFriendByNameFormRoot {
+  querySelector(selector: string): unknown;
+}
+
+function addFriendByNameFormElements(root: AddFriendByNameFormRoot): AddFriendByNameFormElements | null {
+  const nameInput = root.querySelector("#friend-osl-name-input") as { value: string } | null;
+  const sendButton = root.querySelector("#send-friend-request-by-name") as EventTarget | null;
+  const statusElement = root.querySelector("#friend-name-request-status") as { textContent: string } | null;
+  const listElement = root.querySelector("#pending-friend-requests-list") as { innerHTML: string } | null;
+  if (!nameInput || !sendButton || !statusElement || !listElement) return null;
+  return { nameInput, sendButton, statusElement, listElement };
+}
+
+/**
+ * Wires the add-friend-by-name box drawn by `addFriendByNameBoxMarkup`: a
+ * click on Send Request submits the field's current value through
+ * `dependencies`, then repaints both the status line and the Pending list
+ * from the caller's running `pending` array -- the same array every call
+ * mutates in place, so each submission's refresh reflects every prior one.
+ */
+export function bindAddFriendByNameForm(
+  root: AddFriendByNameFormRoot,
+  pending: PendingFriendRequestEntry[],
+  dependencies: FriendNameRequestDependencies,
+  escapeHtml: (value: string) => string,
+): void {
+  const elements = addFriendByNameFormElements(root);
+  if (!elements) return;
+  const { nameInput, sendButton, statusElement, listElement } = elements;
+  sendButton.addEventListener("click", () => {
+    void (async () => {
+      const outcome = await submitFriendNameRequest(nameInput.value, dependencies);
+      if (outcome.ok) {
+        pending.push(outcome.entry);
+        nameInput.value = "";
+        statusElement.textContent = "";
+      } else {
+        statusElement.textContent = outcome.refusal;
+      }
+      listElement.innerHTML = pendingFriendRequestListMarkup(pending, escapeHtml);
+    })();
+  });
 }

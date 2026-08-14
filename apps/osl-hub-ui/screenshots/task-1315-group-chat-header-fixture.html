@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark light" />
+    <title>OSL group chat header — TASK 1315</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+  <body>
+    <main class="task-1315-fixture-shell">
+      <p class="task-1315-fixture-label">OSL Chat</p>
+      <section class="task-1315-conversation" aria-label="Group conversation">
+        <div id="task-1315-header"></div>
+        <div class="task-1315-transcript"><p>Choose a group to start chatting.</p></div>
+      </section>
+    </main>
+    <script type="module">
+      import { oslGroupChatHeaderMarkup } from "/src/group-chat-header.ts";
+
+      const empty = new URLSearchParams(location.search).get("state") === "empty";
+      const host = document.querySelector("#task-1315-header");
+      host.innerHTML = empty ? "" : oslGroupChatHeaderMarkup({
+        groupId: "group-weekend-plans",
+        name: "Weekend plans",
+        memberCount: 3,
+      });
+      document.documentElement.dataset.task1315 = empty ? "empty" : "ready";
+    </script>
+  </body>
+</html>

@@ -4,7 +4,6 @@ import "./strip.css";
 import oslStripGhostMarkUrl from "./assets/Ghost-white.svg";
 import { createOslStrip, type OslStripHandle } from "./strip";
 import type { OslStripState, StripQuickSettingRow, StripTimerPreset } from "./strip-state";
-import { createStripCoachTour, type StripCoachTourHandle } from "./strip-coach-tour";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { checkedBackendResponse, lastBackendFailure, recordBackendFailure, recordInvalidBackendResponse } from "./backend-failure";
@@ -14,7 +13,7 @@ import { boundedProtectedDraft, MAX_PROTECTED_DRAFT_BYTES, NATIVE_OVERLAY_TTL_OP
 import { OverlaySendGesture, type OverlaySendGestureResult, type OverlaySendMode } from "./overlay-send-gesture";
 import { CoarseTypingRate } from "./coarse-typing-rate";
 import { TwoStepBurnConfirmation } from "./two-step-burn";
-import { DELETION_REFERENCE_DISCLOSURE } from "./feature-claims";
+import { ComposerProtectionTraceController } from "./composer-protection-trace";
 import { shouldPollDiscordOverlay } from "./discord-qa-receive-policy";
 import { recordDiscordQaSendStage } from "./discord-qa-send-stage";
 import {
@@ -42,6 +41,10 @@ import {
   type NativeDiscordRowAttribution,
   type NativeDiscordRowOrientation,
 } from "./discord-row-attribution";
+import {
+  NATIVE_DISCORD_MISSING_COVER_ROW_NOTICE,
+  visibleOpenedMessagesForCarrierRows,
+} from "./native-overlay-row-visibility";
 
 function requireElement<T extends Element>(selector: string): T {
   const element = document.querySelector<T>(selector);
@@ -50,6 +53,8 @@ function requireElement<T extends Element>(selector: string): T {
 }
 
 const draft = requireElement<HTMLTextAreaElement>("#protected-draft");
+const composerBox = requireElement<HTMLElement>(".composer-box");
+const composerProtectionTrace = requireElement<SVGSVGElement>(".composer-protection-trace");
 const counter = requireElement<HTMLElement>("#draft-bytes");
 const friendLabel = requireElement<HTMLElement>("#friend-label");
 const ttl = requireElement<HTMLSelectElement>("#protected-ttl");
@@ -82,8 +87,8 @@ const c4NativeReceipt = requireElement<HTMLOutputElement>("#native-carrier-recei
 const sendWarning = requireElement<HTMLOutputElement>("#overlay-send-warning");
 // The seen half of that same signal, and the reason this exists at all: the
 // persistent notice above is announced but never displayed. It sits in
-// `.composer-toolbar`, and this composer's native track is Discord's measured
-// rectangle -- 736x58 logical pixels, live -- where the toolbar is
+// `.composer-toolbar`, and this window is sized natively to Discord's measured
+// composer rectangle -- 736x58 logical pixels, live -- where the toolbar is
 // flex-shrunk to nothing and, under `data-native-composer-capture`, set to
 // `display: none` outright. A send that never reached Discord therefore looked
 // exactly like one that did.
@@ -104,19 +109,12 @@ const discordQaShell = import.meta.env.VITE_OSL_DISCORD_QA_SHELL === "1";
 const PROTECTED_DISPLAY_VISIBILITY_CHANGED_EVENT = "osl://protected-display-visibility-changed";
 const NATIVE_SURFACE_CHANGED_EVENT = "osl://native-surface-changed";
 const OVERLAY_REFOCUS_EVENT = "osl://native-discord-overlay-refocus";
-// THERE IS NO PUSH WAKEUP, AND THIS RENDERER NO LONGER PRETENDS THERE IS.
-// A listener for "osl://realtime-wakeup" used to sit below, carrying a comment
-// claiming "the Rust realtime transport emits this only after it accepted a
-// wakeup whose blob id matches a locally-held carrier pointer". No such emitter
-// has ever existed in this repo -- ledger 5 (events) reported the name as
-// listened-but-never-emitted, and a search of the whole tree finds the string
-// nowhere but at that listener. The claim was the defect: it made a
-// never-fires path read as a shipped one, which is this project's defining
-// failure shape. The product line is unchanged and stays honest -- you see
-// messages when you open OSL -- and every real receive edge still runs through
-// requestRealtimeDrain() (display-visibility on, reveal, save, session start).
-// Do not re-add a listener here to "reserve" the name: a subscription with no
-// emitter is not a hook, it is a silent dead branch.
+const DISCORD_RECEIVE_WAKEUP_EVENT = "osl://discord-receive-wakeup";
+// RECEIVE WAKE-UP EDGE. The notice is only a hint that a protected Discord row
+// may be waiting; it never carries plaintext, a blob id, or a sender identity.
+// Keep it on the same path as every other receive edge: requestRealtimeDrain()
+// fetches through open_native_discord_overlay_text under receiveBusy, and only
+// a non-empty batch raises the transcript repaint below.
 // Discord's transcript band moved, resized or came to rest, so every row
 // rectangle this renderer holds is now pointing at the wrong pixels. No payload:
 // it is a bare "re-read", raised by the native guard loop on the tick something
@@ -243,11 +241,32 @@ let activeVisualRecipe: DiscordVisualRecipe | null = null;
 // weight and the transcript read itself measures none of those. Content-free:
 // an image data URL, four rectangles, a colour and four font facts.
 let activeNativeSurface: NativeSurfaceCapture | undefined;
-let lockEngaged = true;
+let lockEngaged = false;
+const composerProtectionTraceController = new ComposerProtectionTraceController();
+let appliedComposerTraceCount = 0;
+
+function renderComposerProtection(engaged: boolean, traceCount: number): void {
+  composerBox.classList.toggle("composer-protection-active", engaged);
+  if (!engaged) {
+    composerProtectionTrace.classList.remove("composer-protection-tracing");
+    return;
+  }
+  if (traceCount === appliedComposerTraceCount) return;
+  appliedComposerTraceCount = traceCount;
+  composerProtectionTrace.classList.remove("composer-protection-tracing");
+  // Removing and re-adding the class after a layout read starts this one CSS
+  // animation once for the new reducer sequence number, never for duplicates.
+  void composerProtectionTrace.getBoundingClientRect();
+  composerProtectionTrace.classList.add("composer-protection-tracing");
+}
+
+// ---- OSL Strip (the 44px chip bar) ----------------------------------------
+// Declared here, before the first `applyLockEngaged(true)` below runs at module
+// evaluation, so syncOslStrip() never touches a let still in its dead zone.
 let oslStrip: OslStripHandle | null = null;
-let stripCoachTour: StripCoachTourHandle | null = null;
+let stripRevealDesired = false;
 let stripRevealSyncing = false;
-let stripModuleReady = false;
+let stripRevealRetryTimer: number | undefined;
 
 /**
  * The lock is encryption only, and it governs exactly one thing on screen: who
@@ -259,7 +278,9 @@ let stripModuleReady = false;
  * business and nothing else's.
  */
 function applyLockEngaged(engaged: boolean): void {
+  const protection = composerProtectionTraceController.applyLockEngaged(engaged, discordMarkerAvailable);
   lockEngaged = engaged;
+  renderComposerProtection(protection.engaged, protection.traceCount);
   document.documentElement.dataset.oslLockEngaged = String(engaged);
   // Lock down: OSL owns no message box, the operator is typing into Discord's
   // own again, and whatever caret this renderer was given belongs to an
@@ -330,7 +351,9 @@ function focusEngagedProtectedDraft(): void {
   }
 }
 
-applyLockEngaged(true);
+// A retained overlay starts with no protection pixels. A verified state event
+// is the only authority that may raise the protected-composer edge.
+applyLockEngaged(false);
 
 function discordComposerPlaceholder(friend: string): string {
   const normalized = friend.replace(/\s+/gu, " ").trim().replace(/^@/u, "");
@@ -671,7 +694,7 @@ function paintBoundRows(): void {
     }
   }
   for (const binding of verifiedCarrierRows) {
-    const item = outgoingBubbles.get(binding.messageId);
+    const item = incomingBubbles.get(binding.messageId) ?? outgoingBubbles.get(binding.messageId);
     if (item) {
       bindCarrierRowGeometry(item, binding);
       applyCarrierRowGeometry(item, binding);
@@ -782,9 +805,10 @@ function clearDecodedTranscript(): void {
   syncTranscript();
 }
 
-async function refreshVerifiedCarrierRows(): Promise<void> {
+async function refreshVerifiedCarrierRows(): Promise<readonly NativeDiscordCarrierRowBinding[] | undefined> {
   const state = await getNativeDiscordOverlayState();
   applyVerifiedCarrierRows(state?.visibleCarrierRows);
+  return state?.visibleCarrierRows;
 }
 
 // ---------------------------------------------------------------------------
@@ -1447,8 +1471,10 @@ async function drainReceived(): Promise<void> {
       recordInvalidBackendResponse("open_native_discord_overlay_text",
         "the backend retained rows with an unrecognized protected-message wire");
     }
+    const visibleCarrierRows = await refreshVerifiedCarrierRows();
+    const rowVisibility = visibleOpenedMessagesForCarrierRows(batch.messages, visibleCarrierRows);
     let opened = 0;
-    for (const message of batch.messages) {
+    for (const message of rowVisibility.visibleMessages) {
       // Named by its correlation handle, so a message the backend surfaces a
       // second time -- a row it could not delete, a receipt replay -- updates
       // nothing instead of appending a second bubble for the same text.
@@ -1457,11 +1483,11 @@ async function drainReceived(): Promise<void> {
       incomingBubbles.set(message.messageId, item);
       opened += 1;
     }
+    if (opened > 0) paintBoundRows();
     for (const message of batch.pendingViewOnce) appendPendingViewOnce(message);
     for (const acknowledgment of batch.acknowledgments) {
       applyAcknowledgment(acknowledgment.messageId, acknowledgment.status);
     }
-    await refreshVerifiedCarrierRows();
     // NEW-MESSAGE EDGE. Deliberately conditional: this function is itself a
     // poll, so scheduling a transcript read unconditionally here would make the
     // eye poll Discord's accessibility tree once per receive tick -- exactly the
@@ -1477,7 +1503,9 @@ async function drainReceived(): Promise<void> {
     for (const attachment of attachments) appendPendingAttachment(attachment);
     // Fixed sentences only, and only ever about counts and states -- never a
     // fragment of what arrived.
-    const statusText = nativeOverlayReceiveStatusText(opened, batch);
+    const statusText = rowVisibility.missingCoverRows > 0
+      ? NATIVE_DISCORD_MISSING_COVER_ROW_NOTICE
+      : nativeOverlayReceiveStatusText(opened, batch);
     if (statusText !== null) status.textContent = statusText;
   } catch (error) {
     // This was the last swallowed failure in the file: a bare `catch` that only
@@ -1679,8 +1707,7 @@ async function sendDraft(): Promise<void> {
       // this copy survives the churn on `status` described above, and stays
       // up until one of the two clear points documented at their call sites.
       sendWarning.textContent = failureNotice;
-      // ...and to the band that the natively sized 736x58 composer track can
-      // actually
+      // ...and to the band that the natively sized 736x58 window can actually
       // show, because everything above this line is announcement only: the
       // element it was written to has no room in this window, which is how a
       // failed send came to look identical to a successful one.
@@ -1894,12 +1921,14 @@ burnChat.addEventListener("click", (event) => {
   handleBurnActivation(event.isTrusted);
 });
 
+// Shared by the legacy Burn button above and the strip's flame chip: both are
+// the same two-step confirmation against the same in-memory arm state.
 function handleBurnActivation(trusted: boolean): void {
   const step = burnConfirmation.step(performance.now(), trusted);
   if (step === "ignored") return;
   if (step === "armed") {
     burnChat.textContent = "Confirm burn";
-    status.textContent = `This removes this OSL chat locally and tries to delete its remote OSL blobs. Discord history and recipient copies stay untouched. ${DELETION_REFERENCE_DISCLOSURE} Click again to confirm.`;
+    status.textContent = "This removes this OSL chat locally and tries to delete its remote OSL blobs. Discord history and recipient copies stay untouched. Click again to confirm.";
     if (burnTimer !== undefined) window.clearTimeout(burnTimer);
     burnTimer = window.setTimeout(() => {
       burnTimer = undefined;
@@ -1927,7 +1956,7 @@ function handleBurnActivation(trusted: boolean): void {
       ? `${result.remoteBlobsDeleted} remote OSL blobs deleted.`
       : `${result.remoteBlobsDeleted} remote OSL blobs deleted; ${result.remoteBlobDeletionsFailed} could not be deleted and remain tracked for retry.`;
     clearMessageBubbles();
-    status.textContent = `OSL chat burned. ${result.localProtectedRowsDestroyed} local protected rows removed. ${remote} Discord history and recipient copies were not deleted. ${DELETION_REFERENCE_DISCLOSURE}`;
+    status.textContent = `OSL chat burned. ${result.localProtectedRowsDestroyed} local protected rows removed. ${remote} Discord history and recipient copies were not deleted.`;
   })();
 }
 
@@ -1996,7 +2025,7 @@ function expiryLabel(seconds: NativeOverlayTtlSeconds): string {
   return "7 days";
 }
 
-async function saveSecurity(): Promise<void> {
+async function saveSecurity(requestedReveal = decryptDisplayEnabled): Promise<void> {
   if (!overlayReady || securityBusy) return;
   const requestedTtl = Number(ttl.value);
   if (!NATIVE_OVERLAY_TTL_OPTIONS.includes(requestedTtl as NativeOverlayTtlSeconds)) {
@@ -2010,7 +2039,7 @@ async function saveSecurity(): Promise<void> {
   securityBusy = true;
   refreshControls();
   status.textContent = "Saving protection…";
-  const saved = await setNativeDiscordOverlaySecurity(requestedTtl as NativeOverlayTtlSeconds, decryptDisplayEnabled);
+  const saved = await setNativeDiscordOverlaySecurity(requestedTtl as NativeOverlayTtlSeconds, requestedReveal);
   securityBusy = false;
   if (!saved) {
     ttl.value = String(previousTtl);
@@ -2070,6 +2099,7 @@ async function refreshProtectedDisplayVisibility(): Promise<void> {
     caretGrantedForEngagement = false;
     return;
   }
+  discordMarkerAvailable = state.discordMarkerAvailable;
   applyLockEngaged(state.lockEngaged ?? true);
   applyDiscordVisualRecipe(state.visualRecipe);
   applyNativeSurfaceCapture(state.nativeSurface);
@@ -2126,6 +2156,7 @@ async function initializeOverlay(): Promise<void> {
     overlayInitRetryMs = 250;
     // Verified: nothing left to poll for until this session ends.
     cancelOverlayInit();
+    discordMarkerAvailable = state.discordMarkerAvailable;
     applyLockEngaged(state.lockEngaged ?? true);
     applyDiscordVisualRecipe(state.visualRecipe);
     applyNativeSurfaceCapture(state.nativeSurface);
@@ -2356,6 +2387,9 @@ void listen<void>(OVERLAY_REFOCUS_EVENT, () => {
 void listen<void>(NATIVE_DISCORD_ROWS_MOVED_EVENT, () => {
   scheduleTranscriptRehydrate();
 });
+void listen<void>(DISCORD_RECEIVE_WAKEUP_EVENT, () => {
+  requestRealtimeDrain();
+});
 
 // NATIVE BAND-SPLIT EDGE. The window went from covering Discord's composer to
 // covering its transcript rows only, or back. Nothing but the attribute is set:
@@ -2367,11 +2401,15 @@ void listen<boolean>(NATIVE_DISCORD_COMPOSER_BAND_SURRENDERED_EVENT, ({ payload 
   // state this renderer has always been in and the one an operator can see.
   if (typeof payload !== "boolean") return;
   document.documentElement.dataset.oslComposerBandSurrendered = String(payload);
-  // The composer is no longer on screen, so whatever caret this renderer was
-  // given belongs to an engagement it can no longer serve. Same reasoning as the
-  // lock coming down in applyLockEngaged(): the next raise is a fresh one and
-  // gets its own grant.
   if (payload) caretGrantedForEngagement = false;
+  applyLockEngaged(!payload);
+  // This native edge is also the retained-session lock edge. With rows still
+  // painted, lowering the lock keeps this WebView alive but moves its window
+  // off the measured composer rectangle; no session-discard event follows.
+  // Conversely, a `false` edge means the guard has put the window back on the
+  // detected composer for a raised lock. Driving the same idempotent controller
+  // here removes every protection pixel on off and produces only one trace even
+  // when the session announcement repeats the same on state immediately after.
 });
 
 // The WebView is retained so the lock toggle can show it instantly. Nothing
@@ -2379,6 +2417,9 @@ void listen<boolean>(NATIVE_DISCORD_COMPOSER_BAND_SURRENDERED_EVENT, ({ payload 
 // rendered plaintext row, the sampled native surface and the ready state are
 // all discarded here. Nothing is logged, hashed or persisted on this path.
 function discardProtectedSession(): void {
+  // Session discard is a real protection-off edge for this retained renderer:
+  // clear the trace and outline without removing the composer DOM.
+  applyLockEngaged(false);
   overlayReady = false;
   setBusy(true);
   draft.value = "";
@@ -2438,6 +2479,22 @@ void listen<boolean>(OVERLAY_SESSION_EVENT, ({ payload }) => {
   void initializeOverlay();
 });
 
+void initializeOverlay();
+
+// ---------------------------------------------------------------------------
+// The OSL Strip — the 44px chip bar (canon README "Screens / Views > 4. Strip").
+//
+// Inside this natively sized 736x58 composer window the band has no room, so
+// strip.css keeps it display:none below 102px of window height; the wiring
+// below still runs, which means the moment the native side allocates a strip
+// band the bar appears already live. The fixture page
+// (screenshots/strip-fixture.html) renders the same component full-size.
+//
+// HONESTY MAP for this window: the room is proven exactly when the backend has
+// verified a protected session (`overlayReady` — geometry alone is never proof,
+// per external_overlay.rs). Controls with no backend reachable from this
+// window render greyed with the reason in their tooltip; nothing is faked.
+
 const STRIP_NOT_BUILT_REASON = "Not built yet — no engine backs this setting";
 const STRIP_HUB_ONLY_NAV_REASON = "Opens from the OSL hub window — this protected window can't navigate";
 
@@ -2447,10 +2504,17 @@ function stripSendModeFace(): string {
 
 function stripQuickSettings(): readonly StripQuickSettingRow[] {
   return [
-    { id: "cover-text", name: "Cover text", value: coverTextEnabled ? "WORDBANK" : "OFF", kind: "cycle", available: false, reason: "Covertext is changed in the trusted OSL window" },
+    {
+      id: "cover-text",
+      name: "Cover text",
+      value: coverTextEnabled ? "WORDBANK" : "OFF",
+      kind: "cycle",
+      available: false,
+      reason: "Covertext is toggled from the trusted OSL header — this window reports it and cannot change it",
+    },
     { id: "send-with", name: "Send with", value: stripSendModeFace(), kind: "cycle", available: !sendMode.disabled, reason: "Needs a verified protected session" },
     { id: "warnings", name: "Warnings", kind: "toggle", on: true, available: false, reason: STRIP_NOT_BUILT_REASON },
-    { id: "key-change", name: "If a key or room changes", value: "BLOCK SEND", kind: "cycle", available: false, reason: "Protected sends already fail closed" },
+    { id: "key-change", name: "If a key or room changes", value: "BLOCK SEND", kind: "cycle", available: false, reason: "Sends fail closed today; the warn/mark modes are not built yet" },
     { id: "clipboard", name: "Clipboard clears after", value: "—", kind: "cycle", available: false, reason: STRIP_NOT_BUILT_REASON },
     { id: "findable", name: "Findable by strangers?", value: "—", kind: "cycle", available: false, reason: STRIP_NOT_BUILT_REASON },
     { id: "whitelist-mode", name: "Whitelist", value: "ASK", kind: "cycle", available: false, reason: STRIP_NOT_BUILT_REASON },
@@ -2460,7 +2524,7 @@ function stripQuickSettings(): readonly StripQuickSettingRow[] {
 }
 
 function stripTimerPresets(): readonly StripTimerPreset[] {
-  const unsupported = "The engine supports 1 hour to 7 days here";
+  const unsupported = "The engine supports 1 hour to 7 days here — nothing shorter, longer, or off yet";
   return [
     { label: "OFF", seconds: null, available: false, reason: unsupported },
     { label: "1H", seconds: 3_600, available: true },
@@ -2473,63 +2537,116 @@ function stripTimerPresets(): readonly StripTimerPreset[] {
 
 function overlayStripState(): OslStripState {
   const roomProven = overlayReady;
+  const viewOnceTierReason = document.querySelector<HTMLElement>("#protected-view-once-reason")
+    ?.textContent?.trim() || "View once is unavailable";
+  const deletesBy = new Date(Date.now() + confirmedTtlSeconds * 1_000)
+    .toUTCString()
+    .replace("GMT", "UTC");
   return {
     roomProven,
     roomLabel: friendLabel.textContent?.trim() || "Private message",
     plan: viewOnceEnabled ? "pro" : "free",
     planAction: { available: false, reason: STRIP_HUB_ONLY_NAV_REASON },
     homeAction: { available: false, reason: STRIP_HUB_ONLY_NAV_REASON },
-    burn: { available: !burnChat.disabled, reason: "Burn needs a verified protected session" },
-    whitelist: { roster: null, available: false, reason: "The whitelist roster lives in the OSL hub for now" },
+    burn: {
+      available: !burnChat.disabled,
+      reason: "Burn needs a verified protected session",
+    },
+    whitelist: {
+      roster: null,
+      available: false,
+      reason: "The whitelist roster lives in the OSL hub for now — this window can't read or change it",
+    },
     timer: {
       seconds: confirmedTtlSeconds,
       presets: stripTimerPresets(),
       available: !ttl.disabled,
       reason: roomProven ? "Saving protection…" : undefined,
-      factLine: `IF SENT NOW · OSL STOPS DECRYPTING BY ${new Date(Date.now() + confirmedTtlSeconds * 1_000).toUTCString().replace("GMT", "UTC")}`,
+      factLine: `IF SENT NOW · OSL STOPS DECRYPTING BY ${deletesBy}`,
       tooltip: `OSL stops decrypting ${expiryLabel(confirmedTtlSeconds)} after delivery — it cannot stop a screenshot`,
     },
-    once: { armed: viewOnce.checked, seconds: null, available: !viewOnce.disabled, reason: viewOnceEnabled ? "Busy — try again" : "Making one needs Pro" },
-    lock: { state: !overlayReady ? "unreachable" : lockEngaged ? "on" : "off", toggle: { available: false, reason: "The trusted OSL window controls the lock" } },
-    reveal: { revealed: decryptDisplayEnabled, available: overlayReady && !securityBusy, reason: "OSL has no verified protected session here" },
+    once: {
+      armed: viewOnce.checked,
+      seconds: null,
+      available: !viewOnce.disabled,
+      reason: viewOnceEnabled ? "Busy — try again in a moment" : viewOnceTierReason,
+    },
+    lock: {
+      state: !overlayReady ? "unreachable" : lockEngaged ? "on" : "off",
+      toggle: {
+        available: false,
+        reason: "The lock is raised and lowered from the OSL hub — this window only reports it",
+      },
+    },
+    reveal: {
+      revealed: stripRevealDesired,
+      available: overlayReady,
+      reason: "OSL has no verified protected session here, so there is nothing it could truthfully reveal",
+    },
     quickSettings: stripQuickSettings(),
-    windowControls: true,
+    windowControls: false,
   };
 }
 
-async function setStripReveal(revealed: boolean): Promise<void> {
-  if (!overlayReady || securityBusy || stripRevealSyncing) return;
-  const previous = decryptDisplayEnabled;
+function stripRevealToggle(revealed: boolean): void {
+  stripRevealDesired = revealed;
+  syncOslStrip();
+  void syncStripReveal();
+}
+
+/**
+ * Reconcile the eye toggle onto the persisted decrypt-display policy.
+ *
+ * saveSecurity() drops calls while a save is in flight, so a press-and-release
+ * quicker than one native round trip would otherwise leave the display in
+ * whichever state the first call captured. This loop always converges on the
+ * last requested toggle state. When the person hides plaintext, its fail-closed
+ * tail removes it locally even if the native save refuses, then retries.
+ */
+async function syncStripReveal(): Promise<void> {
+  if (stripRevealSyncing) return;
   stripRevealSyncing = true;
-  decryptDisplayEnabled = revealed;
-  applyDecryptDisplayVisibility(revealed);
-  syncOslStrip();
-  const saved = await setNativeDiscordOverlaySecurity(confirmedTtlSeconds, revealed);
-  stripRevealSyncing = false;
-  if (!saved) {
-    decryptDisplayEnabled = previous;
-    applyDecryptDisplayVisibility(previous);
-    status.textContent = "That visibility change was not saved.";
-  } else {
-    decryptDisplayEnabled = saved.decryptDisplayEnabled;
-    applyDecryptDisplayVisibility(decryptDisplayEnabled);
-    if (decryptDisplayEnabled) requestRealtimeDrain();
+  try {
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      if (!overlayReady) break;
+      if (securityBusy) {
+        await new Promise((resolve) => window.setTimeout(resolve, 60));
+        continue;
+      }
+      if (decryptDisplayEnabled === stripRevealDesired) break;
+      await saveSecurity(stripRevealDesired);
+    }
+  } finally {
+    stripRevealSyncing = false;
+    if (!stripRevealDesired && decryptDisplayEnabled) {
+      // Fail closed: the eye was toggled off, so nothing may stay revealed,
+      // whatever the native save just said.
+      decryptDisplayEnabled = false;
+      applyDecryptDisplayVisibility(false);
+      // The stored policy still says "revealed"; keep trying to persist the
+      // hide so a later state refresh cannot repaint plaintext unasked.
+      if (stripRevealRetryTimer !== undefined) window.clearTimeout(stripRevealRetryTimer);
+      stripRevealRetryTimer = window.setTimeout(() => {
+        stripRevealRetryTimer = undefined;
+        void syncStripReveal();
+      }, 500);
+    }
+    syncOslStrip();
   }
-  syncOslStrip();
 }
 
 function syncOslStrip(): void {
-  if (!stripModuleReady) return;
   const mount = document.querySelector<HTMLElement>("#osl-strip");
   if (!mount) return;
   if (!oslStrip) {
     oslStrip = createOslStrip(mount, {
       logoUrl: oslStripGhostMarkUrl,
       actions: {
-        onRevealToggle: (revealed) => { void setStripReveal(revealed); },
-        onBurn: handleBurnActivation,
+        onRevealToggle: stripRevealToggle,
+        onBurn: (trusted) => { handleBurnActivation(trusted); },
         onTimerSelect: (seconds) => {
-          if (seconds === null || !NATIVE_OVERLAY_TTL_OPTIONS.includes(seconds as NativeOverlayTtlSeconds)) return;
+          if (seconds === null) return;
+          if (!NATIVE_OVERLAY_TTL_OPTIONS.includes(seconds as NativeOverlayTtlSeconds)) return;
           ttl.value = String(seconds);
           void saveSecurity();
         },
@@ -2550,18 +2667,4 @@ function syncOslStrip(): void {
     });
   }
   oslStrip.update(overlayStripState());
-  if (!stripCoachTour) {
-    stripCoachTour = createStripCoachTour(oslStrip.root, {
-      carrierId: "discord",
-      onFinishOpenQuickSettings: () => oslStrip?.openQuickSettings(),
-    });
-  }
-  // The Strip and the real composer have both been drawn before their first
-  // measurement. The tour itself keeps tracking their measured geometry.
-  requestAnimationFrame(() => { stripCoachTour?.startIfNeeded(); });
 }
-
-stripModuleReady = true;
-syncOslStrip();
-(window as Window & typeof globalThis & { __coach?: () => boolean }).__coach = () => stripCoachTour?.replay() ?? false;
-void initializeOverlay();

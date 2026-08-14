@@ -105,78 +105,22 @@ pub const fn aol_control_mapping() -> &'static [WebsiteNamedControlRequest] {
     &AOL_CONTROL_REQUESTS
 }
 
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub struct VisibleMailMessage {
-    pub message_id: String,
-    pub mailbox: String,
-    pub sender_address: Option<String>,
-}
+// The shared mail owner check moved to `crate::mail_owner_check` so the shared
+// mail deleter can reach it without this file's website plumbing. Re-exported
+// here, so `service_connections::VisibleMailMessage` and friends still resolve.
+pub use crate::mail_owner_check::{
+    mail_message_is_owned_by_signed_in_address, mail_message_who_wrote_it, MailOwnerCheckError,
+    VisibleMailMessage,
+};
 
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub struct SharedMailLabel {
-    pub label_id: String,
-    pub name: String,
-}
-
-impl SharedMailLabel {
-    pub fn new(label_id: impl Into<String>, name: impl Into<String>) -> Self {
-        Self {
-            label_id: label_id.into(),
-            name: name.into(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub struct SharedMailMessageRecord {
-    pub label_id: String,
-    pub message_id: String,
-    pub subject: String,
-    pub time: i64,
-    pub sender_address: Option<String>,
-    pub body: String,
-}
-
-impl SharedMailMessageRecord {
-    pub fn new(
-        label_id: impl Into<String>,
-        message_id: impl Into<String>,
-        subject: impl Into<String>,
-        time: i64,
-        sender_address: impl Into<String>,
-        body: impl Into<String>,
-    ) -> Self {
-        Self {
-            label_id: label_id.into(),
-            message_id: message_id.into(),
-            subject: subject.into(),
-            time,
-            sender_address: Some(sender_address.into()),
-            body: body.into(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub struct SharedMailboxSnapshot {
-    pub signed_in_address: String,
-    pub labels: Vec<SharedMailLabel>,
-    pub messages: Vec<SharedMailMessageRecord>,
-}
-
-impl SharedMailboxSnapshot {
-    pub fn new(
-        signed_in_address: impl Into<String>,
-        labels: impl IntoIterator<Item = SharedMailLabel>,
-        messages: impl IntoIterator<Item = SharedMailMessageRecord>,
-    ) -> Self {
-        Self {
-            signed_in_address: signed_in_address.into(),
-            labels: labels.into_iter().collect(),
-            messages: messages.into_iter().collect(),
-        }
-    }
-}
+// The mail snapshot shape moved to `crate::shared_mail_snapshot` so the Gmail
+// fill-in of the shared mail deleter (TASK 3049) can write to the same mailbox
+// this file's readers read, without this file's website plumbing. Re-exported
+// here, so `service_connections::SharedMailboxSnapshot` and friends still
+// resolve.
+pub use crate::shared_mail_snapshot::{
+    SharedMailLabel, SharedMailMessageRecord, SharedMailboxSnapshot,
+};
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct SharedMailMessageSummary {
@@ -261,45 +205,6 @@ impl SharedMailboxPagingStop for SharedMailboxNeverStop {
     ) -> bool {
         false
     }
-}
-
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub enum MailOwnerCheckError {
-    SenderAddressUnreadable,
-}
-
-impl MailOwnerCheckError {
-    pub const fn reason(&self) -> &'static str {
-        match self {
-            Self::SenderAddressUnreadable => "OSL: sender address cannot be read",
-        }
-    }
-}
-
-pub fn mail_message_is_owned_by_signed_in_address(
-    signed_in_address: &str,
-    message: &VisibleMailMessage,
-) -> Result<bool, MailOwnerCheckError> {
-    let sender = message
-        .sender_address
-        .as_deref()
-        .map(str::trim)
-        .filter(|sender| !sender.is_empty())
-        .ok_or(MailOwnerCheckError::SenderAddressUnreadable)?;
-    Ok(sender.eq_ignore_ascii_case(signed_in_address.trim()))
-}
-
-pub fn mail_message_who_wrote_it(
-    signed_in_address: &str,
-    message: &VisibleMailMessage,
-) -> Result<SharedRowWhoWroteIt, MailOwnerCheckError> {
-    Ok(
-        if mail_message_is_owned_by_signed_in_address(signed_in_address, message)? {
-            SharedRowWhoWroteIt::Yours
-        } else {
-            SharedRowWhoWroteIt::Theirs
-        },
-    )
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -993,7 +898,7 @@ impl EmailServiceConnection {
 
     pub fn request_compose_controls(
         &self,
-        driver: &impl WebsiteDriver,
+        driver: &mut impl WebsiteDriver,
         page: &WebsitePage,
     ) -> Result<EmailComposeControls, ServiceConnectionError> {
         if self.service_id != "email" {
@@ -1022,6 +927,85 @@ impl EmailServiceConnection {
 
     pub fn account_id(&self) -> &str {
         &self.account_id
+    }
+}
+
+pub const OUTLOOK_TASK_1239_MESSAGE_ID: &str = "maple-mail-1";
+pub const OUTLOOK_TASK_1239_FINGERPRINT: &str = "MAPLE-4172";
+pub const OUTLOOK_READING_PANE_MISSING: &str = "Outlook reading pane missing";
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct OutlookWebReadResult {
+    pub message_id: String,
+    pub fingerprint: String,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum OutlookWebCommandError {
+    ReadingPaneMissing,
+    MessageMissing,
+}
+
+impl OutlookWebCommandError {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::ReadingPaneMissing => OUTLOOK_READING_PANE_MISSING,
+            Self::MessageMissing => "Outlook message missing",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct FakeOutlookWebPage {
+    reading_pane_present: bool,
+    read_count: usize,
+    saved_result: Option<OutlookWebReadResult>,
+}
+
+impl Default for FakeOutlookWebPage {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl FakeOutlookWebPage {
+    pub fn new() -> Self {
+        Self {
+            reading_pane_present: true,
+            read_count: 0,
+            saved_result: None,
+        }
+    }
+
+    pub fn read_count(&self) -> usize {
+        self.read_count
+    }
+
+    pub fn saved_result(&self) -> Option<&OutlookWebReadResult> {
+        self.saved_result.as_ref()
+    }
+
+    pub fn set_reading_pane_present(&mut self, present: bool) {
+        self.reading_pane_present = present;
+    }
+
+    pub fn read_message(
+        &mut self,
+        message_id: &str,
+    ) -> Result<OutlookWebReadResult, OutlookWebCommandError> {
+        if !self.reading_pane_present {
+            return Err(OutlookWebCommandError::ReadingPaneMissing);
+        }
+        if message_id != OUTLOOK_TASK_1239_MESSAGE_ID {
+            return Err(OutlookWebCommandError::MessageMissing);
+        }
+        let result = OutlookWebReadResult {
+            message_id: OUTLOOK_TASK_1239_MESSAGE_ID.to_owned(),
+            fingerprint: OUTLOOK_TASK_1239_FINGERPRINT.to_owned(),
+        };
+        self.read_count += 1;
+        self.saved_result = Some(result.clone());
+        Ok(result)
     }
 }
 
@@ -1119,7 +1103,7 @@ mod tests {
         let connection = EmailServiceConnection::new("email", "sample-email-account");
 
         let controls = connection
-            .request_compose_controls(&driver, &page)
+            .request_compose_controls(&mut driver, &page)
             .expect("sample email service connection receives fixture controls");
         let requested_names = driver.requested_names();
 
@@ -1319,5 +1303,44 @@ mod tests {
             .is_err(),
             "blank sender addresses must fail closed too"
         );
+    }
+
+    #[test]
+    fn task_1239_outlook_web_refuses_missing_reading_pane_without_losing_saved_result() {
+        let mut page = FakeOutlookWebPage::new();
+        let before_count = page.read_count();
+        println!("TASK1239_OUTLOOK_WEB_READ_COUNT_BEFORE={before_count}");
+        assert_eq!(before_count, 0);
+
+        let read = page
+            .read_message(OUTLOOK_TASK_1239_MESSAGE_ID)
+            .expect("reading pane present returns the Outlook web fixture");
+        let after_count = page.read_count();
+        println!("TASK1239_OUTLOOK_WEB_READ_COUNT_AFTER={after_count}");
+        println!("TASK1239_READ_MESSAGE_ID={}", read.message_id);
+        println!("TASK1239_READ_FINGERPRINT={}", read.fingerprint);
+        assert_eq!(after_count, 1);
+        assert_eq!(read.message_id, OUTLOOK_TASK_1239_MESSAGE_ID);
+        assert_eq!(read.fingerprint, OUTLOOK_TASK_1239_FINGERPRINT);
+
+        page.set_reading_pane_present(false);
+        let refused = page
+            .read_message(OUTLOOK_TASK_1239_MESSAGE_ID)
+            .expect_err("missing Outlook reading pane must refuse");
+        println!("TASK1239_MISSING_REFUSED={}", refused.as_str());
+        assert_eq!(refused.as_str(), OUTLOOK_READING_PANE_MISSING);
+
+        let saved = page
+            .saved_result()
+            .expect("successful read remains the saved result");
+        println!("TASK1239_SAVED_MESSAGE_ID={}", saved.message_id);
+        println!("TASK1239_SAVED_FINGERPRINT={}", saved.fingerprint);
+        println!(
+            "TASK1239_OUTLOOK_WEB_READ_COUNT_FINAL={}",
+            page.read_count()
+        );
+        assert_eq!(saved.message_id, OUTLOOK_TASK_1239_MESSAGE_ID);
+        assert_eq!(saved.fingerprint, OUTLOOK_TASK_1239_FINGERPRINT);
+        assert_eq!(page.read_count(), 1);
     }
 }

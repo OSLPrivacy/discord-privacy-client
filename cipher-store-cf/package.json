@@ -10,6 +10,7 @@
     "verify:contracts": "node scripts/d2-contract-gate.ts",
     "test": "node scripts/d2-contract-gate.ts && vitest run && vitest run --config vitest.node.config.ts",
     "test:worker": "vitest run",
+    "test:task4406": "node scripts/task-4406-live-realtime.mjs",
     "test:promotion-proof": "vitest run --config vitest.node.config.ts",
     "d2:promotion-proof": "node scripts/d2-promotion-proof.ts",
     "dev": "wrangler dev",

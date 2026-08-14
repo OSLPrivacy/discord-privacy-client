@@ -1,0 +1,7261 @@
+{
+  "url": "http://127.0.0.1:5173/screenshots/task-0792-account-fixture.html",
+  "window": {
+    "width": 1280,
+    "height": 800
+  },
+  "title": "Account",
+  "namedControls": [
+    "identity",
+    "password",
+    "recovery",
+    "lock",
+    "stealth",
+    "burn password",
+    "Pro code"
+  ],
+  "secretDigests": {
+    "password": {
+      "sha256": "2354e3e468db4061d3233fefc8191533683e363c3a3230dd2f527e936f8c4240",
+      "length": 21
+    },
+    "recoveryPhrase": {
+      "sha256": "03116c1456d21a6de6700b31a8da595dd89ce80f3e6de2bb740e39d53fb20704",
+      "length": 79
+    },
+    "proCode": {
+      "sha256": "d5fdb93f5cfe198d4c84e919d301059d4f32565bca647fe41245705da31820ae",
+      "length": 23
+    },
+    "stealthPassword": {
+      "sha256": "94fe6aa9cc3d9556f1e7acf54a81a972affbe56837741a20d2a536c877fe44f3",
+      "length": 20
+    },
+    "burnPassword": {
+      "sha256": "e0cb6526c4cea47be8d3e427f9d9366b73aef716acaed4f13604cab44a64e89d",
+      "length": 20
+    }
+  },
+  "screen": {
+    "title": "Account",
+    "titleBox": {
+      "x": 33,
+      "y": 31,
+      "width": 1214,
+      "height": 25.1875
+    },
+    "controls": [
+      {
+        "id": "identity",
+        "label": "Identity",
+        "secret": "no",
+        "changed": "no",
+        "reset": "safe",
+        "resetText": "Puts the shown name back to your handle. The handle itself does not change.",
+        "resetButton": "Reset",
+        "noReset": null,
+        "detail": "Signed in as nora.vale.0324.",
+        "valueTag": "input",
+        "valueText": "Nora Vale",
+        "masked": null,
+        "valueLabel": "Identity, the name this account shows to you",
+        "action": null,
+        "box": {
+          "x": 33,
+          "y": 104.96875,
+          "width": 1214,
+          "height": 64
+        },
+        "nameBox": {
+          "x": 46,
+          "y": 118.140625,
+          "width": 59.796875,
+          "height": 20.25
+        },
+        "valueBox": {
+          "x": 439.5,
+          "y": 114.96875,
+          "width": 190,
+          "height": 44
+        }
+      },
+      {
+        "id": "password",
+        "label": "Password",
+        "secret": "yes",
+        "changed": "no",
+        "reset": "unsafe",
+        "resetText": "There is no reset. OSL cannot read the password you have, so it cannot put it back, and clearing it would leave this workspace open to whoever opens the lid.",
+        "resetButton": null,
+        "noReset": "No reset",
+        "detail": "Set, and last changed 12 January 2026. It is never shown, here or anywhere.",
+        "valueTag": "span",
+        "valueText": "••••••••••••",
+        "masked": "password",
+        "valueLabel": "Password is set and is not shown",
+        "action": "Change password",
+        "box": {
+          "x": 33,
+          "y": 174.96875,
+          "width": 1214,
+          "height": 73.03125
+        },
+        "nameBox": {
+          "x": 46,
+          "y": 184.96875,
+          "width": 72.78125,
+          "height": 20.25
+        },
+        "valueBox": {
+          "x": 439.5,
+          "y": 202.484375,
+          "width": 158.78125,
+          "height": 18
+        }
+      },
+      {
+        "id": "recovery",
+        "label": "Recovery",
+        "secret": "yes",
+        "changed": "no",
+        "reset": "unsafe",
+        "resetText": "There is no reset. A new kit makes the words you already wrote down useless, and the old ones cannot be brought back.",
+        "resetButton": null,
+        "noReset": "No reset",
+        "detail": "12 words, written down 4 March 2026. Shown only on the recovery screen, after your password.",
+        "valueTag": "span",
+        "valueText": "••••••••••••",
+        "masked": "recovery",
+        "valueLabel": "Recovery is set and is not shown",
+        "action": "Show recovery kit",
+        "box": {
+          "x": 33,
+          "y": 254,
+          "width": 1214,
+          "height": 73.03125
+        },
+        "nameBox": {
+          "x": 46,
+          "y": 264,
+          "width": 70.25,
+          "height": 20.25
+        },
+        "valueBox": {
+          "x": 439.5,
+          "y": 281.515625,
+          "width": 158.78125,
+          "height": 18
+        }
+      },
+      {
+        "id": "lock",
+        "label": "Lock",
+        "secret": "no",
+        "changed": "no",
+        "reset": "safe",
+        "resetText": "Puts the lock delay back to five minutes. Nothing else changes.",
+        "resetButton": "Reset",
+        "noReset": null,
+        "detail": "Locks this workspace when you step away from it.",
+        "valueTag": "select",
+        "valueText": "After 30 minutes",
+        "masked": null,
+        "valueLabel": "Lock this workspace after",
+        "action": null,
+        "box": {
+          "x": 33,
+          "y": 333.03125,
+          "width": 1214,
+          "height": 64
+        },
+        "nameBox": {
+          "x": 46,
+          "y": 346.203125,
+          "width": 34.859375,
+          "height": 20.25
+        },
+        "valueBox": {
+          "x": 439.5,
+          "y": 343.03125,
+          "width": 190,
+          "height": 44
+        }
+      },
+      {
+        "id": "stealth",
+        "label": "Stealth",
+        "secret": "yes",
+        "changed": "no",
+        "reset": "safe",
+        "resetText": "Clears the stealth password. The stealth workspace holds no messages, so nothing is lost.",
+        "resetButton": "Reset",
+        "noReset": null,
+        "detail": "Set. Entered at sign in, it opens an empty workspace.",
+        "valueTag": "span",
+        "valueText": "••••••••••••",
+        "masked": "stealth",
+        "valueLabel": "Stealth is set and is not shown",
+        "action": "Change stealth password",
+        "box": {
+          "x": 33,
+          "y": 403.03125,
+          "width": 1214,
+          "height": 64
+        },
+        "nameBox": {
+          "x": 46,
+          "y": 416.203125,
+          "width": 55.140625,
+          "height": 20.25
+        },
+        "valueBox": {
+          "x": 439.5,
+          "y": 426.03125,
+          "width": 158.78125,
+          "height": 18
+        }
+      },
+      {
+        "id": "burn-password",
+        "label": "Burn password",
+        "secret": "yes",
+        "changed": "no",
+        "reset": "safe",
+        "resetText": "Clears the burn password, so it can never be typed in by accident. It erases nothing.",
+        "resetButton": "Reset",
+        "noReset": null,
+        "detail": "Set. Entered at sign in, it permanently erases OSL data from this device. No recovery.",
+        "valueTag": "span",
+        "valueText": "••••••••••••",
+        "masked": "burn-password",
+        "valueLabel": "Burn password is set and is not shown",
+        "action": "Change burn password",
+        "box": {
+          "x": 33,
+          "y": 473.03125,
+          "width": 1214,
+          "height": 73.03125
+        },
+        "nameBox": {
+          "x": 46,
+          "y": 483.03125,
+          "width": 113.78125,
+          "height": 20.25
+        },
+        "valueBox": {
+          "x": 439.5,
+          "y": 500.546875,
+          "width": 158.78125,
+          "height": 18
+        }
+      },
+      {
+        "id": "pro-code",
+        "label": "Pro code",
+        "secret": "yes",
+        "changed": "no",
+        "reset": "unsafe",
+        "resetText": "There is no reset. Removing the code puts this device back to free, and OSL cannot show you the code again to put it back.",
+        "resetButton": null,
+        "noReset": "No reset",
+        "detail": "Pro, this device, entered 18 February 2026. The code is never shown again.",
+        "valueTag": "span",
+        "valueText": "••••••••••••",
+        "masked": "pro-code",
+        "valueLabel": "Pro code is set and is not shown",
+        "action": "Replace Pro code",
+        "box": {
+          "x": 33,
+          "y": 552.0625,
+          "width": 1214,
+          "height": 73.03125
+        },
+        "nameBox": {
+          "x": 46,
+          "y": 562.0625,
+          "width": 66.625,
+          "height": 20.25
+        },
+        "valueBox": {
+          "x": 439.5,
+          "y": 579.578125,
+          "width": 158.78125,
+          "height": 18
+        }
+      }
+    ],
+    "buttons": [
+      {
+        "action": "save",
+        "label": "Save account",
+        "box": {
+          "x": 33,
+          "y": 646.09375,
+          "width": 127.796875,
+          "height": 44
+        }
+      },
+      {
+        "action": "reset-safe",
+        "label": "Reset safe settings",
+        "box": {
+          "x": 649,
+          "y": 646.09375,
+          "width": 171.375,
+          "height": 44
+        }
+      }
+    ],
+    "status": "All 7 account controls saved.",
+    "scrollHeight": 800,
+    "scrollWidth": 1280,
+    "html": "<section class=\"account-screen\" aria-label=\"Account\"><header class=\"account-screen-header\"><h2 class=\"account-screen-heading\">Account</h2><p class=\"account-screen-intro\">7 controls. The five that stand for a secret show that it is set and nothing else, and Reset is offered only where putting the control back costs nothing.</p></header><ul class=\"account-controls\"><li class=\"account-control\" data-account-control=\"identity\" data-secret=\"no\" data-changed=\"no\" data-reset=\"safe\"><span class=\"account-control-head\"><span class=\"account-name\">Identity</span><span class=\"account-detail\">Signed in as nora.vale.0324.</span></span><span class=\"account-value-slot\"><input class=\"account-value account-input\" type=\"text\" id=\"account-value-identity\" data-account-input=\"identity\" autocomplete=\"off\" spellcheck=\"false\" aria-label=\"Identity, the name this account shows to you\" value=\"Nora Vale\"></span><span class=\"account-action-slot\"></span><span class=\"account-reset\" data-account-reset=\"safe\"><button type=\"button\" class=\"account-reset-button\" data-account-action=\"reset\" data-account-control=\"identity\" aria-label=\"Reset Identity to your handle\">Reset</button><span class=\"account-reset-text\">Puts the shown name back to your handle. The handle itself does not change.</span></span></li><li class=\"account-control\" data-account-control=\"password\" data-secret=\"yes\" data-changed=\"no\" data-reset=\"unsafe\"><span class=\"account-control-head\"><span class=\"account-name\">Password</span><span class=\"account-detail\">Set, and last changed 12 January 2026. It is never shown, here or anywhere.</span></span><span class=\"account-value-slot\"><span class=\"account-value account-value-masked\" data-account-masked=\"password\" aria-label=\"Password is set and is not shown\">••••••••••••</span></span><span class=\"account-action-slot\"><button type=\"button\" class=\"account-action\" data-account-action=\"request\" data-account-control=\"password\">Change password</button></span><span class=\"account-reset\" data-account-reset=\"unsafe\"><span class=\"account-reset-none\">No reset</span><span class=\"account-reset-text\">There is no reset. OSL cannot read the password you have, so it cannot put it back, and clearing it would leave this workspace open to whoever opens the lid.</span></span></li><li class=\"account-control\" data-account-control=\"recovery\" data-secret=\"yes\" data-changed=\"no\" data-reset=\"unsafe\"><span class=\"account-control-head\"><span class=\"account-name\">Recovery</span><span class=\"account-detail\">12 words, written down 4 March 2026. Shown only on the recovery screen, after your password.</span></span><span class=\"account-value-slot\"><span class=\"account-value account-value-masked\" data-account-masked=\"recovery\" aria-label=\"Recovery is set and is not shown\">••••••••••••</span></span><span class=\"account-action-slot\"><button type=\"button\" class=\"account-action\" data-account-action=\"request\" data-account-control=\"recovery\">Show recovery kit</button></span><span class=\"account-reset\" data-account-reset=\"unsafe\"><span class=\"account-reset-none\">No reset</span><span class=\"account-reset-text\">There is no reset. A new kit makes the words you already wrote down useless, and the old ones cannot be brought back.</span></span></li><li class=\"account-control\" data-account-control=\"lock\" data-secret=\"no\" data-changed=\"no\" data-reset=\"safe\"><span class=\"account-control-head\"><span class=\"account-name\">Lock</span><span class=\"account-detail\">Locks this workspace when you step away from it.</span></span><span class=\"account-value-slot\"><select class=\"account-value account-select\" id=\"account-value-lock\" data-account-select=\"lock\" aria-label=\"Lock this workspace after\"><option value=\"1\">After 1 minute</option><option value=\"5\">After 5 minutes</option><option value=\"15\">After 15 minutes</option><option value=\"30\" selected=\"\">After 30 minutes</option><option value=\"60\">After 1 hour</option></select></span><span class=\"account-action-slot\"></span><span class=\"account-reset\" data-account-reset=\"safe\"><button type=\"button\" class=\"account-reset-button\" data-account-action=\"reset\" data-account-control=\"lock\" aria-label=\"Reset Lock to after 5 minutes\">Reset</button><span class=\"account-reset-text\">Puts the lock delay back to five minutes. Nothing else changes.</span></span></li><li class=\"account-control\" data-account-control=\"stealth\" data-secret=\"yes\" data-changed=\"no\" data-reset=\"safe\"><span class=\"account-control-head\"><span class=\"account-name\">Stealth</span><span class=\"account-detail\">Set. Entered at sign in, it opens an empty workspace.</span></span><span class=\"account-value-slot\"><span class=\"account-value account-value-masked\" data-account-masked=\"stealth\" aria-label=\"Stealth is set and is not shown\">••••••••••••</span></span><span class=\"account-action-slot\"><button type=\"button\" class=\"account-action\" data-account-action=\"request\" data-account-control=\"stealth\">Change stealth password</button></span><span class=\"account-reset\" data-account-reset=\"safe\"><button type=\"button\" class=\"account-reset-button\" data-account-action=\"reset\" data-account-control=\"stealth\" aria-label=\"Reset Stealth to off\">Reset</button><span class=\"account-reset-text\">Clears the stealth password. The stealth workspace holds no messages, so nothing is lost.</span></span></li><li class=\"account-control\" data-account-control=\"burn-password\" data-secret=\"yes\" data-changed=\"no\" data-reset=\"safe\"><span class=\"account-control-head\"><span class=\"account-name\">Burn password</span><span class=\"account-detail\">Set. Entered at sign in, it permanently erases OSL data from this device. No recovery.</span></span><span class=\"account-value-slot\"><span class=\"account-value account-value-masked\" data-account-masked=\"burn-password\" aria-label=\"Burn password is set and is not shown\">••••••••••••</span></span><span class=\"account-action-slot\"><button type=\"button\" class=\"account-action\" data-account-action=\"request\" data-account-control=\"burn-password\">Change burn password</button></span><span class=\"account-reset\" data-account-reset=\"safe\"><button type=\"button\" class=\"account-reset-button\" data-account-action=\"reset\" data-account-control=\"burn-password\" aria-label=\"Reset Burn password to off\">Reset</button><span class=\"account-reset-text\">Clears the burn password, so it can never be typed in by accident. It erases nothing.</span></span></li><li class=\"account-control\" data-account-control=\"pro-code\" data-secret=\"yes\" data-changed=\"no\" data-reset=\"unsafe\"><span class=\"account-control-head\"><span class=\"account-name\">Pro code</span><span class=\"account-detail\">Pro, this device, entered 18 February 2026. The code is never shown again.</span></span><span class=\"account-value-slot\"><span class=\"account-value account-value-masked\" data-account-masked=\"pro-code\" aria-label=\"Pro code is set and is not shown\">••••••••••••</span></span><span class=\"account-action-slot\"><button type=\"button\" class=\"account-action\" data-account-action=\"request\" data-account-control=\"pro-code\">Replace Pro code</button></span><span class=\"account-reset\" data-account-reset=\"unsafe\"><span class=\"account-reset-none\">No reset</span><span class=\"account-reset-text\">There is no reset. Removing the code puts this device back to free, and OSL cannot show you the code again to put it back.</span></span></li></ul><section class=\"account-actions\" aria-label=\"Save the account, or reset what is safe\"><div class=\"account-action-group\"><button type=\"button\" class=\"account-action-button\" data-account-action=\"save\">Save account</button><p class=\"account-action-text\">Keeps the identity and lock changes, and any control you reset.</p></div><div class=\"account-action-group\"><button type=\"button\" class=\"account-action-button account-action-button-quiet\" data-account-action=\"reset-safe\">Reset safe settings</button><p class=\"account-action-text\">Puts back only what can be put back: identity, lock, stealth, burn password.</p></div><p class=\"account-status\" role=\"status\" data-changed=\"0\">All 7 account controls saved.</p></section></section>",
+    "text": "Account 7 controls. The five that stand for a secret show that it is set and nothing else, and Reset is offered only where putting the control back costs nothing. Identity Signed in as nora.vale.0324. Reset Puts the shown name back to your handle. The handle itself does not change. Password Set, and last changed 12 January 2026. It is never shown, here or anywhere. •••••••••••• Change password No reset There is no reset. OSL cannot read the password you have, so it cannot put it back, and clearing it would leave this workspace open to whoever opens the lid. Recovery 12 words, written down 4 March 2026. Shown only on the recovery screen, after your password. •••••••••••• Show recovery kit No reset There is no reset. A new kit makes the words you already wrote down useless, and the old ones cannot be brought back. Lock Locks this workspace when you step away from it. After 1 minute After 5 minutes After 15 minutes After 30 minutes After 1 hour Reset Puts the lock delay back to five minutes. Nothing else changes. Stealth Set. Entered at sign in, it opens an empty workspace. •••••••••••• Change stealth password Reset Clears the stealth password. The stealth workspace holds no messages, so nothing is lost. Burn password Set. Entered at sign in, it permanently erases OSL data from this device. No recovery. •••••••••••• Change burn password Reset Clears the burn password, so it can never be typed in by accident. It erases nothing. Pro code Pro, this device, entered 18 February 2026. The code is never shown again. •••••••••••• Replace Pro code No reset There is no reset. Removing the code puts this device back to free, and OSL cannot show you the code again to put it back. Save account Keeps the identity and lock changes, and any control you reset. Reset safe settings Puts back only what can be put back: identity, lock, stealth, burn password. All 7 account controls saved."
+  },
+  "facts": {
+    "width": 1280,
+    "height": 800,
+    "distinctColors": 4878,
+    "crops": {
+      "title": {
+        "width": 1214,
+        "height": 26,
+        "pixels": 31564,
+        "distinctColors": 232,
+        "saturatedPixels": 443,
+        "meanColor": "24,25,25"
+      },
+      "Identity|control": {
+        "width": 1214,
+        "height": 65,
+        "pixels": 78910,
+        "distinctColors": 1257,
+        "saturatedPixels": 2607,
+        "meanColor": "28,29,30"
+      },
+      "Identity|name": {
+        "width": 60,
+        "height": 21,
+        "pixels": 1260,
+        "distinctColors": 167,
+        "saturatedPixels": 283,
+        "meanColor": "77,77,77"
+      },
+      "Identity|value": {
+        "width": 191,
+        "height": 45,
+        "pixels": 8595,
+        "distinctColors": 183,
+        "saturatedPixels": 273,
+        "meanColor": "26,26,26"
+      },
+      "Password|control": {
+        "width": 1214,
+        "height": 74,
+        "pixels": 89836,
+        "distinctColors": 1839,
+        "saturatedPixels": 4673,
+        "meanColor": "31,31,31"
+      },
+      "Password|name": {
+        "width": 73,
+        "height": 22,
+        "pixels": 1606,
+        "distinctColors": 210,
+        "saturatedPixels": 310,
+        "meanColor": "72,72,72"
+      },
+      "Password|value": {
+        "width": 160,
+        "height": 19,
+        "pixels": 3040,
+        "distinctColors": 84,
+        "saturatedPixels": 189,
+        "meanColor": "39,39,39"
+      },
+      "Recovery|control": {
+        "width": 1214,
+        "height": 74,
+        "pixels": 89836,
+        "distinctColors": 1831,
+        "saturatedPixels": 4445,
+        "meanColor": "31,31,31"
+      },
+      "Recovery|name": {
+        "width": 71,
+        "height": 21,
+        "pixels": 1491,
+        "distinctColors": 212,
+        "saturatedPixels": 300,
+        "meanColor": "72,72,72"
+      },
+      "Recovery|value": {
+        "width": 160,
+        "height": 19,
+        "pixels": 3040,
+        "distinctColors": 84,
+        "saturatedPixels": 189,
+        "meanColor": "39,39,39"
+      },
+      "Lock|control": {
+        "width": 1214,
+        "height": 65,
+        "pixels": 78910,
+        "distinctColors": 1329,
+        "saturatedPixels": 2800,
+        "meanColor": "28,29,30"
+      },
+      "Lock|name": {
+        "width": 35,
+        "height": 21,
+        "pixels": 735,
+        "distinctColors": 104,
+        "saturatedPixels": 160,
+        "meanColor": "71,71,71"
+      },
+      "Lock|value": {
+        "width": 191,
+        "height": 45,
+        "pixels": 8595,
+        "distinctColors": 277,
+        "saturatedPixels": 454,
+        "meanColor": "29,29,29"
+      },
+      "Stealth|control": {
+        "width": 1214,
+        "height": 65,
+        "pixels": 78910,
+        "distinctColors": 1637,
+        "saturatedPixels": 3754,
+        "meanColor": "30,31,32"
+      },
+      "Stealth|name": {
+        "width": 56,
+        "height": 21,
+        "pixels": 1176,
+        "distinctColors": 194,
+        "saturatedPixels": 261,
+        "meanColor": "77,76,76"
+      },
+      "Stealth|value": {
+        "width": 160,
+        "height": 19,
+        "pixels": 3040,
+        "distinctColors": 84,
+        "saturatedPixels": 189,
+        "meanColor": "39,39,39"
+      },
+      "Burn password|control": {
+        "width": 1214,
+        "height": 74,
+        "pixels": 89836,
+        "distinctColors": 1766,
+        "saturatedPixels": 4295,
+        "meanColor": "30,32,32"
+      },
+      "Burn password|name": {
+        "width": 114,
+        "height": 21,
+        "pixels": 2394,
+        "distinctColors": 263,
+        "saturatedPixels": 493,
+        "meanColor": "72,72,72"
+      },
+      "Burn password|value": {
+        "width": 160,
+        "height": 19,
+        "pixels": 3040,
+        "distinctColors": 84,
+        "saturatedPixels": 189,
+        "meanColor": "39,39,39"
+      },
+      "Pro code|control": {
+        "width": 1214,
+        "height": 74,
+        "pixels": 89836,
+        "distinctColors": 1685,
+        "saturatedPixels": 3991,
+        "meanColor": "30,30,31"
+      },
+      "Pro code|name": {
+        "width": 67,
+        "height": 21,
+        "pixels": 1407,
+        "distinctColors": 158,
+        "saturatedPixels": 257,
+        "meanColor": "69,70,70"
+      },
+      "Pro code|value": {
+        "width": 160,
+        "height": 19,
+        "pixels": 3040,
+        "distinctColors": 84,
+        "saturatedPixels": 189,
+        "meanColor": "39,39,39"
+      },
+      "Save account|button": {
+        "width": 128,
+        "height": 45,
+        "pixels": 5760,
+        "distinctColors": 205,
+        "saturatedPixels": 5430,
+        "meanColor": "7,167,195"
+      },
+      "Reset safe settings|button": {
+        "width": 172,
+        "height": 45,
+        "pixels": 7740,
+        "distinctColors": 323,
+        "saturatedPixels": 520,
+        "meanColor": "42,42,42"
+      }
+    }
+  },
+  "ink": {
+    "title": {
+      "pixels": 31564,
+      "background": "20,20,20",
+      "inkPixels": 916,
+      "inkShare": 0.029020402990748956,
+      "distinctColors": 232
+    },
+    "Identity|control": {
+      "pixels": 78910,
+      "background": "25,25,25",
+      "inkPixels": 3758,
+      "inkShare": 0.047623875300975796,
+      "distinctColors": 1257
+    },
+    "Identity|name": {
+      "pixels": 1260,
+      "background": "25,25,25",
+      "inkPixels": 471,
+      "inkShare": 0.3738095238095238,
+      "distinctColors": 167
+    },
+    "Identity|value": {
+      "pixels": 8595,
+      "background": "20,20,20",
+      "inkPixels": 813,
+      "inkShare": 0.09458987783595113,
+      "distinctColors": 183
+    },
+    "Password|control": {
+      "pixels": 89836,
+      "background": "25,25,25",
+      "inkPixels": 7112,
+      "inkShare": 0.07916648114341689,
+      "distinctColors": 1839
+    },
+    "Password|name": {
+      "pixels": 1606,
+      "background": "25,25,25",
+      "inkPixels": 520,
+      "inkShare": 0.32378580323785805,
+      "distinctColors": 210
+    },
+    "Password|value": {
+      "pixels": 3040,
+      "background": "25,25,25",
+      "inkPixels": 313,
+      "inkShare": 0.10296052631578947,
+      "distinctColors": 84
+    },
+    "Recovery|control": {
+      "pixels": 89836,
+      "background": "25,25,25",
+      "inkPixels": 6721,
+      "inkShare": 0.07481410570372679,
+      "distinctColors": 1831
+    },
+    "Recovery|name": {
+      "pixels": 1491,
+      "background": "25,25,25",
+      "inkPixels": 509,
+      "inkShare": 0.3413816230717639,
+      "distinctColors": 212
+    },
+    "Recovery|value": {
+      "pixels": 3040,
+      "background": "25,25,25",
+      "inkPixels": 313,
+      "inkShare": 0.10296052631578947,
+      "distinctColors": 84
+    },
+    "Lock|control": {
+      "pixels": 78910,
+      "background": "25,25,25",
+      "inkPixels": 3954,
+      "inkShare": 0.05010771765302243,
+      "distinctColors": 1329
+    },
+    "Lock|name": {
+      "pixels": 735,
+      "background": "25,25,25",
+      "inkPixels": 253,
+      "inkShare": 0.3442176870748299,
+      "distinctColors": 104
+    },
+    "Lock|value": {
+      "pixels": 8595,
+      "background": "20,20,20",
+      "inkPixels": 1036,
+      "inkShare": 0.12053519488074461,
+      "distinctColors": 277
+    },
+    "Stealth|control": {
+      "pixels": 78910,
+      "background": "25,25,25",
+      "inkPixels": 5420,
+      "inkShare": 0.06868584463312635,
+      "distinctColors": 1637
+    },
+    "Stealth|name": {
+      "pixels": 1176,
+      "background": "25,25,25",
+      "inkPixels": 436,
+      "inkShare": 0.3707482993197279,
+      "distinctColors": 194
+    },
+    "Stealth|value": {
+      "pixels": 3040,
+      "background": "25,25,25",
+      "inkPixels": 313,
+      "inkShare": 0.10296052631578947,
+      "distinctColors": 84
+    },
+    "Burn password|control": {
+      "pixels": 89836,
+      "background": "25,25,25",
+      "inkPixels": 6241,
+      "inkShare": 0.06947103611024534,
+      "distinctColors": 1766
+    },
+    "Burn password|name": {
+      "pixels": 2394,
+      "background": "25,25,25",
+      "inkPixels": 802,
+      "inkShare": 0.33500417710944025,
+      "distinctColors": 263
+    },
+    "Burn password|value": {
+      "pixels": 3040,
+      "background": "25,25,25",
+      "inkPixels": 313,
+      "inkShare": 0.10296052631578947,
+      "distinctColors": 84
+    },
+    "Pro code|control": {
+      "pixels": 89836,
+      "background": "25,25,25",
+      "inkPixels": 6164,
+      "inkShare": 0.06861391869629102,
+      "distinctColors": 1685
+    },
+    "Pro code|name": {
+      "pixels": 1407,
+      "background": "25,25,25",
+      "inkPixels": 453,
+      "inkShare": 0.32196162046908317,
+      "distinctColors": 158
+    },
+    "Pro code|value": {
+      "pixels": 3040,
+      "background": "25,25,25",
+      "inkPixels": 313,
+      "inkShare": 0.10296052631578947,
+      "distinctColors": 84
+    },
+    "Save account|button": {
+      "pixels": 5760,
+      "background": "6,182,212",
+      "inkPixels": 659,
+      "inkShare": 0.11440972222222222,
+      "distinctColors": 205
+    },
+    "Reset safe settings|button": {
+      "pixels": 7740,
+      "background": "25,25,25",
+      "inkPixels": 910,
+      "inkShare": 0.11757105943152454,
+      "distinctColors": 323
+    }
+  },
+  "maskSignatures": {
+    "password": {
+      "blobs": 12,
+      "widthSpread": 1,
+      "heightSpread": 0,
+      "topSpread": 0,
+      "widths": [
+        6,
+        5,
+        5,
+        5,
+        6,
+        5,
+        5,
+        5,
+        5,
+        6,
+        5,
+        5
+      ],
+      "heights": [
+        5,
+        5,
+        5,
+        5,
+        5,
+        5,
+        5,
+        5,
+        5,
+        5,
+        5,
+        5
+      ],
+      "uniform": true
+    },
+    "recovery": {
+      "blobs": 12,
+      "widthSpread": 1,
+      "heightSpread": 0,
+      "topSpread": 0,
+      "widths": [
+        6,
+        5,
+        5,
+        5,
+        6,
+        5,
+        5,
+        5,
+        5,
+        6,
+        5,
+        5
+      ],
+      "heights": [
+        5,
+        5,
+        5,
+        5,
+        5,
+        5,
+        5,
+        5,
+        5,
+        5,
+        5,
+        5
+      ],
+      "uniform": true
+    },
+    "stealth": {
+      "blobs": 12,
+      "widthSpread": 1,
+      "heightSpread": 0,
+      "topSpread": 0,
+      "widths": [
+        6,
+        5,
+        5,
+        5,
+        6,
+        5,
+        5,
+        5,
+        5,
+        6,
+        5,
+        5
+      ],
+      "heights": [
+        5,
+        5,
+        5,
+        5,
+        5,
+        5,
+        5,
+        5,
+        5,
+        5,
+        5,
+        5
+      ],
+      "uniform": true
+    },
+    "burn-password": {
+      "blobs": 12,
+      "widthSpread": 1,
+      "heightSpread": 0,
+      "topSpread": 0,
+      "widths": [
+        6,
+        5,
+        5,
+        5,
+        6,
+        5,
+        5,
+        5,
+        5,
+        6,
+        5,
+        5
+      ],
+      "heights": [
+        5,
+        5,
+        5,
+        5,
+        5,
+        5,
+        5,
+        5,
+        5,
+        5,
+        5,
+        5
+      ],
+      "uniform": true
+    },
+    "pro-code": {
+      "blobs": 12,
+      "widthSpread": 1,
+      "heightSpread": 0,
+      "topSpread": 0,
+      "widths": [
+        6,
+        5,
+        5,
+        5,
+        6,
+        5,
+        5,
+        5,
+        5,
+        6,
+        5,
+        5
+      ],
+      "heights": [
+        5,
+        5,
+        5,
+        5,
+        5,
+        5,
+        5,
+        5,
+        5,
+        5,
+        5,
+        5
+      ],
+      "uniform": true
+    }
+  },
+  "wholeImage": {
+    "pixels": 1024000,
+    "background": "25,25,25",
+    "inkPixels": 54828,
+    "inkShare": 0.05354296875,
+    "distinctColors": 4878
+  },
+  "axNodes": [
+    {
+      "nodeId": "1",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "RootWebArea"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 144
+      },
+      "name": {
+        "type": "computedString",
+        "value": "OSL Privacy - TASK 0792",
+        "sources": [
+          {
+            "type": "relatedElement",
+            "attribute": "aria-labelledby"
+          },
+          {
+            "type": "attribute",
+            "attribute": "aria-label"
+          },
+          {
+            "type": "attribute",
+            "attribute": "aria-label",
+            "superseded": true
+          },
+          {
+            "type": "relatedElement",
+            "value": {
+              "type": "computedString",
+              "value": "OSL Privacy - TASK 0792"
+            },
+            "nativeSource": "title"
+          }
+        ]
+      },
+      "properties": [
+        {
+          "name": "focusable",
+          "value": {
+            "type": "booleanOrUndefined",
+            "value": true
+          }
+        },
+        {
+          "name": "focused",
+          "value": {
+            "type": "booleanOrUndefined",
+            "value": true
+          }
+        },
+        {
+          "name": "url",
+          "value": {
+            "type": "string",
+            "value": "http://127.0.0.1:5173/screenshots/task-0792-account-fixture.html"
+          }
+        }
+      ],
+      "childIds": [
+        "3"
+      ],
+      "backendDOMNodeId": 1,
+      "frameId": "CF54969822E3E0E2C43833191E31892F"
+    },
+    {
+      "nodeId": "3",
+      "ignored": true,
+      "ignoredReasons": [
+        {
+          "name": "uninteresting",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        }
+      ],
+      "role": {
+        "type": "role",
+        "value": "none"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 0
+      },
+      "parentId": "1",
+      "childIds": [
+        "12"
+      ],
+      "backendDOMNodeId": 3
+    },
+    {
+      "nodeId": "12",
+      "ignored": true,
+      "ignoredReasons": [
+        {
+          "name": "uninteresting",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        }
+      ],
+      "role": {
+        "type": "role",
+        "value": "none"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 0
+      },
+      "parentId": "3",
+      "childIds": [
+        "13"
+      ],
+      "backendDOMNodeId": 12
+    },
+    {
+      "nodeId": "13",
+      "ignored": false,
+      "role": {
+        "type": "role",
+        "value": "generic"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 88
+      },
+      "name": {
+        "type": "computedString",
+        "value": "",
+        "sources": [
+          {
+            "type": "relatedElement",
+            "attribute": "aria-labelledby"
+          },
+          {
+            "type": "attribute",
+            "attribute": "aria-label"
+          }
+        ]
+      },
+      "properties": [],
+      "parentId": "12",
+      "childIds": [
+        "14"
+      ],
+      "backendDOMNodeId": 13
+    },
+    {
+      "nodeId": "14",
+      "ignored": false,
+      "role": {
+        "type": "role",
+        "value": "region"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 143
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Account",
+        "sources": [
+          {
+            "type": "relatedElement",
+            "attribute": "aria-labelledby"
+          },
+          {
+            "type": "attribute",
+            "value": {
+              "type": "computedString",
+              "value": "Account"
+            },
+            "attribute": "aria-label",
+            "attributeValue": {
+              "type": "string",
+              "value": "Account"
+            }
+          },
+          {
+            "type": "attribute",
+            "attribute": "title",
+            "superseded": true
+          }
+        ]
+      },
+      "properties": [],
+      "parentId": "13",
+      "childIds": [
+        "15",
+        "18",
+        "116"
+      ],
+      "backendDOMNodeId": 14
+    },
+    {
+      "nodeId": "15",
+      "ignored": false,
+      "role": {
+        "type": "role",
+        "value": "sectionheader"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 95
+      },
+      "name": {
+        "type": "computedString",
+        "value": "",
+        "sources": [
+          {
+            "type": "relatedElement",
+            "attribute": "aria-labelledby"
+          },
+          {
+            "type": "attribute",
+            "attribute": "aria-label"
+          },
+          {
+            "type": "attribute",
+            "attribute": "title"
+          }
+        ]
+      },
+      "properties": [],
+      "parentId": "14",
+      "childIds": [
+        "16",
+        "17"
+      ],
+      "backendDOMNodeId": 15
+    },
+    {
+      "nodeId": "18",
+      "ignored": false,
+      "role": {
+        "type": "role",
+        "value": "list"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 111
+      },
+      "name": {
+        "type": "computedString",
+        "value": "",
+        "sources": [
+          {
+            "type": "relatedElement",
+            "attribute": "aria-labelledby"
+          },
+          {
+            "type": "attribute",
+            "attribute": "aria-label"
+          },
+          {
+            "type": "attribute",
+            "attribute": "title"
+          }
+        ]
+      },
+      "properties": [],
+      "parentId": "14",
+      "childIds": [
+        "19",
+        "30",
+        "41",
+        "52",
+        "83",
+        "94",
+        "105"
+      ],
+      "backendDOMNodeId": 18
+    },
+    {
+      "nodeId": "116",
+      "ignored": false,
+      "role": {
+        "type": "role",
+        "value": "region"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 143
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Save the account, or reset what is safe",
+        "sources": [
+          {
+            "type": "relatedElement",
+            "attribute": "aria-labelledby"
+          },
+          {
+            "type": "attribute",
+            "value": {
+              "type": "computedString",
+              "value": "Save the account, or reset what is safe"
+            },
+            "attribute": "aria-label",
+            "attributeValue": {
+              "type": "string",
+              "value": "Save the account, or reset what is safe"
+            }
+          },
+          {
+            "type": "attribute",
+            "attribute": "title",
+            "superseded": true
+          }
+        ]
+      },
+      "properties": [],
+      "parentId": "14",
+      "childIds": [
+        "117",
+        "120",
+        "123"
+      ],
+      "backendDOMNodeId": 116
+    },
+    {
+      "nodeId": "16",
+      "ignored": false,
+      "role": {
+        "type": "role",
+        "value": "heading"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 96
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Account",
+        "sources": [
+          {
+            "type": "relatedElement",
+            "attribute": "aria-labelledby"
+          },
+          {
+            "type": "attribute",
+            "attribute": "aria-label"
+          },
+          {
+            "type": "contents",
+            "value": {
+              "type": "computedString",
+              "value": "Account"
+            }
+          },
+          {
+            "type": "attribute",
+            "attribute": "title",
+            "superseded": true
+          }
+        ]
+      },
+      "properties": [
+        {
+          "name": "level",
+          "value": {
+            "type": "integer",
+            "value": 2
+          }
+        }
+      ],
+      "parentId": "15",
+      "childIds": [
+        "125"
+      ],
+      "backendDOMNodeId": 16
+    },
+    {
+      "nodeId": "17",
+      "ignored": false,
+      "role": {
+        "type": "role",
+        "value": "paragraph"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 133
+      },
+      "name": {
+        "type": "computedString",
+        "value": "",
+        "sources": [
+          {
+            "type": "relatedElement",
+            "attribute": "aria-labelledby"
+          },
+          {
+            "type": "attribute",
+            "attribute": "aria-label"
+          }
+        ]
+      },
+      "properties": [],
+      "parentId": "15",
+      "childIds": [
+        "126"
+      ],
+      "backendDOMNodeId": 17
+    },
+    {
+      "nodeId": "19",
+      "ignored": false,
+      "role": {
+        "type": "role",
+        "value": "listitem"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 115
+      },
+      "name": {
+        "type": "computedString",
+        "value": "",
+        "sources": [
+          {
+            "type": "relatedElement",
+            "attribute": "aria-labelledby"
+          },
+          {
+            "type": "attribute",
+            "attribute": "aria-label"
+          },
+          {
+            "type": "attribute",
+            "attribute": "title"
+          }
+        ]
+      },
+      "properties": [
+        {
+          "name": "level",
+          "value": {
+            "type": "integer",
+            "value": 1
+          }
+        }
+      ],
+      "parentId": "18",
+      "childIds": [
+        "20",
+        "23",
+        "26",
+        "27"
+      ],
+      "backendDOMNodeId": 19
+    },
+    {
+      "nodeId": "30",
+      "ignored": false,
+      "role": {
+        "type": "role",
+        "value": "listitem"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 115
+      },
+      "name": {
+        "type": "computedString",
+        "value": "",
+        "sources": [
+          {
+            "type": "relatedElement",
+            "attribute": "aria-labelledby"
+          },
+          {
+            "type": "attribute",
+            "attribute": "aria-label"
+          },
+          {
+            "type": "attribute",
+            "attribute": "title"
+          }
+        ]
+      },
+      "properties": [
+        {
+          "name": "level",
+          "value": {
+            "type": "integer",
+            "value": 1
+          }
+        }
+      ],
+      "parentId": "18",
+      "childIds": [
+        "31",
+        "34",
+        "36",
+        "38"
+      ],
+      "backendDOMNodeId": 30
+    },
+    {
+      "nodeId": "41",
+      "ignored": false,
+      "role": {
+        "type": "role",
+        "value": "listitem"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 115
+      },
+      "name": {
+        "type": "computedString",
+        "value": "",
+        "sources": [
+          {
+            "type": "relatedElement",
+            "attribute": "aria-labelledby"
+          },
+          {
+            "type": "attribute",
+            "attribute": "aria-label"
+          },
+          {
+            "type": "attribute",
+            "attribute": "title"
+          }
+        ]
+      },
+      "properties": [
+        {
+          "name": "level",
+          "value": {
+            "type": "integer",
+            "value": 1
+          }
+        }
+      ],
+      "parentId": "18",
+      "childIds": [
+        "42",
+        "45",
+        "47",
+        "49"
+      ],
+      "backendDOMNodeId": 41
+    },
+    {
+      "nodeId": "52",
+      "ignored": false,
+      "role": {
+        "type": "role",
+        "value": "listitem"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 115
+      },
+      "name": {
+        "type": "computedString",
+        "value": "",
+        "sources": [
+          {
+            "type": "relatedElement",
+            "attribute": "aria-labelledby"
+          },
+          {
+            "type": "attribute",
+            "attribute": "aria-label"
+          },
+          {
+            "type": "attribute",
+            "attribute": "title"
+          }
+        ]
+      },
+      "properties": [
+        {
+          "name": "level",
+          "value": {
+            "type": "integer",
+            "value": 1
+          }
+        }
+      ],
+      "parentId": "18",
+      "childIds": [
+        "53",
+        "56",
+        "79",
+        "80"
+      ],
+      "backendDOMNodeId": 52
+    },
+    {
+      "nodeId": "83",
+      "ignored": false,
+      "role": {
+        "type": "role",
+        "value": "listitem"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 115
+      },
+      "name": {
+        "type": "computedString",
+        "value": "",
+        "sources": [
+          {
+            "type": "relatedElement",
+            "attribute": "aria-labelledby"
+          },
+          {
+            "type": "attribute",
+            "attribute": "aria-label"
+          },
+          {
+            "type": "attribute",
+            "attribute": "title"
+          }
+        ]
+      },
+      "properties": [
+        {
+          "name": "level",
+          "value": {
+            "type": "integer",
+            "value": 1
+          }
+        }
+      ],
+      "parentId": "18",
+      "childIds": [
+        "84",
+        "87",
+        "89",
+        "91"
+      ],
+      "backendDOMNodeId": 83
+    },
+    {
+      "nodeId": "94",
+      "ignored": false,
+      "role": {
+        "type": "role",
+        "value": "listitem"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 115
+      },
+      "name": {
+        "type": "computedString",
+        "value": "",
+        "sources": [
+          {
+            "type": "relatedElement",
+            "attribute": "aria-labelledby"
+          },
+          {
+            "type": "attribute",
+            "attribute": "aria-label"
+          },
+          {
+            "type": "attribute",
+            "attribute": "title"
+          }
+        ]
+      },
+      "properties": [
+        {
+          "name": "level",
+          "value": {
+            "type": "integer",
+            "value": 1
+          }
+        }
+      ],
+      "parentId": "18",
+      "childIds": [
+        "95",
+        "98",
+        "100",
+        "102"
+      ],
+      "backendDOMNodeId": 94
+    },
+    {
+      "nodeId": "105",
+      "ignored": false,
+      "role": {
+        "type": "role",
+        "value": "listitem"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 115
+      },
+      "name": {
+        "type": "computedString",
+        "value": "",
+        "sources": [
+          {
+            "type": "relatedElement",
+            "attribute": "aria-labelledby"
+          },
+          {
+            "type": "attribute",
+            "attribute": "aria-label"
+          },
+          {
+            "type": "attribute",
+            "attribute": "title"
+          }
+        ]
+      },
+      "properties": [
+        {
+          "name": "level",
+          "value": {
+            "type": "integer",
+            "value": 1
+          }
+        }
+      ],
+      "parentId": "18",
+      "childIds": [
+        "106",
+        "109",
+        "111",
+        "113"
+      ],
+      "backendDOMNodeId": 105
+    },
+    {
+      "nodeId": "117",
+      "ignored": true,
+      "ignoredReasons": [
+        {
+          "name": "uninteresting",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        }
+      ],
+      "role": {
+        "type": "role",
+        "value": "none"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 0
+      },
+      "parentId": "116",
+      "childIds": [
+        "118",
+        "119"
+      ],
+      "backendDOMNodeId": 117
+    },
+    {
+      "nodeId": "118",
+      "ignored": false,
+      "role": {
+        "type": "role",
+        "value": "button"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 9
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Save account",
+        "sources": [
+          {
+            "type": "relatedElement",
+            "attribute": "aria-labelledby"
+          },
+          {
+            "type": "attribute",
+            "attribute": "aria-label"
+          },
+          {
+            "type": "relatedElement",
+            "nativeSource": "label"
+          },
+          {
+            "type": "contents",
+            "value": {
+              "type": "computedString",
+              "value": "Save account"
+            }
+          },
+          {
+            "type": "attribute",
+            "attribute": "title",
+            "superseded": true
+          }
+        ]
+      },
+      "properties": [
+        {
+          "name": "invalid",
+          "value": {
+            "type": "token",
+            "value": "false"
+          }
+        },
+        {
+          "name": "focusable",
+          "value": {
+            "type": "booleanOrUndefined",
+            "value": true
+          }
+        }
+      ],
+      "parentId": "117",
+      "childIds": [
+        "166"
+      ],
+      "backendDOMNodeId": 118
+    },
+    {
+      "nodeId": "119",
+      "ignored": false,
+      "role": {
+        "type": "role",
+        "value": "paragraph"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 133
+      },
+      "name": {
+        "type": "computedString",
+        "value": "",
+        "sources": [
+          {
+            "type": "relatedElement",
+            "attribute": "aria-labelledby"
+          },
+          {
+            "type": "attribute",
+            "attribute": "aria-label"
+          }
+        ]
+      },
+      "properties": [],
+      "parentId": "117",
+      "childIds": [
+        "167"
+      ],
+      "backendDOMNodeId": 119
+    },
+    {
+      "nodeId": "120",
+      "ignored": true,
+      "ignoredReasons": [
+        {
+          "name": "uninteresting",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        }
+      ],
+      "role": {
+        "type": "role",
+        "value": "none"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 0
+      },
+      "parentId": "116",
+      "childIds": [
+        "121",
+        "122"
+      ],
+      "backendDOMNodeId": 120
+    },
+    {
+      "nodeId": "121",
+      "ignored": false,
+      "role": {
+        "type": "role",
+        "value": "button"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 9
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Reset safe settings",
+        "sources": [
+          {
+            "type": "relatedElement",
+            "attribute": "aria-labelledby"
+          },
+          {
+            "type": "attribute",
+            "attribute": "aria-label"
+          },
+          {
+            "type": "relatedElement",
+            "nativeSource": "label"
+          },
+          {
+            "type": "contents",
+            "value": {
+              "type": "computedString",
+              "value": "Reset safe settings"
+            }
+          },
+          {
+            "type": "attribute",
+            "attribute": "title",
+            "superseded": true
+          }
+        ]
+      },
+      "properties": [
+        {
+          "name": "invalid",
+          "value": {
+            "type": "token",
+            "value": "false"
+          }
+        },
+        {
+          "name": "focusable",
+          "value": {
+            "type": "booleanOrUndefined",
+            "value": true
+          }
+        }
+      ],
+      "parentId": "120",
+      "childIds": [
+        "168"
+      ],
+      "backendDOMNodeId": 121
+    },
+    {
+      "nodeId": "122",
+      "ignored": false,
+      "role": {
+        "type": "role",
+        "value": "paragraph"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 133
+      },
+      "name": {
+        "type": "computedString",
+        "value": "",
+        "sources": [
+          {
+            "type": "relatedElement",
+            "attribute": "aria-labelledby"
+          },
+          {
+            "type": "attribute",
+            "attribute": "aria-label"
+          }
+        ]
+      },
+      "properties": [],
+      "parentId": "120",
+      "childIds": [
+        "169"
+      ],
+      "backendDOMNodeId": 122
+    },
+    {
+      "nodeId": "123",
+      "ignored": false,
+      "role": {
+        "type": "role",
+        "value": "status"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 159
+      },
+      "name": {
+        "type": "computedString",
+        "value": "",
+        "sources": [
+          {
+            "type": "relatedElement",
+            "attribute": "aria-labelledby"
+          },
+          {
+            "type": "attribute",
+            "attribute": "aria-label"
+          },
+          {
+            "type": "attribute",
+            "attribute": "title"
+          }
+        ]
+      },
+      "properties": [
+        {
+          "name": "live",
+          "value": {
+            "type": "token",
+            "value": "polite"
+          }
+        },
+        {
+          "name": "atomic",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        },
+        {
+          "name": "relevant",
+          "value": {
+            "type": "tokenList",
+            "value": "additions text"
+          }
+        }
+      ],
+      "parentId": "116",
+      "childIds": [
+        "170"
+      ],
+      "backendDOMNodeId": 123
+    },
+    {
+      "nodeId": "125",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "StaticText"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 158
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Account",
+        "sources": [
+          {
+            "type": "contents",
+            "value": {
+              "type": "computedString",
+              "value": "Account"
+            }
+          }
+        ]
+      },
+      "properties": [],
+      "parentId": "16",
+      "childIds": [
+        "-1000000002"
+      ],
+      "backendDOMNodeId": 125
+    },
+    {
+      "nodeId": "126",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "StaticText"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 158
+      },
+      "name": {
+        "type": "computedString",
+        "value": "7 controls. The five that stand for a secret show that it is set and nothing else, and Reset is offered only where putting the control back costs nothing.",
+        "sources": [
+          {
+            "type": "contents",
+            "value": {
+              "type": "computedString",
+              "value": "7 controls. The five that stand for a secret show that it is set and nothing else, and Reset is offered only where putting the control back costs nothing."
+            }
+          }
+        ]
+      },
+      "properties": [],
+      "parentId": "17",
+      "childIds": [
+        "-1000000003",
+        "-1000000004"
+      ],
+      "backendDOMNodeId": 126
+    },
+    {
+      "nodeId": "20",
+      "ignored": true,
+      "ignoredReasons": [
+        {
+          "name": "uninteresting",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        }
+      ],
+      "role": {
+        "type": "role",
+        "value": "none"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 0
+      },
+      "parentId": "19",
+      "childIds": [
+        "21",
+        "22"
+      ],
+      "backendDOMNodeId": 20
+    },
+    {
+      "nodeId": "21",
+      "ignored": true,
+      "ignoredReasons": [
+        {
+          "name": "uninteresting",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        }
+      ],
+      "role": {
+        "type": "role",
+        "value": "none"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 0
+      },
+      "parentId": "20",
+      "childIds": [
+        "127"
+      ],
+      "backendDOMNodeId": 21
+    },
+    {
+      "nodeId": "127",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "StaticText"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 158
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Identity",
+        "sources": [
+          {
+            "type": "contents",
+            "value": {
+              "type": "computedString",
+              "value": "Identity"
+            }
+          }
+        ]
+      },
+      "properties": [],
+      "parentId": "21",
+      "childIds": [
+        "-1000000005"
+      ],
+      "backendDOMNodeId": 127
+    },
+    {
+      "nodeId": "22",
+      "ignored": true,
+      "ignoredReasons": [
+        {
+          "name": "uninteresting",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        }
+      ],
+      "role": {
+        "type": "role",
+        "value": "none"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 0
+      },
+      "parentId": "20",
+      "childIds": [
+        "128"
+      ],
+      "backendDOMNodeId": 22
+    },
+    {
+      "nodeId": "128",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "StaticText"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 158
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Signed in as nora.vale.0324.",
+        "sources": [
+          {
+            "type": "contents",
+            "value": {
+              "type": "computedString",
+              "value": "Signed in as nora.vale.0324."
+            }
+          }
+        ]
+      },
+      "properties": [],
+      "parentId": "22",
+      "childIds": [
+        "-1000000006"
+      ],
+      "backendDOMNodeId": 128
+    },
+    {
+      "nodeId": "23",
+      "ignored": true,
+      "ignoredReasons": [
+        {
+          "name": "uninteresting",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        }
+      ],
+      "role": {
+        "type": "role",
+        "value": "none"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 0
+      },
+      "parentId": "19",
+      "childIds": [
+        "24"
+      ],
+      "backendDOMNodeId": 23
+    },
+    {
+      "nodeId": "24",
+      "ignored": false,
+      "role": {
+        "type": "role",
+        "value": "textbox"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 170
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Identity, the name this account shows to you",
+        "sources": [
+          {
+            "type": "relatedElement",
+            "attribute": "aria-labelledby"
+          },
+          {
+            "type": "attribute",
+            "value": {
+              "type": "computedString",
+              "value": "Identity, the name this account shows to you"
+            },
+            "attribute": "aria-label",
+            "attributeValue": {
+              "type": "string",
+              "value": "Identity, the name this account shows to you"
+            }
+          },
+          {
+            "type": "relatedElement",
+            "superseded": true,
+            "nativeSource": "label"
+          },
+          {
+            "type": "attribute",
+            "attribute": "title",
+            "superseded": true
+          },
+          {
+            "type": "placeholder",
+            "attribute": "placeholder",
+            "superseded": true
+          },
+          {
+            "type": "placeholder",
+            "attribute": "aria-placeholder",
+            "superseded": true
+          },
+          {
+            "type": "attribute",
+            "attribute": "title",
+            "superseded": true
+          }
+        ]
+      },
+      "value": {
+        "type": "string",
+        "value": "Nora Vale"
+      },
+      "properties": [
+        {
+          "name": "invalid",
+          "value": {
+            "type": "token",
+            "value": "false"
+          }
+        },
+        {
+          "name": "focusable",
+          "value": {
+            "type": "booleanOrUndefined",
+            "value": true
+          }
+        },
+        {
+          "name": "editable",
+          "value": {
+            "type": "token",
+            "value": "plaintext"
+          }
+        },
+        {
+          "name": "settable",
+          "value": {
+            "type": "booleanOrUndefined",
+            "value": true
+          }
+        },
+        {
+          "name": "multiline",
+          "value": {
+            "type": "boolean",
+            "value": false
+          }
+        },
+        {
+          "name": "readonly",
+          "value": {
+            "type": "boolean",
+            "value": false
+          }
+        },
+        {
+          "name": "required",
+          "value": {
+            "type": "boolean",
+            "value": false
+          }
+        }
+      ],
+      "parentId": "23",
+      "childIds": [
+        "25"
+      ],
+      "backendDOMNodeId": 24
+    },
+    {
+      "nodeId": "26",
+      "ignored": true,
+      "ignoredReasons": [
+        {
+          "name": "uninteresting",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        }
+      ],
+      "role": {
+        "type": "role",
+        "value": "none"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 0
+      },
+      "parentId": "19",
+      "childIds": [],
+      "backendDOMNodeId": 26
+    },
+    {
+      "nodeId": "27",
+      "ignored": true,
+      "ignoredReasons": [
+        {
+          "name": "uninteresting",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        }
+      ],
+      "role": {
+        "type": "role",
+        "value": "none"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 0
+      },
+      "parentId": "19",
+      "childIds": [
+        "28",
+        "29"
+      ],
+      "backendDOMNodeId": 27
+    },
+    {
+      "nodeId": "28",
+      "ignored": false,
+      "role": {
+        "type": "role",
+        "value": "button"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 9
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Reset Identity to your handle",
+        "sources": [
+          {
+            "type": "relatedElement",
+            "attribute": "aria-labelledby"
+          },
+          {
+            "type": "attribute",
+            "value": {
+              "type": "computedString",
+              "value": "Reset Identity to your handle"
+            },
+            "attribute": "aria-label",
+            "attributeValue": {
+              "type": "string",
+              "value": "Reset Identity to your handle"
+            }
+          },
+          {
+            "type": "relatedElement",
+            "superseded": true,
+            "nativeSource": "label"
+          },
+          {
+            "type": "contents",
+            "value": {
+              "type": "computedString",
+              "value": "Reset"
+            },
+            "superseded": true
+          },
+          {
+            "type": "attribute",
+            "attribute": "title",
+            "superseded": true
+          }
+        ]
+      },
+      "properties": [
+        {
+          "name": "invalid",
+          "value": {
+            "type": "token",
+            "value": "false"
+          }
+        },
+        {
+          "name": "focusable",
+          "value": {
+            "type": "booleanOrUndefined",
+            "value": true
+          }
+        }
+      ],
+      "parentId": "27",
+      "childIds": [
+        "130"
+      ],
+      "backendDOMNodeId": 28
+    },
+    {
+      "nodeId": "29",
+      "ignored": true,
+      "ignoredReasons": [
+        {
+          "name": "uninteresting",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        }
+      ],
+      "role": {
+        "type": "role",
+        "value": "none"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 0
+      },
+      "parentId": "27",
+      "childIds": [
+        "131"
+      ],
+      "backendDOMNodeId": 29
+    },
+    {
+      "nodeId": "131",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "StaticText"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 158
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Puts the shown name back to your handle. The handle itself does not change.",
+        "sources": [
+          {
+            "type": "contents",
+            "value": {
+              "type": "computedString",
+              "value": "Puts the shown name back to your handle. The handle itself does not change."
+            }
+          }
+        ]
+      },
+      "properties": [],
+      "parentId": "29",
+      "childIds": [
+        "-1000000009",
+        "-1000000010"
+      ],
+      "backendDOMNodeId": 131
+    },
+    {
+      "nodeId": "31",
+      "ignored": true,
+      "ignoredReasons": [
+        {
+          "name": "uninteresting",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        }
+      ],
+      "role": {
+        "type": "role",
+        "value": "none"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 0
+      },
+      "parentId": "30",
+      "childIds": [
+        "32",
+        "33"
+      ],
+      "backendDOMNodeId": 31
+    },
+    {
+      "nodeId": "32",
+      "ignored": true,
+      "ignoredReasons": [
+        {
+          "name": "uninteresting",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        }
+      ],
+      "role": {
+        "type": "role",
+        "value": "none"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 0
+      },
+      "parentId": "31",
+      "childIds": [
+        "132"
+      ],
+      "backendDOMNodeId": 32
+    },
+    {
+      "nodeId": "132",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "StaticText"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 158
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Password",
+        "sources": [
+          {
+            "type": "contents",
+            "value": {
+              "type": "computedString",
+              "value": "Password"
+            }
+          }
+        ]
+      },
+      "properties": [],
+      "parentId": "32",
+      "childIds": [
+        "-1000000011"
+      ],
+      "backendDOMNodeId": 132
+    },
+    {
+      "nodeId": "33",
+      "ignored": true,
+      "ignoredReasons": [
+        {
+          "name": "uninteresting",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        }
+      ],
+      "role": {
+        "type": "role",
+        "value": "none"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 0
+      },
+      "parentId": "31",
+      "childIds": [
+        "133"
+      ],
+      "backendDOMNodeId": 33
+    },
+    {
+      "nodeId": "133",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "StaticText"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 158
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Set, and last changed 12 January 2026. It is never shown, here or anywhere.",
+        "sources": [
+          {
+            "type": "contents",
+            "value": {
+              "type": "computedString",
+              "value": "Set, and last changed 12 January 2026. It is never shown, here or anywhere."
+            }
+          }
+        ]
+      },
+      "properties": [],
+      "parentId": "33",
+      "childIds": [
+        "-1000000012",
+        "-1000000013"
+      ],
+      "backendDOMNodeId": 133
+    },
+    {
+      "nodeId": "34",
+      "ignored": true,
+      "ignoredReasons": [
+        {
+          "name": "uninteresting",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        }
+      ],
+      "role": {
+        "type": "role",
+        "value": "none"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 0
+      },
+      "parentId": "30",
+      "childIds": [
+        "35"
+      ],
+      "backendDOMNodeId": 34
+    },
+    {
+      "nodeId": "35",
+      "ignored": false,
+      "role": {
+        "type": "role",
+        "value": "generic"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 88
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Password is set and is not shown",
+        "sources": [
+          {
+            "type": "relatedElement",
+            "attribute": "aria-labelledby"
+          },
+          {
+            "type": "attribute",
+            "value": {
+              "type": "computedString",
+              "value": "Password is set and is not shown"
+            },
+            "attribute": "aria-label",
+            "attributeValue": {
+              "type": "string",
+              "value": "Password is set and is not shown"
+            }
+          }
+        ]
+      },
+      "properties": [],
+      "parentId": "34",
+      "childIds": [
+        "134"
+      ],
+      "backendDOMNodeId": 35
+    },
+    {
+      "nodeId": "36",
+      "ignored": true,
+      "ignoredReasons": [
+        {
+          "name": "uninteresting",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        }
+      ],
+      "role": {
+        "type": "role",
+        "value": "none"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 0
+      },
+      "parentId": "30",
+      "childIds": [
+        "37"
+      ],
+      "backendDOMNodeId": 36
+    },
+    {
+      "nodeId": "37",
+      "ignored": false,
+      "role": {
+        "type": "role",
+        "value": "button"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 9
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Change password",
+        "sources": [
+          {
+            "type": "relatedElement",
+            "attribute": "aria-labelledby"
+          },
+          {
+            "type": "attribute",
+            "attribute": "aria-label"
+          },
+          {
+            "type": "relatedElement",
+            "nativeSource": "label"
+          },
+          {
+            "type": "contents",
+            "value": {
+              "type": "computedString",
+              "value": "Change password"
+            }
+          },
+          {
+            "type": "attribute",
+            "attribute": "title",
+            "superseded": true
+          }
+        ]
+      },
+      "properties": [
+        {
+          "name": "invalid",
+          "value": {
+            "type": "token",
+            "value": "false"
+          }
+        },
+        {
+          "name": "focusable",
+          "value": {
+            "type": "booleanOrUndefined",
+            "value": true
+          }
+        }
+      ],
+      "parentId": "36",
+      "childIds": [
+        "135"
+      ],
+      "backendDOMNodeId": 37
+    },
+    {
+      "nodeId": "38",
+      "ignored": true,
+      "ignoredReasons": [
+        {
+          "name": "uninteresting",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        }
+      ],
+      "role": {
+        "type": "role",
+        "value": "none"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 0
+      },
+      "parentId": "30",
+      "childIds": [
+        "39",
+        "40"
+      ],
+      "backendDOMNodeId": 38
+    },
+    {
+      "nodeId": "39",
+      "ignored": true,
+      "ignoredReasons": [
+        {
+          "name": "uninteresting",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        }
+      ],
+      "role": {
+        "type": "role",
+        "value": "none"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 0
+      },
+      "parentId": "38",
+      "childIds": [
+        "136"
+      ],
+      "backendDOMNodeId": 39
+    },
+    {
+      "nodeId": "136",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "StaticText"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 158
+      },
+      "name": {
+        "type": "computedString",
+        "value": "No reset",
+        "sources": [
+          {
+            "type": "contents",
+            "value": {
+              "type": "computedString",
+              "value": "No reset"
+            }
+          }
+        ]
+      },
+      "properties": [],
+      "parentId": "39",
+      "childIds": [
+        "-1000000016"
+      ],
+      "backendDOMNodeId": 136
+    },
+    {
+      "nodeId": "40",
+      "ignored": true,
+      "ignoredReasons": [
+        {
+          "name": "uninteresting",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        }
+      ],
+      "role": {
+        "type": "role",
+        "value": "none"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 0
+      },
+      "parentId": "38",
+      "childIds": [
+        "137"
+      ],
+      "backendDOMNodeId": 40
+    },
+    {
+      "nodeId": "137",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "StaticText"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 158
+      },
+      "name": {
+        "type": "computedString",
+        "value": "There is no reset. OSL cannot read the password you have, so it cannot put it back, and clearing it would leave this workspace open to whoever opens the lid.",
+        "sources": [
+          {
+            "type": "contents",
+            "value": {
+              "type": "computedString",
+              "value": "There is no reset. OSL cannot read the password you have, so it cannot put it back, and clearing it would leave this workspace open to whoever opens the lid."
+            }
+          }
+        ]
+      },
+      "properties": [],
+      "parentId": "40",
+      "childIds": [
+        "-1000000017",
+        "-1000000018",
+        "-1000000019"
+      ],
+      "backendDOMNodeId": 137
+    },
+    {
+      "nodeId": "42",
+      "ignored": true,
+      "ignoredReasons": [
+        {
+          "name": "uninteresting",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        }
+      ],
+      "role": {
+        "type": "role",
+        "value": "none"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 0
+      },
+      "parentId": "41",
+      "childIds": [
+        "43",
+        "44"
+      ],
+      "backendDOMNodeId": 42
+    },
+    {
+      "nodeId": "43",
+      "ignored": true,
+      "ignoredReasons": [
+        {
+          "name": "uninteresting",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        }
+      ],
+      "role": {
+        "type": "role",
+        "value": "none"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 0
+      },
+      "parentId": "42",
+      "childIds": [
+        "138"
+      ],
+      "backendDOMNodeId": 43
+    },
+    {
+      "nodeId": "138",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "StaticText"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 158
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Recovery",
+        "sources": [
+          {
+            "type": "contents",
+            "value": {
+              "type": "computedString",
+              "value": "Recovery"
+            }
+          }
+        ]
+      },
+      "properties": [],
+      "parentId": "43",
+      "childIds": [
+        "-1000000020"
+      ],
+      "backendDOMNodeId": 138
+    },
+    {
+      "nodeId": "44",
+      "ignored": true,
+      "ignoredReasons": [
+        {
+          "name": "uninteresting",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        }
+      ],
+      "role": {
+        "type": "role",
+        "value": "none"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 0
+      },
+      "parentId": "42",
+      "childIds": [
+        "139"
+      ],
+      "backendDOMNodeId": 44
+    },
+    {
+      "nodeId": "139",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "StaticText"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 158
+      },
+      "name": {
+        "type": "computedString",
+        "value": "12 words, written down 4 March 2026. Shown only on the recovery screen, after your password.",
+        "sources": [
+          {
+            "type": "contents",
+            "value": {
+              "type": "computedString",
+              "value": "12 words, written down 4 March 2026. Shown only on the recovery screen, after your password."
+            }
+          }
+        ]
+      },
+      "properties": [],
+      "parentId": "44",
+      "childIds": [
+        "-1000000021",
+        "-1000000022"
+      ],
+      "backendDOMNodeId": 139
+    },
+    {
+      "nodeId": "45",
+      "ignored": true,
+      "ignoredReasons": [
+        {
+          "name": "uninteresting",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        }
+      ],
+      "role": {
+        "type": "role",
+        "value": "none"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 0
+      },
+      "parentId": "41",
+      "childIds": [
+        "46"
+      ],
+      "backendDOMNodeId": 45
+    },
+    {
+      "nodeId": "46",
+      "ignored": false,
+      "role": {
+        "type": "role",
+        "value": "generic"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 88
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Recovery is set and is not shown",
+        "sources": [
+          {
+            "type": "relatedElement",
+            "attribute": "aria-labelledby"
+          },
+          {
+            "type": "attribute",
+            "value": {
+              "type": "computedString",
+              "value": "Recovery is set and is not shown"
+            },
+            "attribute": "aria-label",
+            "attributeValue": {
+              "type": "string",
+              "value": "Recovery is set and is not shown"
+            }
+          }
+        ]
+      },
+      "properties": [],
+      "parentId": "45",
+      "childIds": [
+        "140"
+      ],
+      "backendDOMNodeId": 46
+    },
+    {
+      "nodeId": "47",
+      "ignored": true,
+      "ignoredReasons": [
+        {
+          "name": "uninteresting",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        }
+      ],
+      "role": {
+        "type": "role",
+        "value": "none"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 0
+      },
+      "parentId": "41",
+      "childIds": [
+        "48"
+      ],
+      "backendDOMNodeId": 47
+    },
+    {
+      "nodeId": "48",
+      "ignored": false,
+      "role": {
+        "type": "role",
+        "value": "button"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 9
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Show recovery kit",
+        "sources": [
+          {
+            "type": "relatedElement",
+            "attribute": "aria-labelledby"
+          },
+          {
+            "type": "attribute",
+            "attribute": "aria-label"
+          },
+          {
+            "type": "relatedElement",
+            "nativeSource": "label"
+          },
+          {
+            "type": "contents",
+            "value": {
+              "type": "computedString",
+              "value": "Show recovery kit"
+            }
+          },
+          {
+            "type": "attribute",
+            "attribute": "title",
+            "superseded": true
+          }
+        ]
+      },
+      "properties": [
+        {
+          "name": "invalid",
+          "value": {
+            "type": "token",
+            "value": "false"
+          }
+        },
+        {
+          "name": "focusable",
+          "value": {
+            "type": "booleanOrUndefined",
+            "value": true
+          }
+        }
+      ],
+      "parentId": "47",
+      "childIds": [
+        "141"
+      ],
+      "backendDOMNodeId": 48
+    },
+    {
+      "nodeId": "49",
+      "ignored": true,
+      "ignoredReasons": [
+        {
+          "name": "uninteresting",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        }
+      ],
+      "role": {
+        "type": "role",
+        "value": "none"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 0
+      },
+      "parentId": "41",
+      "childIds": [
+        "50",
+        "51"
+      ],
+      "backendDOMNodeId": 49
+    },
+    {
+      "nodeId": "50",
+      "ignored": true,
+      "ignoredReasons": [
+        {
+          "name": "uninteresting",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        }
+      ],
+      "role": {
+        "type": "role",
+        "value": "none"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 0
+      },
+      "parentId": "49",
+      "childIds": [
+        "142"
+      ],
+      "backendDOMNodeId": 50
+    },
+    {
+      "nodeId": "142",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "StaticText"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 158
+      },
+      "name": {
+        "type": "computedString",
+        "value": "No reset",
+        "sources": [
+          {
+            "type": "contents",
+            "value": {
+              "type": "computedString",
+              "value": "No reset"
+            }
+          }
+        ]
+      },
+      "properties": [],
+      "parentId": "50",
+      "childIds": [
+        "-1000000025"
+      ],
+      "backendDOMNodeId": 142
+    },
+    {
+      "nodeId": "51",
+      "ignored": true,
+      "ignoredReasons": [
+        {
+          "name": "uninteresting",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        }
+      ],
+      "role": {
+        "type": "role",
+        "value": "none"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 0
+      },
+      "parentId": "49",
+      "childIds": [
+        "143"
+      ],
+      "backendDOMNodeId": 51
+    },
+    {
+      "nodeId": "143",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "StaticText"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 158
+      },
+      "name": {
+        "type": "computedString",
+        "value": "There is no reset. A new kit makes the words you already wrote down useless, and the old ones cannot be brought back.",
+        "sources": [
+          {
+            "type": "contents",
+            "value": {
+              "type": "computedString",
+              "value": "There is no reset. A new kit makes the words you already wrote down useless, and the old ones cannot be brought back."
+            }
+          }
+        ]
+      },
+      "properties": [],
+      "parentId": "51",
+      "childIds": [
+        "-1000000026",
+        "-1000000027",
+        "-1000000028"
+      ],
+      "backendDOMNodeId": 143
+    },
+    {
+      "nodeId": "53",
+      "ignored": true,
+      "ignoredReasons": [
+        {
+          "name": "uninteresting",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        }
+      ],
+      "role": {
+        "type": "role",
+        "value": "none"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 0
+      },
+      "parentId": "52",
+      "childIds": [
+        "54",
+        "55"
+      ],
+      "backendDOMNodeId": 53
+    },
+    {
+      "nodeId": "54",
+      "ignored": true,
+      "ignoredReasons": [
+        {
+          "name": "uninteresting",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        }
+      ],
+      "role": {
+        "type": "role",
+        "value": "none"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 0
+      },
+      "parentId": "53",
+      "childIds": [
+        "144"
+      ],
+      "backendDOMNodeId": 54
+    },
+    {
+      "nodeId": "144",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "StaticText"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 158
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Lock",
+        "sources": [
+          {
+            "type": "contents",
+            "value": {
+              "type": "computedString",
+              "value": "Lock"
+            }
+          }
+        ]
+      },
+      "properties": [],
+      "parentId": "54",
+      "childIds": [
+        "-1000000029"
+      ],
+      "backendDOMNodeId": 144
+    },
+    {
+      "nodeId": "55",
+      "ignored": true,
+      "ignoredReasons": [
+        {
+          "name": "uninteresting",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        }
+      ],
+      "role": {
+        "type": "role",
+        "value": "none"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 0
+      },
+      "parentId": "53",
+      "childIds": [
+        "145"
+      ],
+      "backendDOMNodeId": 55
+    },
+    {
+      "nodeId": "145",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "StaticText"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 158
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Locks this workspace when you step away from it.",
+        "sources": [
+          {
+            "type": "contents",
+            "value": {
+              "type": "computedString",
+              "value": "Locks this workspace when you step away from it."
+            }
+          }
+        ]
+      },
+      "properties": [],
+      "parentId": "55",
+      "childIds": [
+        "-1000000030"
+      ],
+      "backendDOMNodeId": 145
+    },
+    {
+      "nodeId": "56",
+      "ignored": true,
+      "ignoredReasons": [
+        {
+          "name": "uninteresting",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        }
+      ],
+      "role": {
+        "type": "role",
+        "value": "none"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 0
+      },
+      "parentId": "52",
+      "childIds": [
+        "57"
+      ],
+      "backendDOMNodeId": 56
+    },
+    {
+      "nodeId": "57",
+      "ignored": false,
+      "role": {
+        "type": "role",
+        "value": "combobox"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 209
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Lock this workspace after",
+        "sources": [
+          {
+            "type": "relatedElement",
+            "attribute": "aria-labelledby"
+          },
+          {
+            "type": "attribute",
+            "value": {
+              "type": "computedString",
+              "value": "Lock this workspace after"
+            },
+            "attribute": "aria-label",
+            "attributeValue": {
+              "type": "string",
+              "value": "Lock this workspace after"
+            }
+          },
+          {
+            "type": "relatedElement",
+            "superseded": true,
+            "nativeSource": "label"
+          },
+          {
+            "type": "attribute",
+            "attribute": "title",
+            "superseded": true
+          }
+        ]
+      },
+      "value": {
+        "type": "string",
+        "value": "After 30 minutes"
+      },
+      "properties": [
+        {
+          "name": "invalid",
+          "value": {
+            "type": "token",
+            "value": "false"
+          }
+        },
+        {
+          "name": "focusable",
+          "value": {
+            "type": "booleanOrUndefined",
+            "value": true
+          }
+        },
+        {
+          "name": "hasPopup",
+          "value": {
+            "type": "token",
+            "value": "menu"
+          }
+        },
+        {
+          "name": "expanded",
+          "value": {
+            "type": "booleanOrUndefined",
+            "value": false
+          }
+        }
+      ],
+      "parentId": "56",
+      "childIds": [
+        "60"
+      ],
+      "backendDOMNodeId": 57
+    },
+    {
+      "nodeId": "79",
+      "ignored": true,
+      "ignoredReasons": [
+        {
+          "name": "uninteresting",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        }
+      ],
+      "role": {
+        "type": "role",
+        "value": "none"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 0
+      },
+      "parentId": "52",
+      "childIds": [],
+      "backendDOMNodeId": 79
+    },
+    {
+      "nodeId": "80",
+      "ignored": true,
+      "ignoredReasons": [
+        {
+          "name": "uninteresting",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        }
+      ],
+      "role": {
+        "type": "role",
+        "value": "none"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 0
+      },
+      "parentId": "52",
+      "childIds": [
+        "81",
+        "82"
+      ],
+      "backendDOMNodeId": 80
+    },
+    {
+      "nodeId": "81",
+      "ignored": false,
+      "role": {
+        "type": "role",
+        "value": "button"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 9
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Reset Lock to after 5 minutes",
+        "sources": [
+          {
+            "type": "relatedElement",
+            "attribute": "aria-labelledby"
+          },
+          {
+            "type": "attribute",
+            "value": {
+              "type": "computedString",
+              "value": "Reset Lock to after 5 minutes"
+            },
+            "attribute": "aria-label",
+            "attributeValue": {
+              "type": "string",
+              "value": "Reset Lock to after 5 minutes"
+            }
+          },
+          {
+            "type": "relatedElement",
+            "superseded": true,
+            "nativeSource": "label"
+          },
+          {
+            "type": "contents",
+            "value": {
+              "type": "computedString",
+              "value": "Reset"
+            },
+            "superseded": true
+          },
+          {
+            "type": "attribute",
+            "attribute": "title",
+            "superseded": true
+          }
+        ]
+      },
+      "properties": [
+        {
+          "name": "invalid",
+          "value": {
+            "type": "token",
+            "value": "false"
+          }
+        },
+        {
+          "name": "focusable",
+          "value": {
+            "type": "booleanOrUndefined",
+            "value": true
+          }
+        }
+      ],
+      "parentId": "80",
+      "childIds": [
+        "146"
+      ],
+      "backendDOMNodeId": 81
+    },
+    {
+      "nodeId": "82",
+      "ignored": true,
+      "ignoredReasons": [
+        {
+          "name": "uninteresting",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        }
+      ],
+      "role": {
+        "type": "role",
+        "value": "none"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 0
+      },
+      "parentId": "80",
+      "childIds": [
+        "147"
+      ],
+      "backendDOMNodeId": 82
+    },
+    {
+      "nodeId": "147",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "StaticText"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 158
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Puts the lock delay back to five minutes. Nothing else changes.",
+        "sources": [
+          {
+            "type": "contents",
+            "value": {
+              "type": "computedString",
+              "value": "Puts the lock delay back to five minutes. Nothing else changes."
+            }
+          }
+        ]
+      },
+      "properties": [],
+      "parentId": "82",
+      "childIds": [
+        "-1000000032",
+        "-1000000033"
+      ],
+      "backendDOMNodeId": 147
+    },
+    {
+      "nodeId": "84",
+      "ignored": true,
+      "ignoredReasons": [
+        {
+          "name": "uninteresting",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        }
+      ],
+      "role": {
+        "type": "role",
+        "value": "none"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 0
+      },
+      "parentId": "83",
+      "childIds": [
+        "85",
+        "86"
+      ],
+      "backendDOMNodeId": 84
+    },
+    {
+      "nodeId": "85",
+      "ignored": true,
+      "ignoredReasons": [
+        {
+          "name": "uninteresting",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        }
+      ],
+      "role": {
+        "type": "role",
+        "value": "none"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 0
+      },
+      "parentId": "84",
+      "childIds": [
+        "148"
+      ],
+      "backendDOMNodeId": 85
+    },
+    {
+      "nodeId": "148",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "StaticText"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 158
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Stealth",
+        "sources": [
+          {
+            "type": "contents",
+            "value": {
+              "type": "computedString",
+              "value": "Stealth"
+            }
+          }
+        ]
+      },
+      "properties": [],
+      "parentId": "85",
+      "childIds": [
+        "-1000000034"
+      ],
+      "backendDOMNodeId": 148
+    },
+    {
+      "nodeId": "86",
+      "ignored": true,
+      "ignoredReasons": [
+        {
+          "name": "uninteresting",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        }
+      ],
+      "role": {
+        "type": "role",
+        "value": "none"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 0
+      },
+      "parentId": "84",
+      "childIds": [
+        "149"
+      ],
+      "backendDOMNodeId": 86
+    },
+    {
+      "nodeId": "149",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "StaticText"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 158
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Set. Entered at sign in, it opens an empty workspace.",
+        "sources": [
+          {
+            "type": "contents",
+            "value": {
+              "type": "computedString",
+              "value": "Set. Entered at sign in, it opens an empty workspace."
+            }
+          }
+        ]
+      },
+      "properties": [],
+      "parentId": "86",
+      "childIds": [
+        "-1000000035"
+      ],
+      "backendDOMNodeId": 149
+    },
+    {
+      "nodeId": "87",
+      "ignored": true,
+      "ignoredReasons": [
+        {
+          "name": "uninteresting",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        }
+      ],
+      "role": {
+        "type": "role",
+        "value": "none"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 0
+      },
+      "parentId": "83",
+      "childIds": [
+        "88"
+      ],
+      "backendDOMNodeId": 87
+    },
+    {
+      "nodeId": "88",
+      "ignored": false,
+      "role": {
+        "type": "role",
+        "value": "generic"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 88
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Stealth is set and is not shown",
+        "sources": [
+          {
+            "type": "relatedElement",
+            "attribute": "aria-labelledby"
+          },
+          {
+            "type": "attribute",
+            "value": {
+              "type": "computedString",
+              "value": "Stealth is set and is not shown"
+            },
+            "attribute": "aria-label",
+            "attributeValue": {
+              "type": "string",
+              "value": "Stealth is set and is not shown"
+            }
+          }
+        ]
+      },
+      "properties": [],
+      "parentId": "87",
+      "childIds": [
+        "150"
+      ],
+      "backendDOMNodeId": 88
+    },
+    {
+      "nodeId": "89",
+      "ignored": true,
+      "ignoredReasons": [
+        {
+          "name": "uninteresting",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        }
+      ],
+      "role": {
+        "type": "role",
+        "value": "none"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 0
+      },
+      "parentId": "83",
+      "childIds": [
+        "90"
+      ],
+      "backendDOMNodeId": 89
+    },
+    {
+      "nodeId": "90",
+      "ignored": false,
+      "role": {
+        "type": "role",
+        "value": "button"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 9
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Change stealth password",
+        "sources": [
+          {
+            "type": "relatedElement",
+            "attribute": "aria-labelledby"
+          },
+          {
+            "type": "attribute",
+            "attribute": "aria-label"
+          },
+          {
+            "type": "relatedElement",
+            "nativeSource": "label"
+          },
+          {
+            "type": "contents",
+            "value": {
+              "type": "computedString",
+              "value": "Change stealth password"
+            }
+          },
+          {
+            "type": "attribute",
+            "attribute": "title",
+            "superseded": true
+          }
+        ]
+      },
+      "properties": [
+        {
+          "name": "invalid",
+          "value": {
+            "type": "token",
+            "value": "false"
+          }
+        },
+        {
+          "name": "focusable",
+          "value": {
+            "type": "booleanOrUndefined",
+            "value": true
+          }
+        }
+      ],
+      "parentId": "89",
+      "childIds": [
+        "151"
+      ],
+      "backendDOMNodeId": 90
+    },
+    {
+      "nodeId": "91",
+      "ignored": true,
+      "ignoredReasons": [
+        {
+          "name": "uninteresting",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        }
+      ],
+      "role": {
+        "type": "role",
+        "value": "none"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 0
+      },
+      "parentId": "83",
+      "childIds": [
+        "92",
+        "93"
+      ],
+      "backendDOMNodeId": 91
+    },
+    {
+      "nodeId": "92",
+      "ignored": false,
+      "role": {
+        "type": "role",
+        "value": "button"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 9
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Reset Stealth to off",
+        "sources": [
+          {
+            "type": "relatedElement",
+            "attribute": "aria-labelledby"
+          },
+          {
+            "type": "attribute",
+            "value": {
+              "type": "computedString",
+              "value": "Reset Stealth to off"
+            },
+            "attribute": "aria-label",
+            "attributeValue": {
+              "type": "string",
+              "value": "Reset Stealth to off"
+            }
+          },
+          {
+            "type": "relatedElement",
+            "superseded": true,
+            "nativeSource": "label"
+          },
+          {
+            "type": "contents",
+            "value": {
+              "type": "computedString",
+              "value": "Reset"
+            },
+            "superseded": true
+          },
+          {
+            "type": "attribute",
+            "attribute": "title",
+            "superseded": true
+          }
+        ]
+      },
+      "properties": [
+        {
+          "name": "invalid",
+          "value": {
+            "type": "token",
+            "value": "false"
+          }
+        },
+        {
+          "name": "focusable",
+          "value": {
+            "type": "booleanOrUndefined",
+            "value": true
+          }
+        }
+      ],
+      "parentId": "91",
+      "childIds": [
+        "152"
+      ],
+      "backendDOMNodeId": 92
+    },
+    {
+      "nodeId": "93",
+      "ignored": true,
+      "ignoredReasons": [
+        {
+          "name": "uninteresting",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        }
+      ],
+      "role": {
+        "type": "role",
+        "value": "none"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 0
+      },
+      "parentId": "91",
+      "childIds": [
+        "153"
+      ],
+      "backendDOMNodeId": 93
+    },
+    {
+      "nodeId": "153",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "StaticText"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 158
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Clears the stealth password. The stealth workspace holds no messages, so nothing is lost.",
+        "sources": [
+          {
+            "type": "contents",
+            "value": {
+              "type": "computedString",
+              "value": "Clears the stealth password. The stealth workspace holds no messages, so nothing is lost."
+            }
+          }
+        ]
+      },
+      "properties": [],
+      "parentId": "93",
+      "childIds": [
+        "-1000000039",
+        "-1000000040"
+      ],
+      "backendDOMNodeId": 153
+    },
+    {
+      "nodeId": "95",
+      "ignored": true,
+      "ignoredReasons": [
+        {
+          "name": "uninteresting",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        }
+      ],
+      "role": {
+        "type": "role",
+        "value": "none"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 0
+      },
+      "parentId": "94",
+      "childIds": [
+        "96",
+        "97"
+      ],
+      "backendDOMNodeId": 95
+    },
+    {
+      "nodeId": "96",
+      "ignored": true,
+      "ignoredReasons": [
+        {
+          "name": "uninteresting",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        }
+      ],
+      "role": {
+        "type": "role",
+        "value": "none"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 0
+      },
+      "parentId": "95",
+      "childIds": [
+        "154"
+      ],
+      "backendDOMNodeId": 96
+    },
+    {
+      "nodeId": "154",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "StaticText"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 158
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Burn password",
+        "sources": [
+          {
+            "type": "contents",
+            "value": {
+              "type": "computedString",
+              "value": "Burn password"
+            }
+          }
+        ]
+      },
+      "properties": [],
+      "parentId": "96",
+      "childIds": [
+        "-1000000041"
+      ],
+      "backendDOMNodeId": 154
+    },
+    {
+      "nodeId": "97",
+      "ignored": true,
+      "ignoredReasons": [
+        {
+          "name": "uninteresting",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        }
+      ],
+      "role": {
+        "type": "role",
+        "value": "none"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 0
+      },
+      "parentId": "95",
+      "childIds": [
+        "155"
+      ],
+      "backendDOMNodeId": 97
+    },
+    {
+      "nodeId": "155",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "StaticText"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 158
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Set. Entered at sign in, it permanently erases OSL data from this device. No recovery.",
+        "sources": [
+          {
+            "type": "contents",
+            "value": {
+              "type": "computedString",
+              "value": "Set. Entered at sign in, it permanently erases OSL data from this device. No recovery."
+            }
+          }
+        ]
+      },
+      "properties": [],
+      "parentId": "97",
+      "childIds": [
+        "-1000000042",
+        "-1000000043"
+      ],
+      "backendDOMNodeId": 155
+    },
+    {
+      "nodeId": "98",
+      "ignored": true,
+      "ignoredReasons": [
+        {
+          "name": "uninteresting",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        }
+      ],
+      "role": {
+        "type": "role",
+        "value": "none"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 0
+      },
+      "parentId": "94",
+      "childIds": [
+        "99"
+      ],
+      "backendDOMNodeId": 98
+    },
+    {
+      "nodeId": "99",
+      "ignored": false,
+      "role": {
+        "type": "role",
+        "value": "generic"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 88
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Burn password is set and is not shown",
+        "sources": [
+          {
+            "type": "relatedElement",
+            "attribute": "aria-labelledby"
+          },
+          {
+            "type": "attribute",
+            "value": {
+              "type": "computedString",
+              "value": "Burn password is set and is not shown"
+            },
+            "attribute": "aria-label",
+            "attributeValue": {
+              "type": "string",
+              "value": "Burn password is set and is not shown"
+            }
+          }
+        ]
+      },
+      "properties": [],
+      "parentId": "98",
+      "childIds": [
+        "156"
+      ],
+      "backendDOMNodeId": 99
+    },
+    {
+      "nodeId": "100",
+      "ignored": true,
+      "ignoredReasons": [
+        {
+          "name": "uninteresting",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        }
+      ],
+      "role": {
+        "type": "role",
+        "value": "none"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 0
+      },
+      "parentId": "94",
+      "childIds": [
+        "101"
+      ],
+      "backendDOMNodeId": 100
+    },
+    {
+      "nodeId": "101",
+      "ignored": false,
+      "role": {
+        "type": "role",
+        "value": "button"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 9
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Change burn password",
+        "sources": [
+          {
+            "type": "relatedElement",
+            "attribute": "aria-labelledby"
+          },
+          {
+            "type": "attribute",
+            "attribute": "aria-label"
+          },
+          {
+            "type": "relatedElement",
+            "nativeSource": "label"
+          },
+          {
+            "type": "contents",
+            "value": {
+              "type": "computedString",
+              "value": "Change burn password"
+            }
+          },
+          {
+            "type": "attribute",
+            "attribute": "title",
+            "superseded": true
+          }
+        ]
+      },
+      "properties": [
+        {
+          "name": "invalid",
+          "value": {
+            "type": "token",
+            "value": "false"
+          }
+        },
+        {
+          "name": "focusable",
+          "value": {
+            "type": "booleanOrUndefined",
+            "value": true
+          }
+        }
+      ],
+      "parentId": "100",
+      "childIds": [
+        "157"
+      ],
+      "backendDOMNodeId": 101
+    },
+    {
+      "nodeId": "102",
+      "ignored": true,
+      "ignoredReasons": [
+        {
+          "name": "uninteresting",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        }
+      ],
+      "role": {
+        "type": "role",
+        "value": "none"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 0
+      },
+      "parentId": "94",
+      "childIds": [
+        "103",
+        "104"
+      ],
+      "backendDOMNodeId": 102
+    },
+    {
+      "nodeId": "103",
+      "ignored": false,
+      "role": {
+        "type": "role",
+        "value": "button"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 9
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Reset Burn password to off",
+        "sources": [
+          {
+            "type": "relatedElement",
+            "attribute": "aria-labelledby"
+          },
+          {
+            "type": "attribute",
+            "value": {
+              "type": "computedString",
+              "value": "Reset Burn password to off"
+            },
+            "attribute": "aria-label",
+            "attributeValue": {
+              "type": "string",
+              "value": "Reset Burn password to off"
+            }
+          },
+          {
+            "type": "relatedElement",
+            "superseded": true,
+            "nativeSource": "label"
+          },
+          {
+            "type": "contents",
+            "value": {
+              "type": "computedString",
+              "value": "Reset"
+            },
+            "superseded": true
+          },
+          {
+            "type": "attribute",
+            "attribute": "title",
+            "superseded": true
+          }
+        ]
+      },
+      "properties": [
+        {
+          "name": "invalid",
+          "value": {
+            "type": "token",
+            "value": "false"
+          }
+        },
+        {
+          "name": "focusable",
+          "value": {
+            "type": "booleanOrUndefined",
+            "value": true
+          }
+        }
+      ],
+      "parentId": "102",
+      "childIds": [
+        "158"
+      ],
+      "backendDOMNodeId": 103
+    },
+    {
+      "nodeId": "104",
+      "ignored": true,
+      "ignoredReasons": [
+        {
+          "name": "uninteresting",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        }
+      ],
+      "role": {
+        "type": "role",
+        "value": "none"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 0
+      },
+      "parentId": "102",
+      "childIds": [
+        "159"
+      ],
+      "backendDOMNodeId": 104
+    },
+    {
+      "nodeId": "159",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "StaticText"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 158
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Clears the burn password, so it can never be typed in by accident. It erases nothing.",
+        "sources": [
+          {
+            "type": "contents",
+            "value": {
+              "type": "computedString",
+              "value": "Clears the burn password, so it can never be typed in by accident. It erases nothing."
+            }
+          }
+        ]
+      },
+      "properties": [],
+      "parentId": "104",
+      "childIds": [
+        "-1000000047",
+        "-1000000048"
+      ],
+      "backendDOMNodeId": 159
+    },
+    {
+      "nodeId": "106",
+      "ignored": true,
+      "ignoredReasons": [
+        {
+          "name": "uninteresting",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        }
+      ],
+      "role": {
+        "type": "role",
+        "value": "none"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 0
+      },
+      "parentId": "105",
+      "childIds": [
+        "107",
+        "108"
+      ],
+      "backendDOMNodeId": 106
+    },
+    {
+      "nodeId": "107",
+      "ignored": true,
+      "ignoredReasons": [
+        {
+          "name": "uninteresting",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        }
+      ],
+      "role": {
+        "type": "role",
+        "value": "none"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 0
+      },
+      "parentId": "106",
+      "childIds": [
+        "160"
+      ],
+      "backendDOMNodeId": 107
+    },
+    {
+      "nodeId": "160",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "StaticText"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 158
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Pro code",
+        "sources": [
+          {
+            "type": "contents",
+            "value": {
+              "type": "computedString",
+              "value": "Pro code"
+            }
+          }
+        ]
+      },
+      "properties": [],
+      "parentId": "107",
+      "childIds": [
+        "-1000000049"
+      ],
+      "backendDOMNodeId": 160
+    },
+    {
+      "nodeId": "108",
+      "ignored": true,
+      "ignoredReasons": [
+        {
+          "name": "uninteresting",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        }
+      ],
+      "role": {
+        "type": "role",
+        "value": "none"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 0
+      },
+      "parentId": "106",
+      "childIds": [
+        "161"
+      ],
+      "backendDOMNodeId": 108
+    },
+    {
+      "nodeId": "161",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "StaticText"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 158
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Pro, this device, entered 18 February 2026. The code is never shown again.",
+        "sources": [
+          {
+            "type": "contents",
+            "value": {
+              "type": "computedString",
+              "value": "Pro, this device, entered 18 February 2026. The code is never shown again."
+            }
+          }
+        ]
+      },
+      "properties": [],
+      "parentId": "108",
+      "childIds": [
+        "-1000000050",
+        "-1000000051"
+      ],
+      "backendDOMNodeId": 161
+    },
+    {
+      "nodeId": "109",
+      "ignored": true,
+      "ignoredReasons": [
+        {
+          "name": "uninteresting",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        }
+      ],
+      "role": {
+        "type": "role",
+        "value": "none"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 0
+      },
+      "parentId": "105",
+      "childIds": [
+        "110"
+      ],
+      "backendDOMNodeId": 109
+    },
+    {
+      "nodeId": "110",
+      "ignored": false,
+      "role": {
+        "type": "role",
+        "value": "generic"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 88
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Pro code is set and is not shown",
+        "sources": [
+          {
+            "type": "relatedElement",
+            "attribute": "aria-labelledby"
+          },
+          {
+            "type": "attribute",
+            "value": {
+              "type": "computedString",
+              "value": "Pro code is set and is not shown"
+            },
+            "attribute": "aria-label",
+            "attributeValue": {
+              "type": "string",
+              "value": "Pro code is set and is not shown"
+            }
+          }
+        ]
+      },
+      "properties": [],
+      "parentId": "109",
+      "childIds": [
+        "162"
+      ],
+      "backendDOMNodeId": 110
+    },
+    {
+      "nodeId": "111",
+      "ignored": true,
+      "ignoredReasons": [
+        {
+          "name": "uninteresting",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        }
+      ],
+      "role": {
+        "type": "role",
+        "value": "none"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 0
+      },
+      "parentId": "105",
+      "childIds": [
+        "112"
+      ],
+      "backendDOMNodeId": 111
+    },
+    {
+      "nodeId": "112",
+      "ignored": false,
+      "role": {
+        "type": "role",
+        "value": "button"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 9
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Replace Pro code",
+        "sources": [
+          {
+            "type": "relatedElement",
+            "attribute": "aria-labelledby"
+          },
+          {
+            "type": "attribute",
+            "attribute": "aria-label"
+          },
+          {
+            "type": "relatedElement",
+            "nativeSource": "label"
+          },
+          {
+            "type": "contents",
+            "value": {
+              "type": "computedString",
+              "value": "Replace Pro code"
+            }
+          },
+          {
+            "type": "attribute",
+            "attribute": "title",
+            "superseded": true
+          }
+        ]
+      },
+      "properties": [
+        {
+          "name": "invalid",
+          "value": {
+            "type": "token",
+            "value": "false"
+          }
+        },
+        {
+          "name": "focusable",
+          "value": {
+            "type": "booleanOrUndefined",
+            "value": true
+          }
+        }
+      ],
+      "parentId": "111",
+      "childIds": [
+        "163"
+      ],
+      "backendDOMNodeId": 112
+    },
+    {
+      "nodeId": "113",
+      "ignored": true,
+      "ignoredReasons": [
+        {
+          "name": "uninteresting",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        }
+      ],
+      "role": {
+        "type": "role",
+        "value": "none"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 0
+      },
+      "parentId": "105",
+      "childIds": [
+        "114",
+        "115"
+      ],
+      "backendDOMNodeId": 113
+    },
+    {
+      "nodeId": "114",
+      "ignored": true,
+      "ignoredReasons": [
+        {
+          "name": "uninteresting",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        }
+      ],
+      "role": {
+        "type": "role",
+        "value": "none"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 0
+      },
+      "parentId": "113",
+      "childIds": [
+        "164"
+      ],
+      "backendDOMNodeId": 114
+    },
+    {
+      "nodeId": "164",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "StaticText"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 158
+      },
+      "name": {
+        "type": "computedString",
+        "value": "No reset",
+        "sources": [
+          {
+            "type": "contents",
+            "value": {
+              "type": "computedString",
+              "value": "No reset"
+            }
+          }
+        ]
+      },
+      "properties": [],
+      "parentId": "114",
+      "childIds": [
+        "-1000000054"
+      ],
+      "backendDOMNodeId": 164
+    },
+    {
+      "nodeId": "115",
+      "ignored": true,
+      "ignoredReasons": [
+        {
+          "name": "uninteresting",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        }
+      ],
+      "role": {
+        "type": "role",
+        "value": "none"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 0
+      },
+      "parentId": "113",
+      "childIds": [
+        "165"
+      ],
+      "backendDOMNodeId": 115
+    },
+    {
+      "nodeId": "165",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "StaticText"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 158
+      },
+      "name": {
+        "type": "computedString",
+        "value": "There is no reset. Removing the code puts this device back to free, and OSL cannot show you the code again to put it back.",
+        "sources": [
+          {
+            "type": "contents",
+            "value": {
+              "type": "computedString",
+              "value": "There is no reset. Removing the code puts this device back to free, and OSL cannot show you the code again to put it back."
+            }
+          }
+        ]
+      },
+      "properties": [],
+      "parentId": "115",
+      "childIds": [
+        "-1000000055",
+        "-1000000056",
+        "-1000000057"
+      ],
+      "backendDOMNodeId": 165
+    },
+    {
+      "nodeId": "166",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "StaticText"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 158
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Save account",
+        "sources": [
+          {
+            "type": "contents",
+            "value": {
+              "type": "computedString",
+              "value": "Save account"
+            }
+          }
+        ]
+      },
+      "properties": [],
+      "parentId": "118",
+      "childIds": [
+        "-1000000058"
+      ],
+      "backendDOMNodeId": 166
+    },
+    {
+      "nodeId": "167",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "StaticText"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 158
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Keeps the identity and lock changes, and any control you reset.",
+        "sources": [
+          {
+            "type": "contents",
+            "value": {
+              "type": "computedString",
+              "value": "Keeps the identity and lock changes, and any control you reset."
+            }
+          }
+        ]
+      },
+      "properties": [],
+      "parentId": "119",
+      "childIds": [
+        "-1000000059"
+      ],
+      "backendDOMNodeId": 167
+    },
+    {
+      "nodeId": "168",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "StaticText"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 158
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Reset safe settings",
+        "sources": [
+          {
+            "type": "contents",
+            "value": {
+              "type": "computedString",
+              "value": "Reset safe settings"
+            }
+          }
+        ]
+      },
+      "properties": [],
+      "parentId": "121",
+      "childIds": [
+        "-1000000060"
+      ],
+      "backendDOMNodeId": 168
+    },
+    {
+      "nodeId": "169",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "StaticText"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 158
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Puts back only what can be put back: identity, lock, stealth, burn password.",
+        "sources": [
+          {
+            "type": "contents",
+            "value": {
+              "type": "computedString",
+              "value": "Puts back only what can be put back: identity, lock, stealth, burn password."
+            }
+          }
+        ]
+      },
+      "properties": [],
+      "parentId": "122",
+      "childIds": [
+        "-1000000061"
+      ],
+      "backendDOMNodeId": 169
+    },
+    {
+      "nodeId": "170",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "StaticText"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 158
+      },
+      "name": {
+        "type": "computedString",
+        "value": "All 7 account controls saved.",
+        "sources": [
+          {
+            "type": "contents",
+            "value": {
+              "type": "computedString",
+              "value": "All 7 account controls saved."
+            }
+          }
+        ]
+      },
+      "properties": [],
+      "parentId": "123",
+      "childIds": [
+        "-1000000062"
+      ],
+      "backendDOMNodeId": 170
+    },
+    {
+      "nodeId": "-1000000002",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "InlineTextBox"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 101
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Account"
+      },
+      "properties": [],
+      "parentId": "125",
+      "childIds": []
+    },
+    {
+      "nodeId": "-1000000003",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "InlineTextBox"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 101
+      },
+      "name": {
+        "type": "computedString",
+        "value": "7 controls. The five that stand for a secret show that it is set and nothing else, and Reset is offered "
+      },
+      "properties": [],
+      "parentId": "126",
+      "childIds": []
+    },
+    {
+      "nodeId": "-1000000004",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "InlineTextBox"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 101
+      },
+      "name": {
+        "type": "computedString",
+        "value": "only where putting the control back costs nothing."
+      },
+      "properties": [],
+      "parentId": "126",
+      "childIds": []
+    },
+    {
+      "nodeId": "-1000000005",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "InlineTextBox"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 101
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Identity"
+      },
+      "properties": [],
+      "parentId": "127",
+      "childIds": []
+    },
+    {
+      "nodeId": "-1000000006",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "InlineTextBox"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 101
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Signed in as nora.vale.0324."
+      },
+      "properties": [],
+      "parentId": "128",
+      "childIds": []
+    },
+    {
+      "nodeId": "25",
+      "ignored": false,
+      "role": {
+        "type": "role",
+        "value": "generic"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 88
+      },
+      "name": {
+        "type": "computedString",
+        "value": "",
+        "sources": [
+          {
+            "type": "relatedElement",
+            "attribute": "aria-labelledby"
+          },
+          {
+            "type": "attribute",
+            "attribute": "aria-label"
+          }
+        ]
+      },
+      "properties": [
+        {
+          "name": "editable",
+          "value": {
+            "type": "token",
+            "value": "plaintext"
+          }
+        }
+      ],
+      "parentId": "24",
+      "childIds": [
+        "129"
+      ],
+      "backendDOMNodeId": 25
+    },
+    {
+      "nodeId": "130",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "StaticText"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 158
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Reset",
+        "sources": [
+          {
+            "type": "contents",
+            "value": {
+              "type": "computedString",
+              "value": "Reset"
+            }
+          }
+        ]
+      },
+      "properties": [],
+      "parentId": "28",
+      "childIds": [
+        "-1000000008"
+      ],
+      "backendDOMNodeId": 130
+    },
+    {
+      "nodeId": "-1000000009",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "InlineTextBox"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 101
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Puts the shown name back to your handle. The handle itself "
+      },
+      "properties": [],
+      "parentId": "131",
+      "childIds": []
+    },
+    {
+      "nodeId": "-1000000010",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "InlineTextBox"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 101
+      },
+      "name": {
+        "type": "computedString",
+        "value": "does not change."
+      },
+      "properties": [],
+      "parentId": "131",
+      "childIds": []
+    },
+    {
+      "nodeId": "-1000000011",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "InlineTextBox"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 101
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Password"
+      },
+      "properties": [],
+      "parentId": "132",
+      "childIds": []
+    },
+    {
+      "nodeId": "-1000000012",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "InlineTextBox"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 101
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Set, and last changed 12 January 2026. It is never shown, here or "
+      },
+      "properties": [],
+      "parentId": "133",
+      "childIds": []
+    },
+    {
+      "nodeId": "-1000000013",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "InlineTextBox"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 101
+      },
+      "name": {
+        "type": "computedString",
+        "value": "anywhere."
+      },
+      "properties": [],
+      "parentId": "133",
+      "childIds": []
+    },
+    {
+      "nodeId": "134",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "StaticText"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 158
+      },
+      "name": {
+        "type": "computedString",
+        "value": "••••••••••••",
+        "sources": [
+          {
+            "type": "contents",
+            "value": {
+              "type": "computedString",
+              "value": "••••••••••••"
+            }
+          }
+        ]
+      },
+      "properties": [],
+      "parentId": "35",
+      "childIds": [
+        "-1000000014"
+      ],
+      "backendDOMNodeId": 134
+    },
+    {
+      "nodeId": "135",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "StaticText"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 158
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Change password",
+        "sources": [
+          {
+            "type": "contents",
+            "value": {
+              "type": "computedString",
+              "value": "Change password"
+            }
+          }
+        ]
+      },
+      "properties": [],
+      "parentId": "37",
+      "childIds": [
+        "-1000000015"
+      ],
+      "backendDOMNodeId": 135
+    },
+    {
+      "nodeId": "-1000000016",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "InlineTextBox"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 101
+      },
+      "name": {
+        "type": "computedString",
+        "value": "No reset"
+      },
+      "properties": [],
+      "parentId": "136",
+      "childIds": []
+    },
+    {
+      "nodeId": "-1000000017",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "InlineTextBox"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 101
+      },
+      "name": {
+        "type": "computedString",
+        "value": "There is no reset. OSL cannot read the password you have, "
+      },
+      "properties": [],
+      "parentId": "137",
+      "childIds": []
+    },
+    {
+      "nodeId": "-1000000018",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "InlineTextBox"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 101
+      },
+      "name": {
+        "type": "computedString",
+        "value": "so it cannot put it back, and clearing it would leave this "
+      },
+      "properties": [],
+      "parentId": "137",
+      "childIds": []
+    },
+    {
+      "nodeId": "-1000000019",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "InlineTextBox"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 101
+      },
+      "name": {
+        "type": "computedString",
+        "value": "workspace open to whoever opens the lid."
+      },
+      "properties": [],
+      "parentId": "137",
+      "childIds": []
+    },
+    {
+      "nodeId": "-1000000020",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "InlineTextBox"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 101
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Recovery"
+      },
+      "properties": [],
+      "parentId": "138",
+      "childIds": []
+    },
+    {
+      "nodeId": "-1000000021",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "InlineTextBox"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 101
+      },
+      "name": {
+        "type": "computedString",
+        "value": "12 words, written down 4 March 2026. Shown only on the recovery "
+      },
+      "properties": [],
+      "parentId": "139",
+      "childIds": []
+    },
+    {
+      "nodeId": "-1000000022",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "InlineTextBox"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 101
+      },
+      "name": {
+        "type": "computedString",
+        "value": "screen, after your password."
+      },
+      "properties": [],
+      "parentId": "139",
+      "childIds": []
+    },
+    {
+      "nodeId": "140",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "StaticText"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 158
+      },
+      "name": {
+        "type": "computedString",
+        "value": "••••••••••••",
+        "sources": [
+          {
+            "type": "contents",
+            "value": {
+              "type": "computedString",
+              "value": "••••••••••••"
+            }
+          }
+        ]
+      },
+      "properties": [],
+      "parentId": "46",
+      "childIds": [
+        "-1000000023"
+      ],
+      "backendDOMNodeId": 140
+    },
+    {
+      "nodeId": "141",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "StaticText"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 158
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Show recovery kit",
+        "sources": [
+          {
+            "type": "contents",
+            "value": {
+              "type": "computedString",
+              "value": "Show recovery kit"
+            }
+          }
+        ]
+      },
+      "properties": [],
+      "parentId": "48",
+      "childIds": [
+        "-1000000024"
+      ],
+      "backendDOMNodeId": 141
+    },
+    {
+      "nodeId": "-1000000025",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "InlineTextBox"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 101
+      },
+      "name": {
+        "type": "computedString",
+        "value": "No reset"
+      },
+      "properties": [],
+      "parentId": "142",
+      "childIds": []
+    },
+    {
+      "nodeId": "-1000000026",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "InlineTextBox"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 101
+      },
+      "name": {
+        "type": "computedString",
+        "value": "There is no reset. A new kit makes the words you already "
+      },
+      "properties": [],
+      "parentId": "143",
+      "childIds": []
+    },
+    {
+      "nodeId": "-1000000027",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "InlineTextBox"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 101
+      },
+      "name": {
+        "type": "computedString",
+        "value": "wrote down useless, and the old ones cannot be brought "
+      },
+      "properties": [],
+      "parentId": "143",
+      "childIds": []
+    },
+    {
+      "nodeId": "-1000000028",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "InlineTextBox"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 101
+      },
+      "name": {
+        "type": "computedString",
+        "value": "back."
+      },
+      "properties": [],
+      "parentId": "143",
+      "childIds": []
+    },
+    {
+      "nodeId": "-1000000029",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "InlineTextBox"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 101
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Lock"
+      },
+      "properties": [],
+      "parentId": "144",
+      "childIds": []
+    },
+    {
+      "nodeId": "-1000000030",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "InlineTextBox"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 101
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Locks this workspace when you step away from it."
+      },
+      "properties": [],
+      "parentId": "145",
+      "childIds": []
+    },
+    {
+      "nodeId": "60",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "MenuListPopup"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 128
+      },
+      "name": {
+        "type": "computedString",
+        "value": "",
+        "sources": [
+          {
+            "type": "relatedElement",
+            "attribute": "aria-labelledby"
+          },
+          {
+            "type": "attribute",
+            "attribute": "aria-label"
+          },
+          {
+            "type": "attribute",
+            "attribute": "title"
+          }
+        ]
+      },
+      "properties": [],
+      "parentId": "57",
+      "childIds": [
+        "64",
+        "67",
+        "70",
+        "73",
+        "76"
+      ],
+      "backendDOMNodeId": 60
+    },
+    {
+      "nodeId": "146",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "StaticText"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 158
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Reset",
+        "sources": [
+          {
+            "type": "contents",
+            "value": {
+              "type": "computedString",
+              "value": "Reset"
+            }
+          }
+        ]
+      },
+      "properties": [],
+      "parentId": "81",
+      "childIds": [
+        "-1000000031"
+      ],
+      "backendDOMNodeId": 146
+    },
+    {
+      "nodeId": "-1000000032",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "InlineTextBox"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 101
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Puts the lock delay back to five minutes. Nothing else "
+      },
+      "properties": [],
+      "parentId": "147",
+      "childIds": []
+    },
+    {
+      "nodeId": "-1000000033",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "InlineTextBox"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 101
+      },
+      "name": {
+        "type": "computedString",
+        "value": "changes."
+      },
+      "properties": [],
+      "parentId": "147",
+      "childIds": []
+    },
+    {
+      "nodeId": "-1000000034",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "InlineTextBox"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 101
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Stealth"
+      },
+      "properties": [],
+      "parentId": "148",
+      "childIds": []
+    },
+    {
+      "nodeId": "-1000000035",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "InlineTextBox"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 101
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Set. Entered at sign in, it opens an empty workspace."
+      },
+      "properties": [],
+      "parentId": "149",
+      "childIds": []
+    },
+    {
+      "nodeId": "150",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "StaticText"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 158
+      },
+      "name": {
+        "type": "computedString",
+        "value": "••••••••••••",
+        "sources": [
+          {
+            "type": "contents",
+            "value": {
+              "type": "computedString",
+              "value": "••••••••••••"
+            }
+          }
+        ]
+      },
+      "properties": [],
+      "parentId": "88",
+      "childIds": [
+        "-1000000036"
+      ],
+      "backendDOMNodeId": 150
+    },
+    {
+      "nodeId": "151",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "StaticText"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 158
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Change stealth password",
+        "sources": [
+          {
+            "type": "contents",
+            "value": {
+              "type": "computedString",
+              "value": "Change stealth password"
+            }
+          }
+        ]
+      },
+      "properties": [],
+      "parentId": "90",
+      "childIds": [
+        "-1000000037"
+      ],
+      "backendDOMNodeId": 151
+    },
+    {
+      "nodeId": "152",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "StaticText"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 158
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Reset",
+        "sources": [
+          {
+            "type": "contents",
+            "value": {
+              "type": "computedString",
+              "value": "Reset"
+            }
+          }
+        ]
+      },
+      "properties": [],
+      "parentId": "92",
+      "childIds": [
+        "-1000000038"
+      ],
+      "backendDOMNodeId": 152
+    },
+    {
+      "nodeId": "-1000000039",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "InlineTextBox"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 101
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Clears the stealth password. The stealth workspace holds "
+      },
+      "properties": [],
+      "parentId": "153",
+      "childIds": []
+    },
+    {
+      "nodeId": "-1000000040",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "InlineTextBox"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 101
+      },
+      "name": {
+        "type": "computedString",
+        "value": "no messages, so nothing is lost."
+      },
+      "properties": [],
+      "parentId": "153",
+      "childIds": []
+    },
+    {
+      "nodeId": "-1000000041",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "InlineTextBox"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 101
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Burn password"
+      },
+      "properties": [],
+      "parentId": "154",
+      "childIds": []
+    },
+    {
+      "nodeId": "-1000000042",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "InlineTextBox"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 101
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Set. Entered at sign in, it permanently erases OSL data from this "
+      },
+      "properties": [],
+      "parentId": "155",
+      "childIds": []
+    },
+    {
+      "nodeId": "-1000000043",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "InlineTextBox"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 101
+      },
+      "name": {
+        "type": "computedString",
+        "value": "device. No recovery."
+      },
+      "properties": [],
+      "parentId": "155",
+      "childIds": []
+    },
+    {
+      "nodeId": "156",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "StaticText"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 158
+      },
+      "name": {
+        "type": "computedString",
+        "value": "••••••••••••",
+        "sources": [
+          {
+            "type": "contents",
+            "value": {
+              "type": "computedString",
+              "value": "••••••••••••"
+            }
+          }
+        ]
+      },
+      "properties": [],
+      "parentId": "99",
+      "childIds": [
+        "-1000000044"
+      ],
+      "backendDOMNodeId": 156
+    },
+    {
+      "nodeId": "157",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "StaticText"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 158
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Change burn password",
+        "sources": [
+          {
+            "type": "contents",
+            "value": {
+              "type": "computedString",
+              "value": "Change burn password"
+            }
+          }
+        ]
+      },
+      "properties": [],
+      "parentId": "101",
+      "childIds": [
+        "-1000000045"
+      ],
+      "backendDOMNodeId": 157
+    },
+    {
+      "nodeId": "158",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "StaticText"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 158
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Reset",
+        "sources": [
+          {
+            "type": "contents",
+            "value": {
+              "type": "computedString",
+              "value": "Reset"
+            }
+          }
+        ]
+      },
+      "properties": [],
+      "parentId": "103",
+      "childIds": [
+        "-1000000046"
+      ],
+      "backendDOMNodeId": 158
+    },
+    {
+      "nodeId": "-1000000047",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "InlineTextBox"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 101
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Clears the burn password, so it can never be typed in by "
+      },
+      "properties": [],
+      "parentId": "159",
+      "childIds": []
+    },
+    {
+      "nodeId": "-1000000048",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "InlineTextBox"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 101
+      },
+      "name": {
+        "type": "computedString",
+        "value": "accident. It erases nothing."
+      },
+      "properties": [],
+      "parentId": "159",
+      "childIds": []
+    },
+    {
+      "nodeId": "-1000000049",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "InlineTextBox"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 101
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Pro code"
+      },
+      "properties": [],
+      "parentId": "160",
+      "childIds": []
+    },
+    {
+      "nodeId": "-1000000050",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "InlineTextBox"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 101
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Pro, this device, entered 18 February 2026. The code is never shown "
+      },
+      "properties": [],
+      "parentId": "161",
+      "childIds": []
+    },
+    {
+      "nodeId": "-1000000051",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "InlineTextBox"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 101
+      },
+      "name": {
+        "type": "computedString",
+        "value": "again."
+      },
+      "properties": [],
+      "parentId": "161",
+      "childIds": []
+    },
+    {
+      "nodeId": "162",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "StaticText"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 158
+      },
+      "name": {
+        "type": "computedString",
+        "value": "••••••••••••",
+        "sources": [
+          {
+            "type": "contents",
+            "value": {
+              "type": "computedString",
+              "value": "••••••••••••"
+            }
+          }
+        ]
+      },
+      "properties": [],
+      "parentId": "110",
+      "childIds": [
+        "-1000000052"
+      ],
+      "backendDOMNodeId": 162
+    },
+    {
+      "nodeId": "163",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "StaticText"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 158
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Replace Pro code",
+        "sources": [
+          {
+            "type": "contents",
+            "value": {
+              "type": "computedString",
+              "value": "Replace Pro code"
+            }
+          }
+        ]
+      },
+      "properties": [],
+      "parentId": "112",
+      "childIds": [
+        "-1000000053"
+      ],
+      "backendDOMNodeId": 163
+    },
+    {
+      "nodeId": "-1000000054",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "InlineTextBox"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 101
+      },
+      "name": {
+        "type": "computedString",
+        "value": "No reset"
+      },
+      "properties": [],
+      "parentId": "164",
+      "childIds": []
+    },
+    {
+      "nodeId": "-1000000055",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "InlineTextBox"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 101
+      },
+      "name": {
+        "type": "computedString",
+        "value": "There is no reset. Removing the code puts this device back "
+      },
+      "properties": [],
+      "parentId": "165",
+      "childIds": []
+    },
+    {
+      "nodeId": "-1000000056",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "InlineTextBox"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 101
+      },
+      "name": {
+        "type": "computedString",
+        "value": "to free, and OSL cannot show you the code again to put it "
+      },
+      "properties": [],
+      "parentId": "165",
+      "childIds": []
+    },
+    {
+      "nodeId": "-1000000057",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "InlineTextBox"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 101
+      },
+      "name": {
+        "type": "computedString",
+        "value": "back."
+      },
+      "properties": [],
+      "parentId": "165",
+      "childIds": []
+    },
+    {
+      "nodeId": "-1000000058",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "InlineTextBox"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 101
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Save account"
+      },
+      "properties": [],
+      "parentId": "166",
+      "childIds": []
+    },
+    {
+      "nodeId": "-1000000059",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "InlineTextBox"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 101
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Keeps the identity and lock changes, and any control you reset."
+      },
+      "properties": [],
+      "parentId": "167",
+      "childIds": []
+    },
+    {
+      "nodeId": "-1000000060",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "InlineTextBox"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 101
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Reset safe settings"
+      },
+      "properties": [],
+      "parentId": "168",
+      "childIds": []
+    },
+    {
+      "nodeId": "-1000000061",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "InlineTextBox"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 101
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Puts back only what can be put back: identity, lock, stealth, burn password."
+      },
+      "properties": [],
+      "parentId": "169",
+      "childIds": []
+    },
+    {
+      "nodeId": "-1000000062",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "InlineTextBox"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 101
+      },
+      "name": {
+        "type": "computedString",
+        "value": "All 7 account controls saved."
+      },
+      "properties": [],
+      "parentId": "170",
+      "childIds": []
+    },
+    {
+      "nodeId": "129",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "StaticText"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 158
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Nora Vale",
+        "sources": [
+          {
+            "type": "contents",
+            "value": {
+              "type": "computedString",
+              "value": "Nora Vale"
+            }
+          }
+        ]
+      },
+      "properties": [
+        {
+          "name": "editable",
+          "value": {
+            "type": "token",
+            "value": "plaintext"
+          }
+        }
+      ],
+      "parentId": "25",
+      "childIds": [
+        "-1000000007"
+      ],
+      "backendDOMNodeId": 129
+    },
+    {
+      "nodeId": "-1000000008",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "InlineTextBox"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 101
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Reset"
+      },
+      "properties": [],
+      "parentId": "130",
+      "childIds": []
+    },
+    {
+      "nodeId": "-1000000014",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "InlineTextBox"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 101
+      },
+      "name": {
+        "type": "computedString",
+        "value": "••••••••••••"
+      },
+      "properties": [],
+      "parentId": "134",
+      "childIds": []
+    },
+    {
+      "nodeId": "-1000000015",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "InlineTextBox"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 101
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Change password"
+      },
+      "properties": [],
+      "parentId": "135",
+      "childIds": []
+    },
+    {
+      "nodeId": "-1000000023",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "InlineTextBox"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 101
+      },
+      "name": {
+        "type": "computedString",
+        "value": "••••••••••••"
+      },
+      "properties": [],
+      "parentId": "140",
+      "childIds": []
+    },
+    {
+      "nodeId": "-1000000024",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "InlineTextBox"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 101
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Show recovery kit"
+      },
+      "properties": [],
+      "parentId": "141",
+      "childIds": []
+    },
+    {
+      "nodeId": "64",
+      "ignored": false,
+      "role": {
+        "type": "role",
+        "value": "option"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 127
+      },
+      "name": {
+        "type": "computedString",
+        "value": "After 1 minute",
+        "sources": [
+          {
+            "type": "relatedElement",
+            "attribute": "aria-labelledby"
+          },
+          {
+            "type": "attribute",
+            "attribute": "aria-label"
+          },
+          {
+            "type": "contents",
+            "value": {
+              "type": "computedString",
+              "value": "After 1 minute"
+            }
+          },
+          {
+            "type": "attribute",
+            "attribute": "title",
+            "superseded": true
+          }
+        ]
+      },
+      "properties": [
+        {
+          "name": "focusable",
+          "value": {
+            "type": "booleanOrUndefined",
+            "value": true
+          }
+        },
+        {
+          "name": "selected",
+          "value": {
+            "type": "booleanOrUndefined",
+            "value": false
+          }
+        }
+      ],
+      "parentId": "60",
+      "childIds": [],
+      "backendDOMNodeId": 64
+    },
+    {
+      "nodeId": "67",
+      "ignored": false,
+      "role": {
+        "type": "role",
+        "value": "option"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 127
+      },
+      "name": {
+        "type": "computedString",
+        "value": "After 5 minutes",
+        "sources": [
+          {
+            "type": "relatedElement",
+            "attribute": "aria-labelledby"
+          },
+          {
+            "type": "attribute",
+            "attribute": "aria-label"
+          },
+          {
+            "type": "contents",
+            "value": {
+              "type": "computedString",
+              "value": "After 5 minutes"
+            }
+          },
+          {
+            "type": "attribute",
+            "attribute": "title",
+            "superseded": true
+          }
+        ]
+      },
+      "properties": [
+        {
+          "name": "focusable",
+          "value": {
+            "type": "booleanOrUndefined",
+            "value": true
+          }
+        },
+        {
+          "name": "selected",
+          "value": {
+            "type": "booleanOrUndefined",
+            "value": false
+          }
+        }
+      ],
+      "parentId": "60",
+      "childIds": [],
+      "backendDOMNodeId": 67
+    },
+    {
+      "nodeId": "70",
+      "ignored": false,
+      "role": {
+        "type": "role",
+        "value": "option"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 127
+      },
+      "name": {
+        "type": "computedString",
+        "value": "After 15 minutes",
+        "sources": [
+          {
+            "type": "relatedElement",
+            "attribute": "aria-labelledby"
+          },
+          {
+            "type": "attribute",
+            "attribute": "aria-label"
+          },
+          {
+            "type": "contents",
+            "value": {
+              "type": "computedString",
+              "value": "After 15 minutes"
+            }
+          },
+          {
+            "type": "attribute",
+            "attribute": "title",
+            "superseded": true
+          }
+        ]
+      },
+      "properties": [
+        {
+          "name": "focusable",
+          "value": {
+            "type": "booleanOrUndefined",
+            "value": true
+          }
+        },
+        {
+          "name": "selected",
+          "value": {
+            "type": "booleanOrUndefined",
+            "value": false
+          }
+        }
+      ],
+      "parentId": "60",
+      "childIds": [],
+      "backendDOMNodeId": 70
+    },
+    {
+      "nodeId": "73",
+      "ignored": false,
+      "role": {
+        "type": "role",
+        "value": "option"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 127
+      },
+      "name": {
+        "type": "computedString",
+        "value": "After 30 minutes",
+        "sources": [
+          {
+            "type": "relatedElement",
+            "attribute": "aria-labelledby"
+          },
+          {
+            "type": "attribute",
+            "attribute": "aria-label"
+          },
+          {
+            "type": "contents",
+            "value": {
+              "type": "computedString",
+              "value": "After 30 minutes"
+            }
+          },
+          {
+            "type": "attribute",
+            "attribute": "title",
+            "superseded": true
+          }
+        ]
+      },
+      "properties": [
+        {
+          "name": "focusable",
+          "value": {
+            "type": "booleanOrUndefined",
+            "value": true
+          }
+        },
+        {
+          "name": "selected",
+          "value": {
+            "type": "booleanOrUndefined",
+            "value": true
+          }
+        }
+      ],
+      "parentId": "60",
+      "childIds": [],
+      "backendDOMNodeId": 73
+    },
+    {
+      "nodeId": "76",
+      "ignored": false,
+      "role": {
+        "type": "role",
+        "value": "option"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 127
+      },
+      "name": {
+        "type": "computedString",
+        "value": "After 1 hour",
+        "sources": [
+          {
+            "type": "relatedElement",
+            "attribute": "aria-labelledby"
+          },
+          {
+            "type": "attribute",
+            "attribute": "aria-label"
+          },
+          {
+            "type": "contents",
+            "value": {
+              "type": "computedString",
+              "value": "After 1 hour"
+            }
+          },
+          {
+            "type": "attribute",
+            "attribute": "title",
+            "superseded": true
+          }
+        ]
+      },
+      "properties": [
+        {
+          "name": "focusable",
+          "value": {
+            "type": "booleanOrUndefined",
+            "value": true
+          }
+        },
+        {
+          "name": "selected",
+          "value": {
+            "type": "booleanOrUndefined",
+            "value": false
+          }
+        }
+      ],
+      "parentId": "60",
+      "childIds": [],
+      "backendDOMNodeId": 76
+    },
+    {
+      "nodeId": "-1000000031",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "InlineTextBox"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 101
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Reset"
+      },
+      "properties": [],
+      "parentId": "146",
+      "childIds": []
+    },
+    {
+      "nodeId": "-1000000036",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "InlineTextBox"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 101
+      },
+      "name": {
+        "type": "computedString",
+        "value": "••••••••••••"
+      },
+      "properties": [],
+      "parentId": "150",
+      "childIds": []
+    },
+    {
+      "nodeId": "-1000000037",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "InlineTextBox"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 101
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Change stealth password"
+      },
+      "properties": [],
+      "parentId": "151",
+      "childIds": []
+    },
+    {
+      "nodeId": "-1000000038",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "InlineTextBox"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 101
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Reset"
+      },
+      "properties": [],
+      "parentId": "152",
+      "childIds": []
+    },
+    {
+      "nodeId": "-1000000044",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "InlineTextBox"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 101
+      },
+      "name": {
+        "type": "computedString",
+        "value": "••••••••••••"
+      },
+      "properties": [],
+      "parentId": "156",
+      "childIds": []
+    },
+    {
+      "nodeId": "-1000000045",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "InlineTextBox"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 101
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Change burn password"
+      },
+      "properties": [],
+      "parentId": "157",
+      "childIds": []
+    },
+    {
+      "nodeId": "-1000000046",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "InlineTextBox"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 101
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Reset"
+      },
+      "properties": [],
+      "parentId": "158",
+      "childIds": []
+    },
+    {
+      "nodeId": "-1000000052",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "InlineTextBox"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 101
+      },
+      "name": {
+        "type": "computedString",
+        "value": "••••••••••••"
+      },
+      "properties": [],
+      "parentId": "162",
+      "childIds": []
+    },
+    {
+      "nodeId": "-1000000053",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "InlineTextBox"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 101
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Replace Pro code"
+      },
+      "properties": [],
+      "parentId": "163",
+      "childIds": []
+    },
+    {
+      "nodeId": "-1000000007",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "InlineTextBox"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 101
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Nora Vale"
+      },
+      "properties": [
+        {
+          "name": "editable",
+          "value": {
+            "type": "token",
+            "value": "plaintext"
+          }
+        }
+      ],
+      "parentId": "129",
+      "childIds": []
+    }
+  ]
+}

@@ -2,8 +2,8 @@
 //!
 //! A Space has members and roles.  It deliberately has no founder key: group
 //! key distribution belongs to the sender-key lifecycle and is identical for
-//! every active member.  The founding member is an administrator because of a
-//! roster role, not because their account holds different cryptographic state.
+//! every active member. The founder receives the explicit moderation permission
+//! represented by the roster role, not different cryptographic state.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -258,7 +258,7 @@ impl SpaceMemberId {
 /// never an input to group-key distribution.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SpaceRole {
-    Admin,
+    Moderator,
     Member,
 }
 
@@ -540,6 +540,24 @@ impl CustomRoleStore {
         self.document.roles.get(id)
     }
 
+    /// Roles a member may choose for themselves.  Ordering is the owner's
+    /// saved order, with the role id as a deterministic tie-breaker.
+    pub fn self_assignable_roles(&self) -> Vec<CustomRoleRecord> {
+        let mut roles: Vec<_> = self
+            .document
+            .roles
+            .values()
+            .filter(|role| role.properties.self_assignable)
+            .cloned()
+            .collect();
+        roles.sort_by(|left, right| {
+            left.properties
+                .order
+                .cmp(&right.properties.order)
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        roles
+    }
     pub fn add_template(
         &mut self,
         name: impl Into<String>,
@@ -569,6 +587,41 @@ impl CustomRoleStore {
             .insert(role_id.to_owned())
     }
 
+    /// Immediately take a role from the member-facing picker.  This boundary
+    /// deliberately refuses every non-self-assignable role, including roles
+    /// that an owner can otherwise grant.
+    pub fn take_self_assignable_role(&mut self, member_id: impl Into<String>, role_id: &str) -> bool {
+        if !self
+            .document
+            .roles
+            .get(role_id)
+            .is_some_and(|role| role.properties.self_assignable)
+        {
+            return false;
+        }
+        self.document
+            .member_roles
+            .entry(member_id.into())
+            .or_default()
+            .insert(role_id.to_owned())
+    }
+
+    /// Immediately drop a role from the member-facing picker.  A member may
+    /// only drop a role that remains eligible for the picker.
+    pub fn drop_self_assignable_role(&mut self, member_id: &str, role_id: &str) -> bool {
+        if !self
+            .document
+            .roles
+            .get(role_id)
+            .is_some_and(|role| role.properties.self_assignable)
+        {
+            return false;
+        }
+        self.document
+            .member_roles
+            .get_mut(member_id)
+            .is_some_and(|roles| roles.remove(role_id))
+    }
     pub fn role_ids_for_member(&self, member_id: &str) -> Vec<String> {
         self.document
             .member_roles
@@ -736,7 +789,7 @@ where
     Ok(())
 }
 
-/// The one server-side effect of an administrative deletion request.
+/// The one server-side effect of a moderator deletion request.
 ///
 /// This does not say anything about the copies held by Space members.  The
 /// server can confirm its own blob delete; each member's local deletion is a
@@ -747,18 +800,18 @@ pub enum ServerBlobDeleteRequestState {
     Confirmed,
 }
 
-/// Honest, count-only status for an admin's delete-for-everyone request.
+/// Honest, count-only status for a moderator's delete-for-everyone request.
 ///
 /// The variants intentionally retain `Request`: even after the server blob is
 /// confirmed gone, member copies remain independent instructions whose absent
 /// acknowledgements are `Unconfirmed`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum AdminDeleteForEveryoneRequestStatus {
+pub enum ModeratorDeleteForEveryoneRequestStatus {
     RequestQueued { member_deletions_confirmed: usize },
     RequestServerBlobConfirmed { member_deletions_confirmed: usize },
 }
 
-impl AdminDeleteForEveryoneRequestStatus {
+impl ModeratorDeleteForEveryoneRequestStatus {
     /// Display copy for a UI that must never turn a queued request into a
     /// completed deletion.  The member result is a count, never a boolean or
     /// a denominator, so it does not expose member device totals.
@@ -786,17 +839,17 @@ impl AdminDeleteForEveryoneRequestStatus {
     }
 }
 
-/// A planned admin delete-for-everyone action.  It is a request, not a claim
+/// A planned moderator delete-for-everyone action. It is a request, not a claim
 /// that any member copy has disappeared.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AdminDeleteForEveryoneRequest {
+pub struct ModeratorDeleteForEveryoneRequest {
     remote_burn_plan: RemoteFriendBurnPlan,
     pending_member_deletions: BTreeSet<SpaceMemberId>,
     confirmed_member_deletions: BTreeSet<SpaceMemberId>,
     server_blob_delete: ServerBlobDeleteRequestState,
 }
 
-impl AdminDeleteForEveryoneRequest {
+impl ModeratorDeleteForEveryoneRequest {
     /// The outgoing authenticated instructions.  These are queued requests;
     /// their presence is not a member-deletion acknowledgement.
     pub fn peer_deletion_instruction_count(&self) -> usize {
@@ -807,16 +860,16 @@ impl AdminDeleteForEveryoneRequest {
         self.server_blob_delete
     }
 
-    pub fn status(&self) -> AdminDeleteForEveryoneRequestStatus {
+    pub fn status(&self) -> ModeratorDeleteForEveryoneRequestStatus {
         let member_deletions_confirmed = self.confirmed_member_deletions.len();
         match self.server_blob_delete {
             ServerBlobDeleteRequestState::Queued => {
-                AdminDeleteForEveryoneRequestStatus::RequestQueued {
+                ModeratorDeleteForEveryoneRequestStatus::RequestQueued {
                     member_deletions_confirmed,
                 }
             }
             ServerBlobDeleteRequestState::Confirmed => {
-                AdminDeleteForEveryoneRequestStatus::RequestServerBlobConfirmed {
+                ModeratorDeleteForEveryoneRequestStatus::RequestServerBlobConfirmed {
                     member_deletions_confirmed,
                 }
             }
@@ -839,41 +892,41 @@ impl AdminDeleteForEveryoneRequest {
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub enum AdminDeleteForEveryoneError {
-    NotAnAdmin,
+pub enum ModeratorDeleteForEveryoneError {
+    NotAModerator,
     NoOtherMembers,
     RequestTargetsDoNotMatchSpaceMembership,
     Authorization(BurnAuthorizationError),
 }
 
-/// Authorize an admin's delete-for-everyone request and queue one authenticated
+/// Authorize a moderator's delete-for-everyone request and queue one authenticated
 /// delete instruction for every other current Space member.
 ///
 /// This deliberately delegates cryptographic scope, issuer, consent, and
 /// signature checks to T2's [`authorize_remote_friend_burn`] boundary.  Space
 /// moderation adds only the roster-role and current-membership checks; it does
 /// not create another burn authorization system.
-pub fn request_admin_delete_for_everyone(
+pub fn request_moderator_delete_for_everyone(
     space: &Space,
-    requesting_admin: SpaceMemberId,
+    requesting_moderator: SpaceMemberId,
     bindings: BurnScopeBindings<'_>,
     local_identity_commitment: [u8; 32],
     request: &RemoteFriendBurnRequest,
     revoked_grants: &BTreeMap<[u8; 16], u64>,
     verifier: &impl BurnSignatureVerifier,
-) -> Result<AdminDeleteForEveryoneRequest, AdminDeleteForEveryoneError> {
-    if space.role_of(requesting_admin) != Some(SpaceRole::Admin) {
-        return Err(AdminDeleteForEveryoneError::NotAnAdmin);
+) -> Result<ModeratorDeleteForEveryoneRequest, ModeratorDeleteForEveryoneError> {
+    if space.role_of(requesting_moderator) != Some(SpaceRole::Moderator) {
+        return Err(ModeratorDeleteForEveryoneError::NotAModerator);
     }
 
     let pending_member_deletions: BTreeSet<_> = space
         .members
         .keys()
         .copied()
-        .filter(|member| *member != requesting_admin)
+        .filter(|member| *member != requesting_moderator)
         .collect();
     if pending_member_deletions.is_empty() {
-        return Err(AdminDeleteForEveryoneError::NoOtherMembers);
+        return Err(ModeratorDeleteForEveryoneError::NoOtherMembers);
     }
     let request_targets: BTreeSet<_> = request
         .affected_identity_commitments
@@ -884,7 +937,7 @@ pub fn request_admin_delete_for_everyone(
     if request_targets != pending_member_deletions
         || request.affected_identity_commitments.len() != request_targets.len()
     {
-        return Err(AdminDeleteForEveryoneError::RequestTargetsDoNotMatchSpaceMembership);
+        return Err(ModeratorDeleteForEveryoneError::RequestTargetsDoNotMatchSpaceMembership);
     }
 
     let remote_burn_plan = authorize_remote_friend_burn(
@@ -894,9 +947,9 @@ pub fn request_admin_delete_for_everyone(
         revoked_grants,
         verifier,
     )
-    .map_err(AdminDeleteForEveryoneError::Authorization)?;
+    .map_err(ModeratorDeleteForEveryoneError::Authorization)?;
 
-    Ok(AdminDeleteForEveryoneRequest {
+    Ok(ModeratorDeleteForEveryoneRequest {
         remote_burn_plan,
         pending_member_deletions,
         confirmed_member_deletions: BTreeSet::new(),
@@ -904,10 +957,10 @@ pub fn request_admin_delete_for_everyone(
     })
 }
 
-/// Creates a Space with its founder as an administrator.
+/// Creates a Space with its founder as a moderator.
 ///
-/// The returned object contains no key material.  In particular, the founder
-/// is an admin solely by [`SpaceRole`], so another member can hold the same
+/// The returned object contains no key material. The founder's moderation
+/// permission is solely a roster role, so another member can hold the same
 /// group sender-key epoch material when admitted by the membership lifecycle.
 pub fn create_space(id: SpaceId, founder: SpaceMemberId) -> Result<Space, CreateSpaceError> {
     if founder.0.iter().all(|byte| *byte == 0) {
@@ -916,7 +969,7 @@ pub fn create_space(id: SpaceId, founder: SpaceMemberId) -> Result<Space, Create
 
     Ok(Space {
         id,
-        members: BTreeMap::from([(founder, SpaceRole::Admin)]),
+        members: BTreeMap::from([(founder, SpaceRole::Moderator)]),
         channel_key_domains: BTreeMap::new(),
     })
 }
@@ -932,19 +985,22 @@ impl Space {
 
     /// The identities that receive the current sender-key epoch material.
     ///
-    /// Roles deliberately do not affect this list: admins and ordinary members
+    /// Roles deliberately do not affect this list: moderators and ordinary members
     /// are equal cryptographic participants.  The caller supplies the same
     /// epoch material to each member through the established key lifecycle.
     pub fn key_recipients(&self) -> impl ExactSizeIterator<Item = SpaceMemberId> + '_ {
         self.members.keys().copied()
     }
 
-    /// Whether no current member has the Admin role.
+    /// Whether no current member has the Moderator role.
     ///
-    /// This is a normal, usable Space state.  It occurs if the last admin
+    /// This is a normal, usable Space state. It occurs if the last moderator
     /// leaves; callers must not reject a membership event merely to prevent it.
-    pub fn is_unowned(&self) -> bool {
-        !self.members.values().any(|role| *role == SpaceRole::Admin)
+    pub fn is_unmoderated(&self) -> bool {
+        !self
+            .members
+            .values()
+            .any(|role| *role == SpaceRole::Moderator)
     }
 
     /// Mints an independent key domain for a channel and scopes it to the
@@ -1090,7 +1146,7 @@ mod tests {
     }
 
     #[test]
-    fn founder_is_an_admin_role_and_not_a_unique_key_recipient() {
+    fn founder_is_a_moderator_role_and_not_a_unique_key_recipient() {
         let founder = member(1);
         let another_member = member(2);
         let mut space = create_space(SpaceId::from_bytes([9; 20]), founder).unwrap();
@@ -1099,7 +1155,7 @@ mod tests {
         // remain role-independent once the member is on the authoritative roster.
         space.members.insert(another_member, SpaceRole::Member);
 
-        assert_eq!(space.role_of(founder), Some(SpaceRole::Admin));
+        assert_eq!(space.role_of(founder), Some(SpaceRole::Moderator));
         assert_eq!(space.role_of(another_member), Some(SpaceRole::Member));
         assert_eq!(
             space.key_recipients().collect::<Vec<_>>(),
@@ -1109,7 +1165,7 @@ mod tests {
     }
 
     #[test]
-    fn a_space_with_no_admin_is_valid_after_the_last_admin_leaves() {
+    fn a_space_with_no_moderator_is_valid_after_the_last_moderator_leaves() {
         let founder = member(3);
         let mut space = create_space(SpaceId::from_bytes([4; 20]), founder).unwrap();
 
@@ -1117,7 +1173,7 @@ mod tests {
         // intentionally accepts its resulting empty roster.
         space.members.remove(&founder);
 
-        assert!(space.is_unowned());
+        assert!(space.is_unmoderated());
         assert!(space.key_recipients().next().is_none());
     }
 
@@ -1191,10 +1247,10 @@ mod tests {
     }
 
     #[test]
-    fn t21_t37_admin_delete_stays_a_request_until_each_member_acknowledges() {
+    fn t21_t37_moderator_delete_stays_a_request_until_each_member_acknowledges() {
         let bob = member(2);
         let carol = member(3);
-        let mut request = AdminDeleteForEveryoneRequest {
+        let mut request = ModeratorDeleteForEveryoneRequest {
             remote_burn_plan: RemoteFriendBurnPlan {
                 burn_id: [9; 32],
                 notices: vec![],
@@ -1207,7 +1263,7 @@ mod tests {
         assert_eq!(request.peer_deletion_instruction_count(), 0);
         assert_eq!(
             request.status(),
-            AdminDeleteForEveryoneRequestStatus::RequestQueued {
+            ModeratorDeleteForEveryoneRequestStatus::RequestQueued {
                 member_deletions_confirmed: 0
             }
         );
@@ -1221,7 +1277,7 @@ mod tests {
         assert!(!request.record_member_deletion_acknowledgement(member(4)));
         assert_eq!(
             request.status(),
-            AdminDeleteForEveryoneRequestStatus::RequestServerBlobConfirmed {
+            ModeratorDeleteForEveryoneRequestStatus::RequestServerBlobConfirmed {
                 member_deletions_confirmed: 1
             },
             "a server confirmation and one acknowledgement cannot complete the other member request"

@@ -1,0 +1,10 @@
+{
+  "reset_groups": [
+    "Account",
+    "Whitelisting",
+    "Privacy",
+    "Notifications",
+    "Apps and sending",
+    "Look"
+  ]
+}

@@ -1,0 +1,5 @@
+running 1 test
+TASK1369 copy=task1369-bob-copy received_from=task1369-alice-copy exact_text="TASK1369-Alice-to-Bob-07279f3d7bb080f5b2bfde7590c54125" count=1 total_messages=1
+test task_1369_live_two_way_direct_messages_read_exactly_once ... FAILED
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 6 filtered out

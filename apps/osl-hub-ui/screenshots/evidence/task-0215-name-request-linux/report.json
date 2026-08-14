@@ -1,0 +1,160 @@
+{
+  "schema": "task-0215-name-request-linux/v1",
+  "window": {
+    "width": 1024,
+    "height": 700
+  },
+  "fixture": "/screenshots/fixtures/task-0215-name-request-linux.html",
+  "before": {
+    "viewport": {
+      "width": 1024,
+      "height": 700
+    },
+    "input": {
+      "value": "",
+      "placeholder": "OSL name",
+      "ariaLabel": null,
+      "box": {
+        "x": 165,
+        "y": 294.390625,
+        "width": 694,
+        "height": 46,
+        "right": 859,
+        "bottom": 340.390625
+      }
+    },
+    "label": "Their exact OSL name",
+    "button": "Send Request",
+    "status": "Requests you send appear below and stay pending until the other person accepts.",
+    "pending": "Pending requests (0)No pending name requests.",
+    "pendingCount": "0",
+    "pendingEntry": "",
+    "panelBox": {
+      "x": 165,
+      "y": 227.5,
+      "width": 694,
+      "height": 318.171875,
+      "right": 859,
+      "bottom": 545.671875
+    },
+    "inputBox": {
+      "x": 165,
+      "y": 294.390625,
+      "width": 694,
+      "height": 46,
+      "right": 859,
+      "bottom": 340.390625
+    },
+    "pendingBox": {
+      "x": 165,
+      "y": 444.53125,
+      "width": 694,
+      "height": 101.140625,
+      "right": 859,
+      "bottom": 545.671875
+    }
+  },
+  "after": {
+    "viewport": {
+      "width": 1024,
+      "height": 700
+    },
+    "input": {
+      "value": "",
+      "placeholder": "OSL name",
+      "ariaLabel": null,
+      "box": {
+        "x": 165,
+        "y": 304.71875,
+        "width": 694,
+        "height": 46,
+        "right": 859,
+        "bottom": 350.71875
+      }
+    },
+    "label": "Their exact OSL name",
+    "button": "Send Request",
+    "status": "Request sent to maple_0213. It is pending until they accept.",
+    "pending": "Pending requests (1)Request to maple_0213 is pending until they accept.",
+    "pendingCount": "1",
+    "pendingEntry": "Request to maple_0213 is pending until they accept.",
+    "panelBox": {
+      "x": 165,
+      "y": 237.828125,
+      "width": 694,
+      "height": 297.53125,
+      "right": 859,
+      "bottom": 535.359375
+    },
+    "inputBox": {
+      "x": 165,
+      "y": 304.71875,
+      "width": 694,
+      "height": 46,
+      "right": 859,
+      "bottom": 350.71875
+    },
+    "pendingBox": {
+      "x": 165,
+      "y": 454.859375,
+      "width": 694,
+      "height": 80.5,
+      "right": 859,
+      "bottom": 535.359375
+    }
+  },
+  "images": {
+    "before": {
+      "path": "before-submission-linux.png",
+      "bytes": 33084,
+      "sha256": "f49b7b7bc724e425355048e99969382445bdb53c40ab0605897410275cab830a",
+      "width": 1024,
+      "height": 700,
+      "distinctColors": 2801,
+      "crops": {
+        "nameField": {
+          "width": 694,
+          "height": 47,
+          "pixels": 32618,
+          "distinctColors": 218,
+          "saturatedPixels": 277,
+          "meanColor": "18,24,29"
+        },
+        "pending": {
+          "width": 694,
+          "height": 102,
+          "pixels": 70788,
+          "distinctColors": 707,
+          "saturatedPixels": 1263,
+          "meanColor": "29,29,29"
+        }
+      }
+    },
+    "after": {
+      "path": "after-submission-linux.png",
+      "bytes": 33942,
+      "sha256": "6079cd55671740c934d41056ac165829d406f7e073f96e01e8fe89f5e817d42f",
+      "width": 1024,
+      "height": 700,
+      "distinctColors": 2914,
+      "crops": {
+        "nameField": {
+          "width": 694,
+          "height": 47,
+          "pixels": 32618,
+          "distinctColors": 218,
+          "saturatedPixels": 277,
+          "meanColor": "18,24,29"
+        },
+        "pending": {
+          "width": 694,
+          "height": 82,
+          "pixels": 56908,
+          "distinctColors": 846,
+          "saturatedPixels": 2051,
+          "meanColor": "29,31,30"
+        }
+      }
+    }
+  }
+}

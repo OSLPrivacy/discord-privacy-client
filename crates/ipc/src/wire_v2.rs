@@ -340,6 +340,40 @@ pub const V4_RATCHET_HEADER_BYTES: usize = V4_RATCHET_NONCE_BYTES + V4_RATCHET_E
 pub const SLOT_V3_BYTES: usize =
     RECIPIENT_HASH_PREFIX_LEN + 32 + 2 + ml_kem_768::CIPHERTEXT_SIZE + WRAPPED_K_BYTES;
 
+/// v=3 global header size: version(1) + msg_type(1) +
+/// sender_ik_x25519_pub(32) + recipient_count(1).
+pub const V3_GLOBAL_HEADER_BYTES: usize = 1 + 1 + x25519::PUBLIC_KEY_SIZE + 1;
+
+/// v=3 body framing that is present regardless of plaintext size:
+/// body_nonce(12) + body_tag(16).
+pub const V3_BODY_FIXED_BYTES: usize = aes_gcm::NONCE_SIZE + aes_gcm::TAG_SIZE;
+
+/// v=3 fixed overhead before plaintext and recipient slots are counted.
+pub const V3_FIXED_WIRE_BYTES: usize = V3_GLOBAL_HEADER_BYTES + V3_BODY_FIXED_BYTES;
+
+/// Raw v3 blobs are carried through 16-bit-sized transport fields.
+pub const V3_WIRE_BLOB_MAX_BYTES: usize = u16::MAX as usize + 1;
+
+pub fn max_v3_recipients_for_plaintext_len(plaintext_len: usize) -> usize {
+    V3_WIRE_BLOB_MAX_BYTES
+        .saturating_sub(V3_FIXED_WIRE_BYTES)
+        .saturating_sub(plaintext_len)
+        / SLOT_V3_BYTES
+}
+
+pub fn enforce_v3_recipient_ceiling(
+    recipient_count: usize,
+    plaintext_len: usize,
+) -> Result<(), V2Error> {
+    let ceiling = max_v3_recipients_for_plaintext_len(plaintext_len);
+    if recipient_count > ceiling {
+        return Err(V2Error::Crypto(format!(
+            "too many devices for one message: {recipient_count} devices requested, ceiling is {ceiling}"
+        )));
+    }
+    Ok(())
+}
+
 /// Plaintext + metadata recovered from a v=2 wire blob.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DecryptedV2 {
@@ -707,6 +741,7 @@ pub fn encrypt_v3(
             recipients.len()
         )));
     }
+    enforce_v3_recipient_ceiling(recipients.len(), plaintext.len())?;
 
     // Fresh body key K. Sealed once; per-recipient wrap covers the
     // same K under each recipient's wrap_key.
@@ -720,8 +755,7 @@ pub fn encrypt_v3(
 
     let n = recipients.len() as u8;
     let mut wire: Vec<u8> = Vec::with_capacity(
-        // version + msg_type + sender_ik(32) + N + slots + body
-        4 + 32 + (n as usize) * SLOT_V3_BYTES + aes_gcm::NONCE_SIZE + body_ct.len(),
+        V3_GLOBAL_HEADER_BYTES + (n as usize) * SLOT_V3_BYTES + aes_gcm::NONCE_SIZE + body_ct.len(),
     );
     wire.push(WIRE_VERSION_V3);
     wire.push(msg_type);
@@ -821,8 +855,8 @@ fn decrypt_v3_inner(
         .decode(body)
         .map_err(|e| V2Error::Base64(e.to_string()))?;
 
-    // version + msg_type + sender_ik(32) + N + ≥1 slot + body_nonce + tag
-    let min_framing = 4 + 32 + SLOT_V3_BYTES + aes_gcm::NONCE_SIZE + aes_gcm::TAG_SIZE;
+    // version + msg_type + sender_ik + N + >=1 slot + body_nonce + tag
+    let min_framing = V3_FIXED_WIRE_BYTES + SLOT_V3_BYTES;
     if raw.len() < min_framing {
         return Err(V2Error::TooShort {
             got: raw.len(),
@@ -846,7 +880,7 @@ fn decrypt_v3_inner(
     if n == 0 {
         return Err(V2Error::ZeroRecipients);
     }
-    let slots_start = 35;
+    let slots_start = V3_GLOBAL_HEADER_BYTES;
     let slots_end = slots_start + n * SLOT_V3_BYTES;
     if raw.len() < slots_end + aes_gcm::NONCE_SIZE + aes_gcm::TAG_SIZE {
         return Err(V2Error::TooShort {

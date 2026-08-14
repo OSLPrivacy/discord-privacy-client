@@ -78,7 +78,8 @@ pub use client::{
     validate_peer_bundle, BurnResponse, ControlInboxItem, ControlInboxPostResponse,
     IdentityBundleError, KeyServerClient, LicenseRedeemResponse, LicenseValidateResponse,
     LiveServerRevisionReport, PrekeyBundleOpk, PrekeyBundleResponse, PubkeysResponse,
-    RegisterResponse, ReplenishResponse, WrappedKeyOpenClaimResponse, WrappedKeyPostResponse,
+    RegisterResponse, ReplenishResponse, UsernameDiscoverySync, UsernameDiscoveryVisibility,
+    UsernameReleaseResponse, WrappedKeyOpenClaimResponse, WrappedKeyPostResponse,
     WrappedKeyResponse,
 };
 pub use duress::{

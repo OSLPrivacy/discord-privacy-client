@@ -229,6 +229,10 @@ fn task_0417_valid_delete_grant_reused_against_different_message_fails_and_both_
         first_present,
         second_present,
         mailbox.deleted_count()
+    );
+}
+
+#[test]
 fn task_0416_changed_delete_grant_owner_fails_and_stored_record_remains() {
     let owner = "owner-local-0416";
     let account = "account-local-0416";

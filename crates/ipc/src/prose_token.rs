@@ -9,9 +9,9 @@
 //!     derive this object's cipher-store authority from `P` and the sending
 //!     layer's keys, upload under the client-derived blob id, and encode `P`
 //!     itself as compact chat-like cover text via `encode_token`. The cover
-//!     text is what gets posted to Discord — no `DPC0::` marker, no
-//!     high-entropy base64 blob, and no server-assigned identifier.
-//!   * Receiver: every incoming Discord message in an OSL-enabled
+//!     text is what gets posted to chat and OSL Mail bodies — no `DPC0::`
+//!     marker, no high-entropy base64 blob, and no server-assigned identifier.
+//!   * Receiver: every incoming text message in an OSL-enabled
 //!     scope runs through `decode_token`. If the HMAC tag validates,
 //!     `P` is extracted, the blob id and fetch capability are derived from
 //!     `P` alone, the object is fetched and unframed, and the ciphertext is
@@ -122,7 +122,32 @@ pub const BRIDGE_ID_BYTES: usize = 8;
 /// Whatever the id leaves over in the carrier becomes secret seed material.
 /// 96 bits, freshly drawn per message, and it never crosses the network —
 /// only its HKDF output does.
-const BRIDGE_SEED_BYTES: usize = stego::TOKEN_ID_BYTES - BRIDGE_ID_BYTES;
+pub const BRIDGE_SEED_BYTES: usize = stego::TOKEN_ID_BYTES - BRIDGE_ID_BYTES;
+
+/// Fresh carrier entropy selected outside the encryption layer.
+///
+/// AI cover writing supplies this from public length/shape constraints only;
+/// the ordinary path continues to draw it from the operating system. Either
+/// way, the receiver sees the same canonical pointer format.
+#[derive(Clone, Copy)]
+pub struct ProseTokenCoverSeed([u8; BRIDGE_SEED_BYTES]);
+
+impl ProseTokenCoverSeed {
+    pub fn from_entropy(entropy: &[u8]) -> Result<Self, ProseTokenError> {
+        if entropy.len() < BRIDGE_SEED_BYTES {
+            return Err(ProseTokenError::BadCoverSeed);
+        }
+        let mut seed = [0u8; BRIDGE_SEED_BYTES];
+        let hk = Hkdf::<Sha256>::new(None, entropy);
+        hk.expand(b"osl/ai-cover-seed/v1", &mut seed)
+            .map_err(|_| ProseTokenError::BadCoverSeed)?;
+        Ok(Self(seed))
+    }
+
+    pub fn into_bytes(self) -> [u8; BRIDGE_SEED_BYTES] {
+        self.0
+    }
+}
 
 /// The bridge's read capability, derived from carrier material alone so the
 /// receiver needs no key material and no roundtrip — the same property the
@@ -189,6 +214,31 @@ pub struct ProseTokenSendKeys<'a> {
     pub conversation_key: &'a [u8],
 }
 
+/// Selects the visible writer used for a prose-token carrier.
+///
+/// `Baseline` preserves the pre-TASK-3520 carrier byte-for-byte at the API
+/// boundary. `Covertext` is the explicit button choice: it routes the same
+/// private pointer through the existing four-layer wordbank codec instead of
+/// inventing another bank or exposing a settings menu.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ProseTokenCoverWriter {
+    #[default]
+    Baseline,
+    Covertext,
+}
+
+/// The one layered wordbank policy selected by the Covertext button.
+///
+/// Pointer `Low` is intentional: unlike `High`, it retains the bridge's full
+/// 20-byte id+seed carrier. The three visible layers run at `High`, so pressing
+/// the button exercises capitalisation, the grown vocabulary, and spelling.
+const COVERTEXT_LAYER_SETTINGS: stego::CoverLayerSettings = stego::CoverLayerSettings::new(
+    stego::LayerStrength::Low,
+    stego::LayerStrength::High,
+    stego::LayerStrength::High,
+    stego::LayerStrength::High,
+);
+
 /// Errors that surface from the composite send/recv paths.
 #[derive(Debug, thiserror::Error)]
 pub enum ProseTokenError {
@@ -225,6 +275,8 @@ pub enum ProseTokenError {
     ObjectTooLarge,
     #[error("transport object framing was malformed")]
     MalformedObject,
+    #[error("AI cover entropy was too short")]
+    BadCoverSeed,
 }
 
 impl From<crypto::Error> for ProseTokenError {
@@ -454,6 +506,24 @@ pub struct ProseTokenPointer {
     pub blob_id: String,
 }
 
+/// Store authority recovered from a prose carrier without performing a fetch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProseTokenPointerArrival {
+    pub blob_id: String,
+    pub fetch_cap: [u8; FETCH_TOKEN_BYTES],
+    pub manage_cap: [u8; FETCH_TOKEN_BYTES],
+}
+
+/// Put an already prepared prose-token cover into the visible body of an OSL
+/// Mail message.
+///
+/// OSL Mail deliberately uses the same visible carrier as the chat surfaces:
+/// the body is the marker-free cover text itself. Wrapping it with extra prose
+/// would change the word stream and make the canonical reader reject it.
+pub fn prose_token_mail_body_from_cover(cover_text: &str) -> String {
+    cover_text.trim().to_owned()
+}
+
 /// Encrypt-and-upload: takes a `DPC0::<base64>` wire string produced by the
 /// existing encrypt pipeline, uploads the underlying cipher bytes to the
 /// cipher-store under a client-derived id with the chosen TTL, and encodes the
@@ -472,15 +542,66 @@ pub fn prose_token_send(
     dpc0_wire: &str,
     ttl_seconds: u32,
 ) -> Result<ProseTokenSendOutput, ProseTokenError> {
+    prose_token_send_with_writer(
+        config_dir,
+        scope_input,
+        detection_key,
+        keys,
+        dpc0_wire,
+        ttl_seconds,
+        ProseTokenCoverWriter::Baseline,
+    )
+}
+
+/// Same send with an explicit visible-cover writer choice.
+///
+/// Existing callers keep using [`prose_token_send`] and therefore retain the
+/// baseline carrier. The hub calls this variant only when it has a typed
+/// Covertext-button choice to pass through.
+pub fn prose_token_send_with_writer(
+    config_dir: &std::path::Path,
+    scope_input: &ScopeInput,
+    detection_key: &[u8; MAC_KEY_LEN],
+    keys: ProseTokenSendKeys<'_>,
+    dpc0_wire: &str,
+    ttl_seconds: u32,
+    writer: ProseTokenCoverWriter,
+) -> Result<ProseTokenSendOutput, ProseTokenError> {
     let base_url = crate::cipher_store_client::resolve_cipher_store_base_url(config_dir)?;
     let client = CipherStoreClient::new(base_url)?;
-    prose_token_send_with_client(
+    prose_token_send_with_client_inner(
         &client,
         scope_input,
         detection_key,
         keys,
         dpc0_wire,
         ttl_seconds,
+        None,
+        writer,
+    )
+}
+
+/// Direct-route send with entropy selected by the verified local cover writer.
+pub fn prose_token_send_with_cover_seed(
+    config_dir: &std::path::Path,
+    scope_input: &ScopeInput,
+    detection_key: &[u8; MAC_KEY_LEN],
+    keys: ProseTokenSendKeys<'_>,
+    dpc0_wire: &str,
+    ttl_seconds: u32,
+    cover_seed: ProseTokenCoverSeed,
+) -> Result<ProseTokenSendOutput, ProseTokenError> {
+    let base_url = crate::cipher_store_client::resolve_cipher_store_base_url(config_dir)?;
+    let client = CipherStoreClient::new(base_url)?;
+    prose_token_send_with_client_inner(
+        &client,
+        scope_input,
+        detection_key,
+        keys,
+        dpc0_wire,
+        ttl_seconds,
+        Some(cover_seed),
+        ProseTokenCoverWriter::Baseline,
     )
 }
 
@@ -498,6 +619,76 @@ pub fn prose_token_send_with_client(
     keys: ProseTokenSendKeys<'_>,
     dpc0_wire: &str,
     ttl_seconds: u32,
+) -> Result<ProseTokenSendOutput, ProseTokenError> {
+    prose_token_send_with_client_inner(
+        client,
+        scope_input,
+        detection_key,
+        keys,
+        dpc0_wire,
+        ttl_seconds,
+        None,
+        ProseTokenCoverWriter::Baseline,
+    )
+}
+
+/// Routed send with entropy selected by the verified local cover writer.
+pub fn prose_token_send_with_client_and_cover_seed(
+    client: &CipherStoreClient,
+    scope_input: &ScopeInput,
+    detection_key: &[u8; MAC_KEY_LEN],
+    keys: ProseTokenSendKeys<'_>,
+    dpc0_wire: &str,
+    ttl_seconds: u32,
+    cover_seed: ProseTokenCoverSeed,
+) -> Result<ProseTokenSendOutput, ProseTokenError> {
+    prose_token_send_with_client_inner(
+        client,
+        scope_input,
+        detection_key,
+        keys,
+        dpc0_wire,
+        ttl_seconds,
+        Some(cover_seed),
+        ProseTokenCoverWriter::Baseline,
+    )
+}
+
+/// Caller-supplied-client send with an explicit visible-cover writer choice.
+///
+/// This is the route-aware variant used by the hub. Writer choice changes only
+/// how the already-uploaded private pointer is rendered; upload authority,
+/// object framing, TTL, and burn behavior remain identical.
+pub fn prose_token_send_with_client_and_writer(
+    client: &CipherStoreClient,
+    scope_input: &ScopeInput,
+    detection_key: &[u8; MAC_KEY_LEN],
+    keys: ProseTokenSendKeys<'_>,
+    dpc0_wire: &str,
+    ttl_seconds: u32,
+    writer: ProseTokenCoverWriter,
+) -> Result<ProseTokenSendOutput, ProseTokenError> {
+    prose_token_send_with_client_inner(
+        client,
+        scope_input,
+        detection_key,
+        keys,
+        dpc0_wire,
+        ttl_seconds,
+        None,
+        writer,
+    )
+}
+
+fn prose_token_send_with_client_inner(
+    client: &CipherStoreClient,
+    scope_input: &ScopeInput,
+    detection_key: &[u8; MAC_KEY_LEN],
+    keys: ProseTokenSendKeys<'_>,
+    dpc0_wire: &str,
+    ttl_seconds: u32,
+    cover_seed: Option<ProseTokenCoverSeed>,
+    writer: ProseTokenCoverWriter,
 ) -> Result<ProseTokenSendOutput, ProseTokenError> {
     let body = dpc0_wire
         .strip_prefix(DPC0_PREFIX)
@@ -525,10 +716,15 @@ pub fn prose_token_send_with_client(
 
     // Fresh per message, so two messages in one conversation share no
     // store-visible value and the store cannot link them by id or token.
-    let seed_bytes = crypto::random::random_bytes(BRIDGE_SEED_BYTES);
-    let seed: [u8; BRIDGE_SEED_BYTES] = seed_bytes
-        .try_into()
-        .expect("random seed length is fixed by BRIDGE_SEED_BYTES");
+    let seed = match cover_seed {
+        Some(seed) => seed.0,
+        None => {
+            let seed_bytes = crypto::random::random_bytes(BRIDGE_SEED_BYTES);
+            seed_bytes
+                .try_into()
+                .expect("random seed length is fixed by BRIDGE_SEED_BYTES")
+        }
+    };
     let fetch_token = bridge_fetch_token(&seed);
 
     // The token must be chosen before the upload — it rides in the upload's
@@ -540,7 +736,16 @@ pub fn prose_token_send_with_client(
     // D-231: the scope-bound detector, never the caller's. See
     // `scope_bound_detection_key`.
     let scoped_detector = scope_bound_detection_key(detection_key, scope_input)?;
-    let cover_text = stego::encode_token(&cipher, &scoped_detector, &bridge_pack(&id, &seed));
+    let carrier = bridge_pack(&id, &seed);
+    let cover_text = match writer {
+        ProseTokenCoverWriter::Baseline => stego::encode_token(&cipher, &scoped_detector, &carrier),
+        ProseTokenCoverWriter::Covertext => stego::encode_layered_cover(
+            &scoped_detector,
+            stego::LayeredCoverInput::Seed(carrier),
+            COVERTEXT_LAYER_SETTINGS,
+        )
+        .expect("Covertext policy accepts the full bridge carrier"),
+    };
 
     Ok(ProseTokenSendOutput {
         cover_text,
@@ -592,7 +797,17 @@ fn prose_token_decode_carrier(
     // different conversation fails the detect tag here and returns `None`, so
     // callers can check prepared text without opening any cipher-store route.
     let scoped_detector = scope_bound_detection_key(detection_key, scope_input)?;
-    Ok(stego::decode_token(&cipher, &scoped_detector, msg))
+    if let Some(carrier) = stego::decode_token(&cipher, &scoped_detector, msg) {
+        return Ok(Some(carrier));
+    }
+    Ok(
+        match stego::decode_layered_cover(&scoped_detector, COVERTEXT_LAYER_SETTINGS, msg) {
+            Some(stego::LayeredCoverInput::Seed(carrier)) => Some(carrier),
+            // The fixed button policy uses pointer Low, so its decoder can never
+            // produce a shared handle. Keep this exhaustive in case stego evolves.
+            Some(stego::LayeredCoverInput::SharedHandle(_)) | None => None,
+        },
+    )
 }
 
 /// Recover only the pointer/id encoded in prepared cover text.
@@ -618,6 +833,29 @@ pub fn prose_token_recover_pointer(
     Ok(Some(ProseTokenPointer {
         blob_id: hex_lower(&id),
     }))
+}
+
+/// Decode a prose carrier into deployed store authority, but do not fetch.
+pub fn prose_token_pointer_arrival(
+    scope_input: &ScopeInput,
+    detection_key: &[u8; MAC_KEY_LEN],
+    msg: &str,
+) -> Result<Option<ProseTokenPointerArrival>, ProseTokenError> {
+    let Some(carrier) = prose_token_decode_carrier(scope_input, detection_key, msg)? else {
+        return Ok(None);
+    };
+    let (id, seed) = bridge_unpack(&carrier);
+    let fetch_token = bridge_fetch_token(&seed);
+    Ok(Some(ProseTokenPointerArrival {
+        blob_id: hex_lower(&id),
+        fetch_cap: fetch_token,
+        manage_cap: fetch_token,
+    }))
+}
+
+/// Rebuild the regular receive wire from a fetched prose-token store object.
+pub fn prose_token_wire_from_object(object: &[u8]) -> Result<String, ProseTokenError> {
+    prose_token_bridge_object_to_wire(object)
 }
 
 /// Try to decode a Discord message as an OSL prose-token, keeping the two
@@ -1189,6 +1427,187 @@ mod tests {
             "D-SEP requires independent HKDF outputs"
         );
     }
+
+    fn task_3959_scope() -> ScopeInput {
+        ScopeInput {
+            kind: crate::scope::ScopeKind::Dm,
+            id: "task-3959-peer".to_owned(),
+            server_id: None,
+            channel_id: Some("task-3959-real-keyed-dm-channel".to_owned()),
+        }
+    }
+
+    fn task_3959_ordinary_message(index: usize) -> String {
+        const OPENERS: &[&str] = &[
+            "hey",
+            "quick note",
+            "buenas",
+            "bonjour",
+            "ciao",
+            "hallo",
+            "olá",
+            "namaste",
+            "selam",
+            "привет",
+            "مرحبا",
+            "こんにちは",
+            "안녕",
+            "你好",
+            "hola",
+            "salut",
+        ];
+        const BODIES: &[&str] = &[
+            "i moved the meeting to the small room because the projector upstairs is still broken",
+            "can you send the grocery list again before you leave work",
+            "the train is delayed and i may miss the first ten minutes",
+            "thanks for checking the invoice number; the amount finally matches",
+            "la reunión terminó temprano y voy camino a casa",
+            "je garde le reçu dans le dossier partagé pour demain matin",
+            "ich habe den Termin verschoben, weil der Kalender doppelt gebucht war",
+            "posso passare dopo pranzo se il pacco arriva in tempo",
+            "vou revisar o rascunho quando terminar esta chamada",
+            "kannst du bitte das fenster schließen bevor du gehst",
+            "今日は少し遅れますが、駅に着いたら連絡します",
+            "회의 자료는 공유 폴더에 올려 두었어요",
+            "我把晚饭放在冰箱里，回来以后再热一下",
+            "заберу документы после обеда и напишу когда буду рядом",
+            "سأراجع الملاحظات بعد الاجتماع وأرسل النسخة الجديدة",
+            "the local server changed ports again so refresh the bookmark",
+            "please ignore the typo in the first line of the draft",
+            "i found the charger in the blue bag by the door",
+            "the receipt is in downloads and the photo is already backed up",
+            "we can delete the old branch after the release note lands",
+        ];
+        const DETAILS: &[&str] = &[
+            "no rush",
+            "when you get a minute",
+            "before lunch if possible",
+            "after the school pickup",
+            "with the latest attachment",
+            "from my phone",
+            "once the build finishes",
+            "tomorrow morning is fine",
+            "and please keep the original name",
+            "because the first copy was blurry",
+            "si tienes tiempo",
+            "quand tu peux",
+            "wenn es passt",
+            "quando puder",
+            "今日は無理しないで",
+            "천천히 해도 돼요",
+            "不用着急",
+            "بدون استعجال",
+        ];
+        let mut message = format!(
+            "{}: {} {}.",
+            OPENERS[index % OPENERS.len()],
+            BODIES[(index * 17 + 3) % BODIES.len()],
+            DETAILS[(index * 29 + 5) % DETAILS.len()]
+        );
+        let repeats = match index % 11 {
+            0 => 0,
+            1 | 2 => 1,
+            3 | 4 | 5 => 2,
+            6 | 7 => 4,
+            8 | 9 => 7,
+            _ => 12,
+        };
+        for round in 0..repeats {
+            message.push(' ');
+            message.push_str(BODIES[(index + round * 7) % BODIES.len()]);
+            message.push(' ');
+            message.push_str(DETAILS[(index + round * 11) % DETAILS.len()]);
+            message.push('.');
+        }
+        message
+    }
+
+    fn task_3959_cover(index: usize) -> (BridgePointer, String) {
+        let scope = task_3959_scope();
+        let detection_key = derive_detection_key(b"task-3959-real-conversation-secret")
+            .expect("conversation secret derives detector");
+        let cipher = derive_scope_cipher(&scope).expect("scope cipher");
+        let scoped_detector =
+            scope_bound_detection_key(&detection_key, &scope).expect("scope-bound detector");
+
+        let mut id = [0u8; BRIDGE_ID_BYTES];
+        let mut seed = [0u8; BRIDGE_SEED_BYTES];
+        for (offset, byte) in id.iter_mut().enumerate() {
+            *byte = (index as u8)
+                .wrapping_mul(19)
+                .wrapping_add(offset as u8)
+                .wrapping_add(0x39);
+        }
+        for (offset, byte) in seed.iter_mut().enumerate() {
+            *byte = (index as u8)
+                .wrapping_mul(31)
+                .wrapping_add((offset as u8).wrapping_mul(7))
+                .wrapping_add(0x59);
+        }
+
+        let pointer = BridgePointer {
+            server_blob_id: id,
+            seed,
+        };
+        let cover = stego::encode_token(&cipher, &scoped_detector, &pointer.carrier());
+        (pointer, cover)
+    }
+
+    #[test]
+    fn task_3959_ordinary_chat_is_never_called_a_cover_message() {
+        let scope = task_3959_scope();
+        let detection_key = derive_detection_key(b"task-3959-real-conversation-secret")
+            .expect("conversation secret derives detector");
+        let ordinary: Vec<String> = (0..5_000).map(task_3959_ordinary_message).collect();
+
+        let ordinary_called_cover_count = ordinary
+            .iter()
+            .filter(|message| {
+                prose_token_bridge_pointer(&scope, &detection_key, message)
+                    .expect("pointer reader accepts the keyed scope")
+                    .is_some()
+            })
+            .count();
+
+        let covers: Vec<(usize, BridgePointer, String)> = (0..10)
+            .map(|cover_index| {
+                let insertion_index = cover_index * 497 + 23;
+                let (expected, cover) = task_3959_cover(cover_index);
+                (insertion_index, expected, cover)
+            })
+            .collect();
+
+        let mut mixed = ordinary.clone();
+        for (position, _, cover) in covers.iter().rev() {
+            mixed.insert(*position, cover.clone());
+        }
+
+        let mut mixed_cover_count = 0usize;
+        let mut mixed_cover_matches = 0usize;
+        for message in mixed.iter() {
+            let decoded = prose_token_bridge_pointer(&scope, &detection_key, message)
+                .expect("pointer reader accepts the keyed scope");
+            if let Some(pointer) = decoded {
+                mixed_cover_count += 1;
+                if covers.iter().any(|(_, expected, _)| *expected == pointer) {
+                    mixed_cover_matches += 1;
+                }
+            }
+        }
+
+        println!("TASK3959 ordinary_messages_total={}", ordinary.len());
+        println!("TASK3959 ordinary_called_cover_count={ordinary_called_cover_count}");
+        println!("TASK3959 real_covers_mixed_in={}", covers.len());
+        println!("TASK3959 mixed_messages_total={}", mixed.len());
+        println!("TASK3959 mixed_cover_count={mixed_cover_count}");
+        println!("TASK3959 mixed_cover_matches={mixed_cover_matches}");
+
+        assert_eq!(ordinary.len(), 5_000);
+        assert_eq!(ordinary_called_cover_count, 0);
+        assert_eq!(covers.len(), 10);
+        assert_eq!(mixed_cover_count, 10);
+        assert_eq!(mixed_cover_matches, 10);
+    }
 }
 
 #[cfg(test)]
@@ -1406,10 +1825,10 @@ pub fn prose_token_bridge_pointer(
     detection_key: &[u8; MAC_KEY_LEN],
     msg: &str,
 ) -> Result<Option<BridgePointer>, ProseTokenError> {
-    let cipher = derive_scope_cipher(scope_input)?;
-    let scoped_detector = scope_bound_detection_key(detection_key, scope_input)?;
-    Ok(stego::decode_token(&cipher, &scoped_detector, msg)
-        .map(|carrier| BridgePointer::from_carrier(&carrier)))
+    let Some(carrier) = prose_token_decode_carrier(scope_input, detection_key, msg)? else {
+        return Ok(None);
+    };
+    Ok(Some(BridgePointer::from_carrier(&carrier)))
 }
 
 /// Rebuild the regular `DPC0::<base64>` receive wire from a fetched bridge
@@ -1424,12 +1843,4 @@ pub fn prose_token_bridge_object_to_wire(object: &[u8]) -> Result<String, ProseT
 /// Derive the token the deployed bridge Worker expects from the carrier seed.
 pub fn bridge_fetch_token_from_seed(seed: &[u8; BRIDGE_SEED_BYTES]) -> [u8; FETCH_TOKEN_BYTES] {
     bridge_fetch_token(seed)
-}
-
-fn bridge_pointer_from_carrier(carrier: &[u8; stego::TOKEN_ID_BYTES]) -> BridgePointer {
-    let (server_blob_id, seed) = bridge_unpack(carrier);
-    BridgePointer {
-        server_blob_id,
-        seed,
-    }
 }

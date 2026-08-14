@@ -1,0 +1,138 @@
+/*
+  TASK 3200 - the payment-taken, code-coming screen. Every rule lives here
+  rather than on a `style` attribute: the shipped CSP is `style-src 'self'`, so
+  inline styling never applies in the real window (see src/csp-render-gate.test.ts).
+*/
+
+.payment-taken-screen {
+  display: grid;
+  gap: 12px;
+  padding: 16px 18px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+  color: var(--text);
+  font-family: var(--font-ui);
+}
+
+.payment-taken-header {
+  display: grid;
+  gap: 5px;
+}
+
+.payment-taken-heading {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 21px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+/*
+  The sentence is the first thing read and the one that stops a second
+  payment, so it is set larger than the copy under it rather than as a
+  subtitle.
+*/
+.payment-taken-sentence {
+  margin: 0;
+  max-width: 62ch;
+  font-size: 14.5px;
+  line-height: 1.45;
+  color: var(--text);
+}
+
+.payment-taken-facts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(150px, 1fr));
+  gap: 10px;
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius);
+  background: var(--panel-2);
+}
+
+.payment-taken-fact {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.payment-taken-fact-name {
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.payment-taken-fact-value {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.payment-taken-reference {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 400;
+}
+
+.payment-taken-next {
+  display: grid;
+  gap: 8px;
+}
+
+.payment-taken-next-heading {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.payment-taken-steps {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+  padding-left: 18px;
+  max-width: 74ch;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text);
+}
+
+/* The do-not-pay-again step is the expensive one to miss. */
+.payment-taken-step[data-payment-taken-step="2"] {
+  color: var(--warn);
+}
+
+.payment-taken-action {
+  justify-self: start;
+  padding: 6px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel-2);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.payment-taken-action:hover {
+  border-color: var(--brand);
+}
+
+.payment-taken-contact {
+  margin: 0;
+  padding-top: 10px;
+  border-top: 1px solid var(--line-soft);
+  max-width: 74ch;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+
+.payment-taken-contact-link {
+  color: var(--brand);
+}

@@ -7,6 +7,7 @@ fn task_3109_direct_command_returns_risk_facts_for_typed_messaging_services() {
     let expected_services = [
         ("discord", "Discord"),
         ("telegram", "Telegram"),
+        ("signal", "Signal"),
         ("whatsapp", "WhatsApp"),
         ("x", "X"),
         ("instagram", "Instagram"),

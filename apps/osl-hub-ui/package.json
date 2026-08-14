@@ -8,8 +8,6 @@
     "@fontsource-variable/onest": "^5.3.0",
     "@fontsource-variable/source-sans-3": "^5.3.0",
     "@tauri-apps/api": "^2.0.0",
-    "@types/qrcode": "^1.5.5",
-    "qrcode": "^1.5.4",
     "simple-icons": "^15.6.0"
   },
   "scripts": {
@@ -17,17 +15,15 @@
     "build": "tsc --noEmit && vite build",
     "build:discord-qa": "tsc --noEmit && vite build --mode discord-qa",
     "check:cssvars": "node scripts/check-css-vars.mjs",
-    "check:retained-redesign": "vite-node scripts/check-retained-redesign-6872.ts",
-    "check:task-6854": "vite-node scripts/check-task-6854.ts",
-    "prove:task-6855": "node scripts/prove-task-6855.mjs",
-    "prove:task-7215": "node scripts/prove-task-7215-colour-floor.mjs",
-    "prove:retained-redesign": "node scripts/prove-retained-redesign-6872.mjs",
-    "prove:non-chat-redesign": "node scripts/prove-non-chat-redesign-6873.mjs",
+    "check:role-ability": "node scripts/check-4858-role-ability-view.mjs",
+    "screenshot:home-top-bar": "node screenshots/capture-home-top-bar.mjs",
+    "screenshot:notifications": "node screenshots/capture-linux-notifications.mjs",
     "screenshot:pro-code": "node screenshots/capture-pro-code.mjs",
-    "prove:5017b": "node scripts/prove-5017b-person-page-cut.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run && node --test screenshots/*.test.mjs",
-    "test:node": "node --test screenshots/*.test.mjs"
+    "test:task-0806": "vitest run src/task-0806-generated-label-proof.test.ts",
+    "test:node": "node --test screenshots/*.test.mjs",
+    "screenshot:all": "node screenshots/capture-all-routes.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.15.30",

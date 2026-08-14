@@ -1,3 +1,6 @@
+/* DELIBERATELY NOT OSL design tokens (osl-tokens.ts): the protected
+   transcript must match Discord exactly — the design requires zero styling
+   change on reveal — so every colour here is Discord's own. */
 .osl-discord-transcript {
   --osl-discord-transcript-zoom: 1;
   --osl-transcript-bg: #313338;

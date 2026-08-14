@@ -1,0 +1,67 @@
+/*
+  TASK 3724 - the "Payment received" missing-code recovery screen. Every rule
+  lives here rather than on a `style` attribute: the shipped CSP is
+  `style-src 'self'`, so inline styling never applies in the real window.
+*/
+
+.pr-screen {
+  display: grid;
+  gap: 12px;
+  padding: 16px 18px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+  color: var(--text);
+  font-family: var(--font-ui);
+}
+
+.pr-title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 21px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.pr-reference {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--text-muted, var(--text));
+  opacity: 0.75;
+}
+
+.pr-code-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel-raised, var(--panel));
+}
+
+.pr-code-label {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  opacity: 0.7;
+}
+
+.pr-code-value {
+  font-family: var(--font-mono, monospace);
+  font-size: 16px;
+  letter-spacing: 0.02em;
+}
+
+.pr-code-empty {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.45;
+  opacity: 0.85;
+}
+
+.pr-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}

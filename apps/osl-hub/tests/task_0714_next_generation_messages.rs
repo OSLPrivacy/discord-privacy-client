@@ -96,8 +96,9 @@ fn task_0714_saved_on_survives_restart_and_prepares_next_generation_message() {
     let saved = first_host_preferences
         .save(OnboardingPreferences {
             onboarding_complete: true,
-            send_mode: SendMode::Manual,
+            send_mode: SendMode::Enter,
             placement_mode: PlacementMode::Atomic,
+            cover_insertion: None,
             show_plaintext_preview: false,
             window_capture_enabled: true,
             rn_wire_policy_requested: true,

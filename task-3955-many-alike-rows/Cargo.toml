@@ -1,0 +1,12 @@
+[package]
+name = "task-3955-many-alike-rows"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "task_3955_many_alike_rows"
+path = "src/lib.rs"
+
+[workspace]
+resolver = "2"

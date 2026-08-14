@@ -17,6 +17,9 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { loadFriendProfile, listHubPeople } from "./adapters";
+import { loadLinkedServices } from "./services";
+
 
 // D-251: every `it()` below deliberately re-loads `./main` with its own
 // selectors / storage / stubs, so the import CANNOT be hoisted into a single
@@ -64,7 +67,7 @@ interface FakeElement {
   getAttribute(name: string): string | null;
   focus(): void;
   click(): Promise<void>;
-  dispatch(type: string): Promise<void>;
+  dispatch(type: string, event?: Record<string, unknown>): Promise<void>;
   querySelector(selector: string): FakeElement | null;
   querySelectorAll(selector: string): FakeElement[];
 }
@@ -93,8 +96,8 @@ function fakeElement(tagName: string, id = ""): FakeElement {
     getAttribute(name) { return this.attributes.get(name) ?? null; },
     focus() { this.focusCount += 1; },
     async click(): Promise<void> { await this.dispatch("click"); },
-    async dispatch(type: string): Promise<void> {
-      for (const handler of this.handlers.get(type) ?? []) await handler({ preventDefault: () => undefined, currentTarget: this });
+    async dispatch(type: string, event: Record<string, unknown> = {}): Promise<void> {
+      for (const handler of this.handlers.get(type) ?? []) await handler({ preventDefault: () => undefined, currentTarget: this, ...event });
     },
     querySelector: () => null,
     querySelectorAll: () => [],
@@ -108,6 +111,7 @@ interface UnlockHarness {
   submitButton: FakeElement;
   forgotButton: FakeElement;
   backButton: FakeElement;
+  closeDecoyButton: FakeElement;
   error: FakeElement;
   nodes: Map<string, FakeElement>;
   allNodes: FakeElement[];
@@ -132,6 +136,8 @@ function buildUnlockHarness(): UnlockHarness {
   const backButton = fakeElement("BUTTON");
   backButton.dataset.onboarding = "welcome";
   backButton.textContent = "Back";
+  const closeDecoyButton = fakeElement("BUTTON", "close-decoy");
+  closeDecoyButton.textContent = "Close";
   const error = fakeElement("P", "password-error");
 
   const nodes = new Map<string, FakeElement>([
@@ -139,9 +145,10 @@ function buildUnlockHarness(): UnlockHarness {
     ["#identity-password", password],
     ["#identity-password-submit", submitButton],
     ["#password-error", error],
+    ["#close-decoy", closeDecoyButton],
   ]);
 
-  const allNodes = [form, password, eyeButton, submitButton, forgotButton, backButton, error];
+  const allNodes = [form, password, eyeButton, submitButton, forgotButton, backButton, closeDecoyButton, error];
   return {
     form,
     password,
@@ -149,6 +156,7 @@ function buildUnlockHarness(): UnlockHarness {
     submitButton,
     forgotButton,
     backButton,
+    closeDecoyButton,
     error,
     nodes,
     allNodes,
@@ -340,7 +348,7 @@ describe("D80 unlock screen renders one credential input", () => {
     const markup = __oslHubUiTest.renderOnboardingRoute("unlock");
     const nodes = parseRendered(markup);
 
-    expect(nodes.find((node) => node.tag === "h1")?.text).toBe("Unlock");
+    expect(nodes.find((node) => node.tag === "h1")?.text).toBe("Sign in");
 
     const inputs = nodes.filter((node) => node.tag === "input");
     expect(inputs).toHaveLength(1);
@@ -367,7 +375,7 @@ describe("D80 unlock screen renders one credential input", () => {
 
     expect(unlock).toContain('data-onboarding="account-recovery"');
     expect(recovery).toContain('data-account-recovery-phrase');
-    expect(recovery).toContain("Password reset");
+    expect(recovery).toContain("Forgot password?");
   }, MODULE_RELOAD_BUDGET_MS);
 
   it("records show, unlock, forgot, back, and wrong-password results with one saved account", async () => {
@@ -475,7 +483,7 @@ describe("D80 unlock screen renders one credential input", () => {
       savedAccountCount: JSON.parse(harness.storage.get(savedAccountKey) ?? "[]").length,
       showFirst: firstShowResult,
       showSecond: secondShowResult,
-      forgot: { route: forgotSnapshot.route, onboardingRoute: forgotSnapshot.onboardingRoute, heading: "Password reset" },
+      forgot: { route: forgotSnapshot.route, onboardingRoute: forgotSnapshot.onboardingRoute, heading: "Forgot password?" },
       back: { route: backSnapshot.route, onboardingRoute: backSnapshot.onboardingRoute, control: "Sign in" },
       wrong: wrongResult,
       unlock: { route: unlockSnapshot.route },
@@ -486,7 +494,7 @@ describe("D80 unlock screen renders one credential input", () => {
     expect(firstShowResult).toEqual({ type: "text", value: "saved-password", label: "Hide password" });
     expect(secondShowResult).toEqual({ type: "password", value: "saved-password", label: "Show password" });
     expect(forgotSnapshot).toMatchObject({ route: "onboarding", onboardingRoute: "account-recovery" });
-    expect(forgotMarkup).toContain("Password reset");
+    expect(forgotMarkup).toContain("Forgot password?");
     expect(backSnapshot).toMatchObject({ route: "onboarding", onboardingRoute: "welcome" });
     expect(backMarkup).toContain('data-onboarding="unlock"');
     expect(backMarkup).toContain("Sign in");
@@ -607,9 +615,7 @@ describe("D80 unlock screen renders one credential input", () => {
     const afterNearMatch = __oslHubUiTest.snapshot();
     const accountsAfterNearMatch = JSON.parse(harness.storage.get(savedAccountKey) ?? "[]").length;
     expect(afterNearMatch).toMatchObject({ route: "onboarding", onboardingRoute: "unlock" });
-    expect(harness.error.textContent).toBe(
-      "Password not recognized. 9 attempts remaining before a 15-minute cooldown.",
-    );
+    expect(harness.error.textContent).toBe("Password not recognized.");
     expect(accountsAfterNearMatch).toBe(1);
     expect(burnRequests).toBe(0);
     expect(burnConfirmationOpen).toBe(false);
@@ -637,7 +643,106 @@ describe("D80 unlock screen renders one credential input", () => {
       await harness.submit();
 
       expect(__oslHubUiTest.snapshot().onboardingRoute).toBe(expectedRoute);
+      if (outcome === "decoy") {
+        expect((globalThis.document as unknown as { title: string }).title).toBe("Decoy workspace");
+      }
     }
+  }, 30_000);
+
+  it("TASK 0352 drives the decoy workspace controls and refuses every named real-data request", async () => {
+    const exactStealthPassword = "stealth-0307-password";
+    const nearMatchStealthPassword = "stealth-0307-passwore";
+    const harness = buildUnlockHarness();
+
+    const refusedCommands: string[] = [];
+    mocks.invoke.mockImplementation(async (command: string, args?: unknown) => {
+      if (command === "unlock_hub_password_gate") {
+        const entered = (args as { password?: unknown } | undefined)?.password;
+        return gateResult(entered === exactStealthPassword ? "decoy" : "wrong");
+      }
+      if (["list_linked_services", "list_hub_people", "export_hub_friend_code"].includes(command)) {
+        refusedCommands.push(command);
+        throw new Error(`OSL: session is locked; refused ${command}`);
+      }
+      throw new Error(`unexpected TASK 0352 command: ${command}`);
+    });
+
+    const { __oslHubUiTest } = await loadUi(harness);
+    __oslHubUiTest.reset({
+      route: "onboarding",
+      onboardingRoute: "unlock",
+      coreReady: false,
+      bootstrapStatus: "passwordRequired",
+    });
+    __oslHubUiTest.bindUnlockForm();
+
+    let realDataResultCount = 0;
+    const initialMarkup = __oslHubUiTest.renderOnboardingRoute("unlock");
+    expect(initialMarkup, "HAZEL-0352 decoy-control: locked page was not Unlock").toContain(">Unlock<");
+
+    harness.password.value = nearMatchStealthPassword;
+    harness.submitButton.disabled = false;
+    await harness.submit();
+    const nearMatch = __oslHubUiTest.snapshot();
+    expect(nearMatch, "HAZEL-0352 decoy-control: near-match changed the locked page").toMatchObject({
+      route: "onboarding",
+      onboardingRoute: "unlock",
+    });
+    expect(realDataResultCount, "HAZEL-0352 decoy-control: near-match returned real data").toBe(0);
+    expect(refusedCommands, "HAZEL-0352 decoy-control: near-match reached a real-data command").toEqual([]);
+
+    harness.password.value = exactStealthPassword;
+    harness.submitButton.disabled = false;
+    await harness.submit();
+    const decoy = __oslHubUiTest.snapshot();
+    const decoyMarkup = __oslHubUiTest.renderOnboardingRoute("decoy");
+    expect(decoy, "HAZEL-0352 decoy-control: exact stealth password did not open Workspace").toMatchObject({
+      route: "onboarding",
+      onboardingRoute: "decoy",
+    });
+    expect(decoyMarkup, "HAZEL-0352 decoy-control: named Workspace was absent").toContain(">Workspace<");
+    expect(decoyMarkup, "HAZEL-0352 decoy-control: Close was absent").toContain(">Close<");
+
+    const realDataRequests = [
+      ["list_linked_services", () => loadLinkedServices()],
+      ["list_hub_people", () => listHubPeople()],
+      ["export_hub_friend_code", () => loadFriendProfile()],
+    ] as const;
+    const requestResults: string[] = [];
+    for (const [name, request] of realDataRequests) {
+      let result: unknown = null;
+      try {
+        result = await request();
+      } catch {
+        result = null;
+      }
+      const returnedRealData = result !== null
+        && result !== undefined
+        && (!Array.isArray(result) || result.length > 0);
+      if (returnedRealData) realDataResultCount += 1;
+      requestResults.push(`${name}:${returnedRealData ? "REAL-DATA" : "refused/no-result"}`);
+    }
+    expect(refusedCommands, "HAZEL-0352 decoy-control: a real-data request was not refused by name").toEqual(
+      realDataRequests.map(([name]) => name),
+    );
+    expect(realDataResultCount, "HAZEL-0352 decoy-control: decoy returned real workspace data").toBe(0);
+
+    await harness.closeDecoyButton.click();
+    const afterClose = __oslHubUiTest.snapshot();
+    expect(afterClose, "HAZEL-0352 decoy-control: Close did not exit to Unlock").toMatchObject({
+      route: "onboarding",
+      onboardingRoute: "unlock",
+    });
+    const afterCloseMarkup = __oslHubUiTest.renderOnboardingRoute(afterClose.onboardingRoute);
+    expect(afterCloseMarkup, "HAZEL-0352 decoy-control: Close did not render Unlock").toContain(">Unlock<");
+    expect(realDataResultCount, "HAZEL-0352 decoy-control: Close changed the real-data count").toBe(0);
+
+    console.info(
+      `TASK0352 initial_page=Unlock initial_real_data_count=0 exact_password=${exactStealthPassword} `
+      + `exact_result=Workspace close_calls=1 close_next_page=${afterClose.onboardingRoute} `
+      + `near_match=${nearMatchStealthPassword} near_match_result=refused near_match_page=${nearMatch.onboardingRoute} `
+      + `near_match_real_data_count=0 requests=${requestResults.join(",")} final_real_data_count=${realDataResultCount}`,
+    );
   }, 30_000);
 
   it("announces nothing after a burn, a duress or a stealth unlock", async () => {
@@ -707,5 +812,98 @@ describe("D80 unlock screen renders one credential input", () => {
     // about 1.2 seconds faster and therefore remains well outside this window.
     const values = Object.values(durations);
     expect(Math.max(...values) - Math.min(...values), JSON.stringify(durations)).toBeLessThan(500);
+  }, 90_000);
+
+  it("TASK3236 passes paste and autofill through unchanged and refuses altered or rapid input", async () => {
+    const { readFileSync } = await import("node:fs");
+    const fixture = JSON.parse(readFileSync(
+      new URL("../../osl-hub/tests/fixtures/task_3236/attack_limits.json", import.meta.url),
+      "utf8",
+    )) as {
+      attempt_duration_limit_ms: number;
+      burn_password: string;
+      rapid_submission_count: number;
+      non_exact_attempts: { label: string; password: string }[];
+    };
+    const candidate = (label: string): string => {
+      const found = fixture.non_exact_attempts.find((attempt) => attempt.label === label);
+      expect(found, `missing saved ${label} input`).toBeDefined();
+      return found!.password;
+    };
+    const durationRows: { label: string; durationMs: number }[] = [];
+
+    for (const [label, inputType] of [
+      ["pasted_non_exact", "insertFromPaste"],
+      ["autofilled_non_exact", "insertReplacementText"],
+      ["wrong_layout_non_exact", "insertText"],
+    ] as const) {
+      mocks.invoke.mockReset();
+      const harness = buildUnlockHarness();
+      const { __oslHubUiTest } = await loadUi(harness);
+      __oslHubUiTest.bindUnlockForm();
+      mocks.invoke.mockResolvedValue(gateResult("wrong"));
+      const value = candidate(label);
+      const started = performance.now();
+      harness.password.value = value;
+      await harness.password.dispatch("input", { inputType });
+      expect(harness.submitButton.disabled, label).toBe(false);
+      await harness.submit();
+      const durationMs = performance.now() - started;
+      const gateCalls = mocks.invoke.mock.calls.filter((call) => call[0] === "unlock_hub_password_gate");
+      expect(gateCalls, label).toHaveLength(1);
+      expect(gateCalls[0][1], label).toEqual({ password: value });
+      expect(durationMs, label).toBeLessThanOrEqual(fixture.attempt_duration_limit_ms);
+      durationRows.push({ label, durationMs });
+      console.log(
+        `TASK3236_UI_ATTEMPT label=${label} input_type=${inputType} result=wrong duration_ms=${durationMs.toFixed(3)} saved_limit_ms=${fixture.attempt_duration_limit_ms.toFixed(3)} within_limit=true`,
+      );
+    }
+
+    mocks.invoke.mockReset();
+    const lookAlikeHarness = buildUnlockHarness();
+    const { __oslHubUiTest: lookAlikeUi } = await loadUi(lookAlikeHarness);
+    lookAlikeUi.bindUnlockForm();
+    mocks.invoke.mockResolvedValue(gateResult("wrong"));
+    const lookAlikeStarted = performance.now();
+    lookAlikeHarness.password.value = candidate("look_alike_non_exact");
+    await lookAlikeHarness.password.dispatch("input", { inputType: "insertText" });
+    expect(lookAlikeHarness.submitButton.disabled).toBe(true);
+    await lookAlikeHarness.submit();
+    const lookAlikeDurationMs = performance.now() - lookAlikeStarted;
+    expect(mocks.invoke.mock.calls.filter((call) => call[0] === "unlock_hub_password_gate")).toHaveLength(0);
+    expect(lookAlikeDurationMs).toBeLessThanOrEqual(fixture.attempt_duration_limit_ms);
+    durationRows.push({ label: "look_alike_non_exact", durationMs: lookAlikeDurationMs });
+    console.log(
+      `TASK3236_UI_ATTEMPT label=look_alike_non_exact input_type=insertText result=form_refused duration_ms=${lookAlikeDurationMs.toFixed(3)} saved_limit_ms=${fixture.attempt_duration_limit_ms.toFixed(3)} within_limit=true`,
+    );
+
+    mocks.invoke.mockReset();
+    const rapidHarness = buildUnlockHarness();
+    const { __oslHubUiTest: rapidUi } = await loadUi(rapidHarness);
+    rapidUi.bindUnlockForm();
+    mocks.invoke.mockResolvedValue(gateResult("wrong"));
+    rapidHarness.password.value = `${fixture.burn_password}-rapid-non-exact`;
+    await rapidHarness.password.dispatch("input", { inputType: "insertText" });
+    expect(rapidHarness.submitButton.disabled).toBe(false);
+    const rapidDurations = await Promise.all(
+      Array.from({ length: fixture.rapid_submission_count }, async (_, index) => {
+        const started = performance.now();
+        await rapidHarness.submit();
+        const durationMs = performance.now() - started;
+        expect(durationMs, `rapid UI submit ${index}`).toBeLessThanOrEqual(fixture.attempt_duration_limit_ms);
+        console.log(
+          `TASK3236_UI_RAPID index=${index} result=refused duration_ms=${durationMs.toFixed(3)} saved_limit_ms=${fixture.attempt_duration_limit_ms.toFixed(3)} within_limit=true`,
+        );
+        return durationMs;
+      }),
+    );
+    const rapidGateCalls = mocks.invoke.mock.calls.filter((call) => call[0] === "unlock_hub_password_gate");
+    expect(rapidGateCalls).toHaveLength(1);
+    expect(rapidGateCalls[0][1]).toEqual({ password: `${fixture.burn_password}-rapid-non-exact` });
+    expect(rapidDurations).toHaveLength(fixture.rapid_submission_count);
+    expect(durationRows).toHaveLength(4);
+    console.log(
+      `TASK3236_UI_FINISH modality_attempts=${durationRows.length} rapid_submissions=${rapidDurations.length} rapid_gate_calls=${rapidGateCalls.length}`,
+    );
   }, 90_000);
 });

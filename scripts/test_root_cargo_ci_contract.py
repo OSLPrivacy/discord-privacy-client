@@ -237,6 +237,17 @@ def _command_words(commands: list[str]) -> set[tuple[str, ...]]:
     return words
 
 
+def _assert_protected_command(
+    protected_commands: set[tuple[str, ...]],
+    command: tuple[str, ...],
+    label: str,
+) -> None:
+    assert command in protected_commands, (
+        f"missing {label}: `{' '.join(command)}`; "
+        "scripts/test_root_cargo_ci_contract.py build `success' no longer exits 0"
+    )
+
+
 def _assert_root_cargo_ci_contract(cargo: dict) -> None:
     workspace = cargo["workspace"]
     members = workspace["members"]
@@ -301,25 +312,33 @@ def _assert_root_cargo_ci_contract(cargo: dict) -> None:
 
     app_manifest = "apps/osl-hub/Cargo.toml"
     assert "apps/osl-hub" not in members
-    assert (
-        "cargo",
-        "test",
-        "--manifest-path",
-        app_manifest,
-        "--features",
-        "core",
-        "--lib",
-    ) in protected_commands
-    assert (
-        "cargo",
-        "test",
-        "--manifest-path",
-        app_manifest,
-        "--features",
-        "core",
-        "--test",
-        "windows_identity_lifecycle",
-    ) in protected_commands
+    _assert_protected_command(
+        protected_commands,
+        (
+            "cargo",
+            "test",
+            "--manifest-path",
+            app_manifest,
+            "--features",
+            "core",
+            "--lib",
+        ),
+        "OSL Privacy core library build",
+    )
+    _assert_protected_command(
+        protected_commands,
+        (
+            "cargo",
+            "test",
+            "--manifest-path",
+            app_manifest,
+            "--features",
+            "core",
+            "--test",
+            "windows_identity_lifecycle",
+        ),
+        "OSL Privacy Windows identity lifecycle build",
+    )
 
 
 def success_contract() -> None:

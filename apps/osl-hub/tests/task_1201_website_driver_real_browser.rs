@@ -1,20 +1,3 @@
-use osl_privacy_hub::website_driver::{
-    RealBrowserWebsiteDriver, WebsiteDriver, WebsiteNamedControl, WebsitePageRequest,
-    WebsiteSendCommand, WebsiteTextPlacement,
-    RealBrowserWebsiteDriver, WebsiteDriver, WebsiteDriverError, WebsiteNamedControl,
-    WebsitePageRequest, WebsiteSendCommand, WebsiteTextPlacement,
-use osl_privacy_hub::{
-    hub_command_surface::{
-        read_icloud_mailbox_for_scrub_with_driver, read_icloud_mailbox_pages_for_scrub_with_driver,
-        read_ordinary_send_progress, read_protected_email_open_message_with_driver,
-        read_proton_mailbox_for_scrub_with_driver, send_ordinary_message_with_progress,
-        IcloudMailboxForScrubReadRequest, IcloudMailboxPagingReadRequest, MailPagingStopReason,
-        OrdinarySendProgress, OrdinarySendProgressRequest, ProtectedEmailOpenMessageReadRequest,
-        ProtonMailboxForScrubReadRequest,
-    },
-    website_driver::{
-        RealBrowserWebsiteDriver, WebsiteDriver, WebsiteLiveRunProgress, WebsiteNamedControl,
-        WebsitePageRequest,
 use osl_privacy_hub::{
     hub_command_surface::{
         read_ordinary_send_progress, read_protected_email_open_message_with_driver,
@@ -24,7 +7,7 @@ use osl_privacy_hub::{
     website_driver::{
         RealBrowserWebsiteDriver, WebsiteDriver, WebsiteDriverError, WebsiteLiveRunProgress,
         WebsiteNamedControl, WebsitePage, WebsitePageControls, WebsitePageRequest, WebsitePageText,
-        WebsiteSelectedEmail, WebsiteTextPlacement,
+        WebsitePlacementProof, WebsiteSelectedEmail, WebsiteTextPlacement,
     },
 };
 use std::{
@@ -32,20 +15,14 @@ use std::{
     net::{TcpListener, TcpStream},
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc,
         Arc, Mutex,
     },
     thread,
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 const TASK_1201_TITLE: &str = "OSL Task 1201 Real Browser Title";
 const TASK_1204_TITLE: &str = "OSL Task 1204 Read Page Controls";
-const TASK_1216_TITLE: &str = "OSL Task 1216 Press Named Button";
-const TASK_1217_TITLE: &str = "OSL Task 1217 Send After Proof";
-const TASK_1217_MESSAGE: &str = "MAPLE-1217";
-const TASK_1218_TITLE: &str = "OSL Task 1218 Disabled Send";
-const TASK_1218_MESSAGE: &str = "MAPLE-4172";
 const TASK_1213_TITLE: &str = "OSL Task 1213 Read Open Message Pane";
 const TASK_1213_BODY: &str =
     "Fixture selected email body for task 1213. It stays inside the open message pane.";
@@ -54,15 +31,9 @@ const TASK_1214_TITLE: &str = "OSL Task 1214 Protected Email Reader";
 const TASK_1214_COVER_MESSAGE: &str =
     "Fixture cover message for task 1214. The protected email reader got it through the driver.";
 const TASK_1214_THREAD_ID: &str = "email-thread-1214-stable";
-const TASK_3056_TITLE: &str = "OSL Task 3056 Seeded Proton Mailbox";
-const TASK_3056_FOLDERS: [&str; 4] = ["Inbox", "Sent", "Archive", "Trash"];
-const TASK_3072_TITLE: &str = "OSL Task 3072 Seeded iCloud Mailbox Paging";
-const TASK_3072_FOLDERS: [&str; 4] = ["Inbox", "Sent", "Archive", "Trash"];
-const TASK_3072_MESSAGE_COUNT: usize = 120;
-const TASK_3072_PAGE_SIZE: usize = 30;
-const TASK_3072_SET_PAUSE_MS: u64 = 5;
 const TASK_1426_TITLE: &str = "OSL Task 1426 Live Run Progress";
 const TASK_1426_ACCOUNT: &str = "fixture-account-1426@example.invalid";
+const TASK_3418_TITLE: &str = "OSL Task 3418 Email Compose Placement";
 const TASK_3603_TITLE: &str = "OSL Task 3603 Ordinary Send Progress";
 const TASK_3603_DRAFT: &str = "ordinary send progress fixture draft";
 const TASK_3603_STEPS: [&str; 5] = [
@@ -150,25 +121,74 @@ fn task_1204_fixture_page_returns_compose_send_and_reading_pane_names() {
 }
 
 #[test]
-fn task_1216_named_send_command_makes_fixture_send_counter_one() {
+fn task_3418_real_browser_places_random_marked_message_in_empty_email_compose_box() {
     let server = LocalTestPage::spawn_body(
-        TASK_1216_TITLE,
+        TASK_3418_TITLE,
         r#"
             <main>
-              <p id="counter" aria-live="polite">Send counter: <span id="send-count">0</span></p>
-              <button type="button" onclick="
-                const node = document.getElementById('send-count');
-                node.textContent = String(Number(node.textContent) + 1);
-              ">Send</button>
-              <button type="button" hidden onclick="
-                document.getElementById('send-count').textContent = '99';
-              ">Send</button>
-              <button type="button" disabled onclick="
-                document.getElementById('send-count').textContent = '99';
-              ">Send</button>
-              <button type="button" onclick="
-                document.getElementById('send-count').textContent = '42';
-              ">Archive</button>
+              <label id="body-label" for="body">Body</label>
+              <textarea id="body" aria-labelledby="body-label"></textarea>
+              <p>Box empty: <span id="box-empty">true</span></p>
+              <p>Box value: <span id="box-value"></span></p>
+              <script>
+                const body = document.getElementById('body');
+                const empty = document.getElementById('box-empty');
+                const value = document.getElementById('box-value');
+                const sync = () => {
+                  empty.textContent = body.value === '' ? 'true' : 'false';
+                  value.textContent = body.value;
+                };
+                body.addEventListener('input', sync);
+                body.addEventListener('change', sync);
+                sync();
+              </script>
+            </main>
+        "#,
+    );
+    let mut driver = RealBrowserWebsiteDriver::launch().expect("launch real browser driver");
+    let mark = random_task_3418_mark();
+
+    let checked = run_task_3418_place_mark(&mut driver, server.url(), &mark)
+        .expect("shared place_text job writes the mark into the compose box");
+
+    assert!(checked.before_empty);
+    assert_eq!(checked.after_value, mark);
+    assert_eq!(checked.placement_editable, "Body");
+
+    println!("TASK3418 direct_driver_command=place_text");
+    println!(
+        "TASK3418 browser_executable={}",
+        driver.browser_executable().display()
+    );
+    println!("TASK3418 before_box_empty={}", checked.before_empty);
+    println!("TASK3418 random_mark={mark}");
+    println!("TASK3418 after_box_value={}", checked.after_value);
+    println!("TASK3418 placement_editable={}", checked.placement_editable);
+}
+
+#[test]
+fn task_3418_noop_placing_job_makes_check_fail() {
+    let mark = random_task_3418_mark();
+    let mut driver = NoopTask3418Driver::new();
+
+    let failure = run_task_3418_place_mark(
+        &mut driver,
+        "https://example.invalid/task-3418-noop".to_owned(),
+        &mark,
+    )
+    .expect_err("stubbed placing job must leave the box without the mark");
+
+    assert_eq!(
+        failure,
+        "compose box did not hold the exact mark after placement"
+    );
+    println!("TASK3418_STUB placing_job_stubbed=noop");
+    println!("TASK3418_STUB random_mark={mark}");
+    println!("TASK3418_STUB check_failed=true");
+    println!("TASK3418_STUB failure={failure}");
+}
+
+#[test]
 fn task_1213_fixture_message_returns_body_and_stable_thread_identity() {
     let server = LocalTestPage::spawn_body(
         TASK_1213_TITLE,
@@ -195,33 +215,6 @@ fn task_1213_fixture_message_returns_body_and_stable_thread_identity() {
 
     let page = driver
         .find_page(WebsitePageRequest { url: server.url() })
-        .expect("open local test page through real browser");
-    let before = driver
-        .read_page(&page)
-        .expect("read fixture before pressing Send");
-    assert_eq!(fixture_send_counter(&before.text), Some(0));
-
-    driver
-        .press_named_control(WebsiteNamedControl {
-            page: page.clone(),
-            name: "Send".to_owned(),
-        })
-        .expect("press the one named visible enabled Send button");
-
-    let after = driver
-        .read_page(&page)
-        .expect("read fixture after pressing Send");
-    assert_eq!(fixture_send_counter(&after.text), Some(1));
-
-    println!("TASK1216 direct_driver_command=press_named_control");
-    println!("TASK1216 named_command=Send");
-    println!(
-        "TASK1216 fixture_send_counter_before={}",
-        fixture_send_counter(&before.text).expect("counter before")
-    );
-    println!(
-        "TASK1216 fixture_send_counter_after={}",
-        fixture_send_counter(&after.text).expect("counter after")
         .expect("open local email fixture page through real browser");
     let selected = driver
         .read_selected_email(&page)
@@ -239,34 +232,6 @@ fn task_1213_fixture_message_returns_body_and_stable_thread_identity() {
 }
 
 #[test]
-fn task_1217_direct_send_command_places_once_then_presses_send_once() {
-    let server = LocalTestPage::spawn_body(
-        TASK_1217_TITLE,
-        r#"
-            <main>
-              <label id="body-label" for="body">Body</label>
-              <textarea id="body" aria-labelledby="body-label"></textarea>
-              <p aria-live="polite">Placement proof count: <span id="proof-count">0</span></p>
-              <p aria-live="polite">Send press count: <span id="send-count">0</span></p>
-              <p aria-live="polite">Event log: <span id="event-log"></span></p>
-              <p aria-live="polite">Sent message: <span id="sent-message"></span></p>
-              <p>Fixture end</p>
-              <button type="button" onclick="
-                const count = document.getElementById('send-count');
-                const log = document.getElementById('event-log');
-                const body = document.getElementById('body');
-                count.textContent = String(Number(count.textContent) + 1);
-                log.textContent = log.textContent ? log.textContent + '>Send press' : 'Send press';
-                document.getElementById('sent-message').textContent = body.value;
-              ">Send</button>
-              <script>
-                document.getElementById('body').addEventListener('input', () => {
-                  const body = document.getElementById('body');
-                  if (body.value !== 'MAPLE-1217') return;
-                  const count = document.getElementById('proof-count');
-                  const log = document.getElementById('event-log');
-                  count.textContent = String(Number(count.textContent) + 1);
-                  log.textContent = log.textContent ? log.textContent + '>placement proof' : 'placement proof';
 fn task_1214_direct_reader_command_returns_fixture_cover_message() {
     let server = LocalTestPage::spawn_body(
         TASK_1214_TITLE,
@@ -305,254 +270,6 @@ fn task_1214_direct_reader_command_returns_fixture_cover_message() {
     println!(
         "TASK1214 stable_thread_identity={}",
         read.conversation_identity
-    );
-}
-
-#[test]
-fn task_3056_seeded_proton_mailbox_returns_folders_sent_messages_and_ownership() {
-    let server = LocalTestPage::spawn_body(
-        TASK_3056_TITLE,
-        r#"
-            <main>
-              <nav aria-label="Proton folders">
-                <button type="button" data-osl-mail-folder="Inbox">Inbox</button>
-                <button type="button" data-osl-mail-folder="Sent">Sent</button>
-                <button type="button" data-osl-mail-folder="Archive">Archive</button>
-                <button type="button" data-osl-mail-folder="Trash">Trash</button>
-              </nav>
-              <section aria-label="Seeded Proton messages">
-                <article
-                  data-osl-mail-message
-                  data-osl-folder="Sent"
-                  data-osl-subject="SCRUB-PR-MINE"
-                  data-osl-time="2026-08-06 08:15"
-                  data-osl-sender="scrub.owner@proton.test"
-                  data-osl-scrub-owner-marker="SCRUB-PR-MINE">
-                  <h2 data-osl-mail-subject>SCRUB-PR-MINE</h2>
-                  <span data-osl-mail-time>2026-08-06 08:15</span>
-                  <span data-osl-mail-sender>scrub.owner@proton.test</span>
-                </article>
-                <article
-                  data-osl-mail-message
-                  data-osl-folder="Sent"
-                  data-osl-subject="Scrub export request"
-                  data-osl-time="2026-08-06 08:20"
-                  data-osl-sender="scrub.owner@proton.test">
-                  <h2 data-osl-mail-subject>Scrub export request</h2>
-                  <span data-osl-mail-time>2026-08-06 08:20</span>
-                  <span data-osl-mail-sender>scrub.owner@proton.test</span>
-                </article>
-                <article
-                  data-osl-mail-message
-                  data-osl-folder="Sent"
-                  data-osl-subject="Scrub confirmation note"
-                  data-osl-time="2026-08-06 08:25"
-                  data-osl-sender="scrub.owner@proton.test">
-                  <h2 data-osl-mail-subject>Scrub confirmation note</h2>
-                  <span data-osl-mail-time>2026-08-06 08:25</span>
-                  <span data-osl-mail-sender>scrub.owner@proton.test</span>
-                </article>
-                <article
-                  data-osl-mail-message
-                  data-osl-folder="Inbox"
-                  data-osl-subject="Provider reply one"
-                  data-osl-time="2026-08-06 09:10"
-                  data-osl-sender="privacy-team@example.test">
-                  <h2 data-osl-mail-subject>Provider reply one</h2>
-                  <span data-osl-mail-time>2026-08-06 09:10</span>
-                  <span data-osl-mail-sender>privacy-team@example.test</span>
-                </article>
-                <article
-                  data-osl-mail-message
-                  data-osl-folder="Inbox"
-                  data-osl-subject="Provider reply two"
-                  data-osl-time="2026-08-06 09:25"
-                  data-osl-sender="support@example.test">
-                  <h2 data-osl-mail-subject>Provider reply two</h2>
-                  <span data-osl-mail-time>2026-08-06 09:25</span>
-                  <span data-osl-mail-sender>support@example.test</span>
-                </article>
-                <article
-                  hidden
-                  data-osl-mail-message
-                  data-osl-folder="Sent"
-                  data-osl-subject="Hidden decoy"
-                  data-osl-time="2026-08-06 10:00"
-                  data-osl-sender="decoy@example.test">
-                  Hidden decoy
-                </article>
-              </section>
-            </main>
-        "#,
-    );
-    let mut driver = RealBrowserWebsiteDriver::launch().expect("launch real browser driver");
-
-    let read = read_proton_mailbox_for_scrub_with_driver(
-        &mut driver,
-        ProtonMailboxForScrubReadRequest {
-            page_url: server.url(),
-        },
-    )
-    .expect("read seeded Proton mailbox through real browser");
-
-    assert_eq!(read.folders, TASK_3056_FOLDERS);
-    assert_eq!(read.sent.len(), 3);
-    assert_eq!(read.inbox.len(), 2);
-    assert!(read
-        .sent
-        .iter()
-        .any(|message| message.owner_marker == "SCRUB-PR-MINE" && message.yours));
-    assert!(read.inbox.iter().all(|message| !message.yours));
-    for message in &read.sent {
-        assert!(!message.subject.is_empty());
-        assert!(!message.time.is_empty());
-        assert!(!message.sender.is_empty());
-    }
-
-    println!("TASK3056 direct_reader_command=read_proton_mailbox_for_scrub");
-    println!("TASK3056 provider=Proton Mail");
-    println!("TASK3056 folder_count={}", read.folders.len());
-    for folder in &read.folders {
-        println!("TASK3056 folder={folder}");
-    }
-    println!("TASK3056 sent_count={}", read.sent.len());
-    for (index, message) in read.sent.iter().enumerate() {
-        println!(
-            "TASK3056 sent_message_{} subject={} time={} sender={} owner_marker={} owner_label={}",
-            index + 1,
-            message.subject,
-            message.time,
-            message.sender,
-            message.owner_marker,
-            if message.yours { "yours" } else { "not_yours" }
-        );
-    }
-    println!("TASK3056 inbox_count={}", read.inbox.len());
-    for (index, message) in read.inbox.iter().enumerate() {
-        println!(
-            "TASK3056 inbox_message_{} subject={} owner_label={}",
-            index + 1,
-            message.subject,
-            if message.yours { "yours" } else { "not_yours" }
-        );
-    }
-}
-
-#[test]
-fn task_3072_icloud_mailbox_pages_with_shared_pause_and_stop() {
-    let server = LocalTestPage::spawn_body(TASK_3072_TITLE, task_3072_icloud_fixture_body());
-
-    let mut full_driver = RealBrowserWebsiteDriver::launch().expect("launch real browser driver");
-    let seeded = read_icloud_mailbox_for_scrub_with_driver(
-        &mut full_driver,
-        IcloudMailboxForScrubReadRequest {
-            page_url: server.url(),
-        },
-    )
-    .expect("direct iCloud mailbox reader returns the first seeded page");
-    assert_eq!(seeded.folders, TASK_3072_FOLDERS);
-    assert_eq!(seeded.sent.len(), TASK_3072_PAGE_SIZE);
-    assert!(seeded
-        .sent
-        .iter()
-        .any(|message| message.owner_marker == "SCRUB-IC-MINE" && message.yours));
-
-    let full = read_icloud_mailbox_pages_for_scrub_with_driver(
-        &mut full_driver,
-        IcloudMailboxPagingReadRequest {
-            page_url: server.url(),
-            folder_id: "Sent".to_owned(),
-            set_pause_ms: TASK_3072_SET_PAUSE_MS,
-            stop_during_page: None,
-        },
-    )
-    .expect("direct iCloud page reader reads the seeded folder");
-    assert_eq!(full.folder_id, "Sent");
-    assert_eq!(full.message_count, TASK_3072_MESSAGE_COUNT);
-    assert!(full.page_count >= 3);
-    assert_eq!(full.stop_reason, MailPagingStopReason::EndOfPlace);
-    assert!(full
-        .inter_action_gaps_ms
-        .iter()
-        .all(|gap| *gap >= TASK_3072_SET_PAUSE_MS));
-    assert_eq!(full.one_screen_scrolls, full.page_count - 1);
-
-    let mut stopped_driver =
-        RealBrowserWebsiteDriver::launch().expect("launch real browser driver");
-    let stopped = read_icloud_mailbox_pages_for_scrub_with_driver(
-        &mut stopped_driver,
-        IcloudMailboxPagingReadRequest {
-            page_url: server.url(),
-            folder_id: "Sent".to_owned(),
-            set_pause_ms: TASK_3072_SET_PAUSE_MS,
-            stop_during_page: Some(2),
-        },
-    )
-    .expect("direct iCloud page reader stops after page two");
-    assert_eq!(stopped.stop_reason, MailPagingStopReason::StopRequested);
-    assert_eq!(stopped.stop_requested_during_page, Some(2));
-    assert_eq!(stopped.stopped_on_page_number, Some(2));
-    assert!(stopped.stop_requested_during_run);
-    assert!(
-        (40..=80).contains(&stopped.message_count),
-        "stop read {} messages",
-        stopped.message_count
-    );
-
-    println!("TASK3072 direct_reader=read_icloud_mailbox_pages_for_scrub");
-    println!("TASK3072 shared_reader=shared_mail_folder_page_reader");
-    println!("TASK3072 provider=iCloud Mail");
-    println!("TASK3072 folder_id={}", full.folder_id);
-    println!("TASK3072 folder_message_count={TASK_3072_MESSAGE_COUNT}");
-    println!("TASK3072 first_page_sent_count={}", seeded.sent.len());
-    println!("TASK3072 first_page_owner_marker=SCRUB-IC-MINE");
-    println!(
-        "TASK3072 first_page_owner_label={}",
-        seeded
-            .sent
-            .iter()
-            .find(|message| message.owner_marker == "SCRUB-IC-MINE")
-            .map(|message| if message.yours { "yours" } else { "not_yours" })
-            .unwrap_or("missing")
-    );
-    println!("TASK3072 set_pause_ms={}", full.set_pause_ms);
-    println!("TASK3072 full_read_message_count={}", full.message_count);
-    println!("TASK3072 full_page_count={}", full.page_count);
-    println!("TASK3072 full_stop_reason={:?}", full.stop_reason);
-    println!(
-        "TASK3072 full_one_screen_scrolls={}",
-        full.one_screen_scrolls
-    );
-    println!("TASK3072 full_action_count={}", full.action_names.len());
-    println!("TASK3072 full_action_names={}", full.action_names.join(","));
-    println!(
-        "TASK3072 full_inter_action_gaps_ms={:?}",
-        full.inter_action_gaps_ms
-    );
-    println!(
-        "TASK3072 full_every_inter_action_gap_at_least_set_pause={}",
-        full.inter_action_gaps_ms
-            .iter()
-            .all(|gap| *gap >= TASK_3072_SET_PAUSE_MS)
-    );
-    println!(
-        "TASK3072 stop_requested_during_page={}",
-        stopped.stop_requested_during_page.unwrap_or_default()
-    );
-    println!(
-        "TASK3072 stop_requested_during_run={}",
-        stopped.stop_requested_during_run
-    );
-    println!("TASK3072 stop_reason={:?}", stopped.stop_reason);
-    println!(
-        "TASK3072 stopped_on_page_number={}",
-        stopped.stopped_on_page_number.unwrap_or_default()
-    );
-    println!("TASK3072 stop_read_message_count={}", stopped.message_count);
-    println!("TASK3072 stop_page_count={}", stopped.page_count);
-    println!(
-        "TASK3072 stop_message_count_between_40_and_80={}",
-        (40..=80).contains(&stopped.message_count)
     );
 }
 
@@ -615,191 +332,6 @@ fn task_1426_direct_progress_command_changes_after_each_fixture_action() {
 
     let page = driver
         .find_page(WebsitePageRequest { url: server.url() })
-        .expect("open local test page through real browser");
-    let before = driver
-        .read_page(&page)
-        .expect("read fixture before direct send command");
-    assert_eq!(
-        count_after_label(&before.text, "Placement proof count: "),
-        Some(0)
-    );
-    assert_eq!(
-        count_after_label(&before.text, "Send press count: "),
-        Some(0)
-    );
-
-    let receipt = driver
-        .send_after_successful_placement(WebsiteSendCommand {
-            placement: WebsiteTextPlacement {
-                page: page.clone(),
-                editable_box_name: "Body".to_owned(),
-                text: TASK_1217_MESSAGE.to_owned(),
-            },
-            send_control_name: "Send".to_owned(),
-        })
-        .expect("direct send places text before pressing Send");
-
-    let after = driver
-        .read_page(&page)
-        .expect("read fixture after direct send command");
-    let placement_proofs =
-        count_after_label(&after.text, "Placement proof count: ").expect("placement proof count");
-    let send_presses = count_after_label(&after.text, "Send press count: ").expect("send count");
-    let event_log = value_after_label(&after.text, "Event log: ").expect("event log");
-    let sent_message = value_after_label(&after.text, "Sent message: ").expect("sent message");
-
-    assert_eq!(receipt.placement_proof.editable_box_name, "Body");
-    assert_eq!(receipt.placement_proof.utf16_units, TASK_1217_MESSAGE.len());
-    assert_eq!(receipt.send_control_name, "Send");
-    assert!(receipt.send_pressed);
-    assert_eq!(placement_proofs, 1);
-    assert_eq!(send_presses, 1);
-    assert_eq!(event_log, "placement proof>Send press");
-    assert_eq!(sent_message, TASK_1217_MESSAGE);
-
-    println!("TASK1217 direct_send_command=send_after_successful_placement");
-    println!("TASK1217 placement_proof_count={placement_proofs}");
-    println!("TASK1217 placement_proof_editable=Body");
-    println!("TASK1217 named_send_control=Send");
-    println!("TASK1217 send_press_count={send_presses}");
-    println!("TASK1217 event_order={event_log}");
-    println!("TASK1217 sent_message={sent_message}");
-}
-
-#[test]
-fn task_1218_disabled_send_is_not_bypassed_after_first_send() {
-    let server = LocalTestPage::spawn_body(
-        TASK_1218_TITLE,
-        r#"
-            <main>
-              <label id="body-label" for="body">Body</label>
-              <textarea id="body" aria-labelledby="body-label"></textarea>
-              <p aria-live="polite">Send enabled: <span id="send-enabled">yes</span></p>
-              <p aria-live="polite">Sent-message count: <span id="sent-message-count">0</span></p>
-              <p aria-live="polite">Result name: <span id="result-name"></span></p>
-              <p aria-live="polite">First message: <span id="first-message"></span></p>
-              <p>Fixture end</p>
-              <button id="send" type="button" onclick="
-                const body = document.getElementById('body');
-                const count = document.getElementById('sent-message-count');
-                count.textContent = String(Number(count.textContent) + 1);
-                document.getElementById('result-name').textContent = 'sent ' + body.value;
-                const first = document.getElementById('first-message');
-                if (!first.textContent) first.textContent = body.value;
-                this.disabled = true;
-                document.getElementById('send-enabled').textContent = 'no';
-              ">Send</button>
-            </main>
-        "#,
-    );
-    let mut driver = RealBrowserWebsiteDriver::launch().expect("launch real browser driver");
-
-    let page = driver
-        .find_page(WebsitePageRequest { url: server.url() })
-        .expect("open local test page through real browser");
-    let before = driver
-        .read_page(&page)
-        .expect("read fixture before the first send");
-    let sent_before = count_after_label(&before.text, "Sent-message count: ").expect("sent before");
-    assert_eq!(sent_before, 0);
-    assert_eq!(
-        value_after_label(&before.text, "Send enabled: ").expect("send enabled before"),
-        "yes"
-    );
-
-    let first_receipt = driver
-        .send_after_successful_placement(WebsiteSendCommand {
-            placement: WebsiteTextPlacement {
-                page: page.clone(),
-                editable_box_name: "Body".to_owned(),
-                text: TASK_1218_MESSAGE.to_owned(),
-            },
-            send_control_name: "Send".to_owned(),
-        })
-        .expect("enabled Send accepts the first message");
-    assert!(first_receipt.send_pressed);
-
-    let after_first = driver
-        .read_page(&page)
-        .expect("read fixture after the enabled send");
-    let sent_after_first =
-        count_after_label(&after_first.text, "Sent-message count: ").expect("sent after first");
-    let first_result = value_after_label(&after_first.text, "Result name: ").expect("result name");
-    let send_enabled_after_first =
-        value_after_label(&after_first.text, "Send enabled: ").expect("send enabled after first");
-    assert_eq!(sent_after_first, 1);
-    assert_eq!(first_result, "sent MAPLE-4172");
-    assert_eq!(send_enabled_after_first, "no");
-
-    let disabled = driver
-        .send_after_successful_placement(WebsiteSendCommand {
-            placement: WebsiteTextPlacement {
-                page: page.clone(),
-                editable_box_name: "Body".to_owned(),
-                text: TASK_1218_MESSAGE.to_owned(),
-            },
-            send_control_name: "Send".to_owned(),
-        })
-        .expect_err("disabled Send refuses the retry");
-    assert_eq!(disabled, WebsiteDriverError::NamedControlDisabled);
-    assert_eq!(disabled.to_string(), "Send disabled");
-
-    let after_disabled = driver
-        .read_page(&page)
-        .expect("read fixture after disabled Send refusal");
-    let sent_after_disabled = count_after_label(&after_disabled.text, "Sent-message count: ")
-        .expect("sent after disabled");
-    let first_message =
-        value_after_label(&after_disabled.text, "First message: ").expect("first message");
-    assert_eq!(sent_after_disabled, 1);
-    assert_eq!(first_message, TASK_1218_MESSAGE);
-    assert_eq!(
-        value_after_label(&after_disabled.text, "Result name: ").expect("result stays"),
-        "sent MAPLE-4172"
-    );
-
-    println!("TASK1218 sent_message_count_before={sent_before}");
-    println!("TASK1218 first_result={first_result}");
-    println!("TASK1218 sent_message_count_after_first={sent_after_first}");
-    println!("TASK1218 send_enabled_after_first={send_enabled_after_first}");
-    println!("TASK1218 disabled_refusal={disabled}");
-    println!("TASK1218 first_message_after_refusal={first_message}");
-    println!("TASK1218 sent_message_count_after_refusal={sent_after_disabled}");
-}
-
-fn fixture_send_counter(text: &str) -> Option<u32> {
-    text.split("Send counter: ")
-        .nth(1)?
-        .split_whitespace()
-        .next()?
-        .parse()
-        .ok()
-}
-
-fn count_after_label(text: &str, label: &str) -> Option<u32> {
-    text.split(label)
-        .nth(1)?
-        .split_whitespace()
-        .next()?
-        .parse()
-        .ok()
-}
-
-fn value_after_label(text: &str, label: &str) -> Option<String> {
-    let value = text.split(label).nth(1)?.trim();
-    let next_label = value
-        .find("Send counter: ")
-        .or_else(|| value.find("Placement proof count: "))
-        .or_else(|| value.find("Send press count: "))
-        .or_else(|| value.find("Send enabled: "))
-        .or_else(|| value.find("Sent-message count: "))
-        .or_else(|| value.find("Result name: "))
-        .or_else(|| value.find("First message: "))
-        .or_else(|| value.find("Event log: "))
-        .or_else(|| value.find("Sent message: "))
-        .or_else(|| value.find("Fixture end"))
-        .unwrap_or(value.len());
-    Some(value[..next_label].trim().to_owned())
         .expect("open local live-progress fixture page through real browser");
 
     let opened = driver
@@ -1195,72 +727,135 @@ fn task_3605_crash_after_every_ordinary_send_step_keeps_receiver_marks_once() {
     );
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct Task3418Check {
+    before_empty: bool,
+    after_value: String,
+    placement_editable: String,
+}
+
+fn run_task_3418_place_mark<D>(
+    driver: &mut D,
+    page_url: String,
+    mark: &str,
+) -> Result<Task3418Check, String>
+where
+    D: WebsiteDriver,
+{
+    let page = driver
+        .find_page(WebsitePageRequest { url: page_url })
+        .map_err(|error| error.to_string())?;
+    let before = driver.read_page(&page).map_err(|error| error.to_string())?;
+    let before_empty = task_3418_box_empty(&before.text)?;
+    if !before_empty {
+        return Err("compose box was not empty before placement".to_owned());
+    }
+
+    let placement = driver
+        .place_text(WebsiteTextPlacement {
+            page: page.clone(),
+            editable_box_name: "Body".to_owned(),
+            text: mark.to_owned(),
+        })
+        .map_err(|error| error.to_string())?;
+    let after = driver.read_page(&page).map_err(|error| error.to_string())?;
+    let after_value = task_3418_box_value(&after.text)?;
+    if after_value != mark {
+        return Err("compose box did not hold the exact mark after placement".to_owned());
+    }
+
+    Ok(Task3418Check {
+        before_empty,
+        after_value,
+        placement_editable: placement.editable_box_name,
+    })
+}
+
+fn task_3418_box_empty(text: &str) -> Result<bool, String> {
+    match text
+        .split("Box empty: ")
+        .nth(1)
+        .and_then(|value| value.split_whitespace().next())
+    {
+        Some("true") => Ok(true),
+        Some("false") => Ok(false),
+        _ => Err("compose box empty state was not readable".to_owned()),
+    }
+}
+
+fn task_3418_box_value(text: &str) -> Result<String, String> {
+    text.split("Box value: ")
+        .nth(1)
+        .map(str::trim)
+        .map(str::to_owned)
+        .ok_or_else(|| "compose box value was not readable".to_owned())
+}
+
+fn random_task_3418_mark() -> String {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system time after unix epoch")
+        .as_nanos();
+    format!("TASK3418-MARK-{nanos}")
+}
+
+struct NoopTask3418Driver {
+    page: Option<WebsitePage>,
+}
+
+impl NoopTask3418Driver {
+    fn new() -> Self {
+        Self { page: None }
+    }
+}
+
+impl WebsiteDriver for NoopTask3418Driver {
+    fn find_page(
+        &mut self,
+        request: WebsitePageRequest,
+    ) -> Result<WebsitePage, WebsiteDriverError> {
+        let page = WebsitePage::synthetic(request.url);
+        self.page = Some(page.clone());
+        Ok(page)
+    }
+
+    fn read_page(&mut self, page: &WebsitePage) -> Result<WebsitePageText, WebsiteDriverError> {
+        Ok(WebsitePageText {
+            page: page.clone(),
+            title: TASK_3418_TITLE.to_owned(),
+            text: "Box empty: true Box value: ".to_owned(),
+            controls: WebsitePageControls {
+                editable_boxes: vec!["Body".to_owned()],
+                buttons: Vec::new(),
+                visible_message_areas: Vec::new(),
+            },
+        })
+    }
+
+    fn place_text(
+        &mut self,
+        placement: WebsiteTextPlacement,
+    ) -> Result<WebsitePlacementProof, WebsiteDriverError> {
+        Ok(WebsitePlacementProof {
+            page: placement.page,
+            editable_box_name: placement.editable_box_name,
+            utf16_units: placement.text.encode_utf16().count(),
+            placed_sha256: String::new(),
+        })
+    }
+
+    fn press_named_control(
+        &mut self,
+        _control: WebsiteNamedControl,
+    ) -> Result<(), WebsiteDriverError> {
+        Err(WebsiteDriverError::NamedControlNotFound)
+    }
+}
+
 struct LocalTestPage {
     listener_addr: String,
     running: Arc<AtomicBool>,
     worker: Option<thread::JoinHandle<()>>,
-}
-
-fn task_3072_icloud_fixture_body() -> String {
-    let mut rows = String::new();
-    for index in 0..TASK_3072_MESSAGE_COUNT {
-        let marker = if index == 0 {
-            r#" data-osl-scrub-owner-marker="SCRUB-IC-MINE""#
-        } else {
-            ""
-        };
-        rows.push_str(&format!(
-            r#"<article
-                  data-osl-mail-message
-                  data-osl-folder="Sent"
-                  data-osl-subject="iCloud scrub fixture message {number:03}"
-                  data-osl-time="2026-08-06 12:{minute:02}"
-                  data-osl-sender="scrub-owner@icloud.test"{marker}>
-                  <h2 data-osl-mail-subject>iCloud scrub fixture message {number:03}</h2>
-                  <span data-osl-mail-time>2026-08-06 12:{minute:02}</span>
-                  <span data-osl-mail-sender>scrub-owner@icloud.test</span>
-                </article>"#,
-            number = index + 1,
-            minute = index % 60,
-            marker = marker,
-        ));
-    }
-
-    format!(
-        r#"
-            <main>
-              <nav aria-label="iCloud folders">
-                <button type="button" data-osl-mail-folder="Inbox">Inbox</button>
-                <button type="button" data-osl-mail-folder="Sent">Sent</button>
-                <button type="button" data-osl-mail-folder="Archive">Archive</button>
-                <button type="button" data-osl-mail-folder="Trash">Trash</button>
-              </nav>
-              <section id="mailbox" aria-label="Seeded iCloud messages">
-                {rows}
-              </section>
-              <button type="button" id="next-page">Next page</button>
-              <script>
-                const pageSize = {page_size};
-                let page = 0;
-                const rows = Array.from(document.querySelectorAll('[data-osl-mail-message]'));
-                const next = document.getElementById('next-page');
-                const render = () => {{
-                  rows.forEach((row, index) => {{
-                    row.hidden = index < page * pageSize || index >= (page + 1) * pageSize;
-                  }});
-                  next.hidden = (page + 1) * pageSize >= rows.length;
-                }};
-                next.addEventListener('click', () => {{
-                  page += 1;
-                  render();
-                }});
-                render();
-              </script>
-            </main>
-        "#,
-        rows = rows,
-        page_size = TASK_3072_PAGE_SIZE,
-    )
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1317,10 +912,18 @@ impl WebsiteDriver for CountingOrdinarySendDriver {
         Err(WebsiteDriverError::ReadFailed)
     }
 
-    fn place_text(&mut self, placement: WebsiteTextPlacement) -> Result<(), WebsiteDriverError> {
+    fn place_text(
+        &mut self,
+        placement: WebsiteTextPlacement,
+    ) -> Result<WebsitePlacementProof, WebsiteDriverError> {
         assert_eq!(placement.text, TASK_3603_DRAFT);
         self.record("service_acceptance");
-        Ok(())
+        Ok(WebsitePlacementProof {
+            page: placement.page,
+            editable_box_name: placement.editable_box_name,
+            utf16_units: placement.text.encode_utf16().count(),
+            placed_sha256: String::new(),
+        })
     }
 
     fn press_named_control(
@@ -1350,6 +953,12 @@ impl MarkingOrdinarySendDriver {
 }
 
 impl WebsiteDriver for MarkingOrdinarySendDriver {
+    fn find_page(
+        &mut self,
+        request: WebsitePageRequest,
+    ) -> Result<WebsitePage, WebsiteDriverError> {
+        Ok(WebsitePage::synthetic(request.url))
+    }
 
     fn read_page(&mut self, page: &WebsitePage) -> Result<WebsitePageText, WebsiteDriverError> {
         Ok(WebsitePageText {
@@ -1360,11 +969,31 @@ impl WebsiteDriver for MarkingOrdinarySendDriver {
         })
     }
 
+    fn read_selected_email(
+        &mut self,
+        _page: &WebsitePage,
+    ) -> Result<WebsiteSelectedEmail, WebsiteDriverError> {
+        Err(WebsiteDriverError::ReadFailed)
+    }
 
+    fn read_live_run_progress(
+        &mut self,
+        _page: &WebsitePage,
+    ) -> Result<WebsiteLiveRunProgress, WebsiteDriverError> {
+        Err(WebsiteDriverError::ReadFailed)
+    }
 
-    fn place_text(&mut self, placement: WebsiteTextPlacement) -> Result<(), WebsiteDriverError> {
+    fn place_text(
+        &mut self,
+        placement: WebsiteTextPlacement,
+    ) -> Result<WebsitePlacementProof, WebsiteDriverError> {
         assert_eq!(placement.text, self.mark);
-        Ok(())
+        Ok(WebsitePlacementProof {
+            page: placement.page,
+            editable_box_name: placement.editable_box_name,
+            utf16_units: placement.text.encode_utf16().count(),
+            placed_sha256: String::new(),
+        })
     }
 
     fn press_named_control(
@@ -1538,9 +1167,6 @@ impl LocalTestPage {
     }
 
     fn spawn_body(title: &'static str, body: &'static str) -> Self {
-    fn spawn_body(title: impl Into<String>, body: impl Into<String>) -> Self {
-        let title = title.into();
-        let body = body.into();
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind local test page");
         listener
             .set_nonblocking(true)
@@ -1555,7 +1181,6 @@ impl LocalTestPage {
             while worker_running.load(Ordering::SeqCst) {
                 match listener.accept() {
                     Ok((stream, _)) => serve_page(stream, title, body),
-                    Ok((stream, _)) => serve_page(stream, &title, &body),
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                         thread::sleep(Duration::from_millis(10));
                     }

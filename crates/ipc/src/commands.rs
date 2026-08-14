@@ -21,6 +21,7 @@ use crate::group_send::{
     apply_skdm_recv, apply_skdm_request_recv, decrypt_v5_recv, encrypt_v5_send,
     OSL_RESULT_RECOVERY_IGNORED,
 };
+use crate::half_restored_surface::SurfaceDirection;
 use crate::main_password::{LockoutStatusDto, PasswordStatusDto};
 use crate::peer_map::{PeerEntry, WhitelistEntry};
 use crate::row_ownership_ladder::{
@@ -3902,6 +3903,7 @@ pub fn cmd_osl_remove_sender_message_records(
 pub struct BurnSenderMessageRecordsBothSidesDto {
     pub burn_id: String,
     pub requested_count: usize,
+    pub cancelled_upload_count: usize,
     pub local_removal_count: usize,
     pub remote_removal_count: usize,
     pub remaining_local_count: usize,
@@ -3930,6 +3932,15 @@ pub fn cmd_osl_burn_sender_message_records_both_sides(
 ) -> Result<BurnSenderMessageRecordsBothSidesDto, String> {
     record_activity_on_command_entry();
     validate_selected_sender_message_records(&discord_message_ids)?;
+    // Cancel first: once the user burns this exact message, its upload must
+    // not be allowed to complete even if identity/keyserver work below later
+    // refuses. `cancel_exact` is idempotent and cannot cancel another message.
+    let cancelled_upload_count = discord_message_ids.iter().try_fold(
+        0usize,
+        |count, message_id| -> Result<usize, String> {
+            Ok(count + usize::from(state.active_attachment_uploads.cancel_exact(message_id)?))
+        },
+    )?;
     let identity = state
         .identity_slot()
         .as_ref()
@@ -3965,6 +3976,7 @@ pub fn cmd_osl_burn_sender_message_records_both_sides(
         return Ok(BurnSenderMessageRecordsBothSidesDto {
             burn_id,
             requested_count: local.requested_count,
+            cancelled_upload_count,
             local_removal_count: local.removed_count,
             remote_removal_count,
             remaining_local_count: local.remaining_local_count,
@@ -3997,6 +4009,7 @@ pub fn cmd_osl_burn_sender_message_records_both_sides(
     Ok(BurnSenderMessageRecordsBothSidesDto {
         burn_id,
         requested_count: discord_message_ids.len(),
+        cancelled_upload_count,
         local_removal_count,
         remote_removal_count,
         remaining_local_count,
@@ -4021,43 +4034,61 @@ pub fn cmd_osl_chat_burn_sender_message_records_choice(
     state: &AppState,
     open_chat_id: String,
     selected_scope: &str,
-) -> Result<ChatBurnSenderMessageRecordsChoiceDto, String> {
-    record_activity_on_command_entry();
-    let self_user_id = state
-        .identity_slot()
-        .as_ref()
-        .map(|identity| identity.user_id.clone())
-        .ok_or_else(|| "OSL: chat burn needs a loaded identity".to_string())?;
-    let selected_message_ids = {
-        let guard = state
-            .message_store
-            .lock()
-            .expect("message_store mutex poisoned");
-        let Some(store) = guard.as_ref() else {
-            return Err("OSL: chat burn needs a message store".to_string());
-        };
-        store
-            .list_by_channel(&open_chat_id, u32::MAX)
-            .map_err(|e| format!("OSL: select open-chat sender records: {e}"))?
-            .into_iter()
-            .filter(|message| message.sender_osl_user_id == self_user_id)
-            .map(|message| message.discord_message_id)
-            .collect::<Vec<_>>()
-    };
-    let result = cmd_osl_burn_sender_message_records_choice(
+) -> Result<crate::irreversible_action::IrreversibleActionAnswer<ChatBurnSenderMessageRecordsChoiceDto>, String> {
+    cmd_osl_chat_burn_sender_message_records_choice_confirmed(
         state,
-        selected_scope,
-        selected_message_ids.clone(),
-    )?;
-    Ok(ChatBurnSenderMessageRecordsChoiceDto {
         open_chat_id,
-        selected_scope: selected_scope.to_owned(),
-        selected_message_ids,
-        requested_count: result.requested_count,
-        local_removal_count: result.local_removal_count,
-        remote_removal_count: result.remote_removal_count,
-        remaining_local_count: result.remaining_local_count,
-        equal_removal_counts: result.equal_removal_counts,
+        selected_scope,
+        false,
+    )
+}
+
+/// Confirmation-aware chat-burn entry point.  The unconfirmed convenience
+/// form above is intentionally fail-closed when the saved ask choice is on.
+pub fn cmd_osl_chat_burn_sender_message_records_choice_confirmed(
+    state: &AppState,
+    open_chat_id: String,
+    selected_scope: &str,
+    confirmed: bool,
+) -> Result<crate::irreversible_action::IrreversibleActionAnswer<ChatBurnSenderMessageRecordsChoiceDto>, String> {
+    record_activity_on_command_entry();
+    crate::irreversible_action::run_irreversible_action(state, confirmed, || {
+        let self_user_id = state
+            .identity_slot()
+            .as_ref()
+            .map(|identity| identity.user_id.clone())
+            .ok_or_else(|| "OSL: chat burn needs a loaded identity".to_string())?;
+        let selected_message_ids = {
+            let guard = state
+                .message_store
+                .lock()
+                .expect("message_store mutex poisoned");
+            let Some(store) = guard.as_ref() else {
+                return Err("OSL: chat burn needs a message store".to_string());
+            };
+            store
+                .list_by_channel(&open_chat_id, u32::MAX)
+                .map_err(|e| format!("OSL: select open-chat sender records: {e}"))?
+                .into_iter()
+                .filter(|message| message.sender_osl_user_id == self_user_id)
+                .map(|message| message.discord_message_id)
+                .collect::<Vec<_>>()
+        };
+        let result = cmd_osl_burn_sender_message_records_choice(
+            state,
+            selected_scope,
+            selected_message_ids.clone(),
+        )?;
+        Ok(ChatBurnSenderMessageRecordsChoiceDto {
+            open_chat_id,
+            selected_scope: selected_scope.to_owned(),
+            selected_message_ids,
+            requested_count: result.requested_count,
+            local_removal_count: result.local_removal_count,
+            remote_removal_count: result.remote_removal_count,
+            remaining_local_count: result.remaining_local_count,
+            equal_removal_counts: result.equal_removal_counts,
+        })
     })
 }
 
@@ -4373,15 +4404,18 @@ fn rn_session_store_from_config_dir() -> Result<crate::wire_rn::RnSessionStore, 
 fn select_rn_wire_path_for_send(
     store: &crate::wire_rn::RnSessionStore,
     peer_discord_id: &str,
+    local_identity_x25519: &[u8; 32],
     peer_identity_x25519: &[u8; 32],
     peer_capabilities: keystore::client::PeerCapabilities,
 ) -> Result<RnWirePath, String> {
-    let pin = store.load_pin(peer_identity_x25519).map_err(|e| {
-        format!(
-            "OSL: send refused for peer {peer}: OSL-RN version pin could not be read: {e}",
-            peer = crate::log_id::log_id(peer_discord_id)
-        )
-    })?;
+    let pin = store
+        .load_pair_pin(local_identity_x25519, peer_identity_x25519)
+        .map_err(|e| {
+            format!(
+                "OSL: send refused for peer {peer}: OSL-RN version pin could not be read: {e}",
+                peer = crate::log_id::log_id(peer_discord_id)
+            )
+        })?;
 
     select_rn_wire_path(
         &pin,
@@ -4437,6 +4471,7 @@ mod rn_send_selection_tests {
             select_rn_wire_path_for_send(
                 &store,
                 "123456789012345678",
+                &[0x11u8; 32],
                 &peer,
                 keystore::client::PeerCapabilities::Absent
             ),
@@ -4449,12 +4484,16 @@ mod rn_send_selection_tests {
     fn send_time_selection_refuses_legacy_for_stored_rn_pin() {
         let dir = tempfile::TempDir::new().expect("tempdir");
         let store = crate::wire_rn::RnSessionStore::new(dir.path().join("rn"));
+        let local = [0x41u8; 32];
         let peer = [18u8; 32];
-        store.raise_pin_to_rn(&peer).expect("raise pin");
+        store
+            .raise_pair_pin_to_rn(&local, &peer)
+            .expect("raise pin");
 
         let err = select_rn_wire_path_for_send(
             &store,
             "123456789012345678",
+            &local,
             &peer,
             keystore::client::PeerCapabilities::Absent,
         )
@@ -4470,6 +4509,7 @@ mod rn_send_selection_tests {
     fn send_selection_verify_peer_capabilities_feeds_pre_send_select_wire_version() {
         let dir = tempfile::TempDir::new().expect("tempdir");
         let store = crate::wire_rn::RnSessionStore::new(dir.path().join("rn"));
+        let local = [0x24u8; 32];
         let peer_identity = keystore::generate_identity("b24-peer".to_string());
         let x25519 = STANDARD.encode(peer_identity.x25519_public.as_bytes());
         let ed25519 = STANDARD.encode(peer_identity.ed25519_public.as_bytes());
@@ -4506,6 +4546,7 @@ mod rn_send_selection_tests {
         let absent = select_rn_wire_path_for_send(
             &store,
             "123456789012345678",
+            &local,
             peer_identity.x25519_public.as_bytes(),
             keystore::client::PeerCapabilities::Absent,
         )
@@ -4515,6 +4556,7 @@ mod rn_send_selection_tests {
         let verified_result = select_rn_wire_path_for_send(
             &store,
             "123456789012345678",
+            &local,
             peer_identity.x25519_public.as_bytes(),
             verified,
         );
@@ -4525,6 +4567,7 @@ mod rn_send_selection_tests {
     fn verify_peer_capabilities_feeds_pre_send_select_wire_version() {
         let dir = tempfile::TempDir::new().expect("tempdir");
         let store = crate::wire_rn::RnSessionStore::new(dir.path().join("rn"));
+        let local = [0x25u8; 32];
         let peer_identity = keystore::generate_identity("b24-peer-exact".to_string());
         let x25519 = STANDARD.encode(peer_identity.x25519_public.as_bytes());
         let ed25519 = STANDARD.encode(peer_identity.ed25519_public.as_bytes());
@@ -4565,6 +4608,7 @@ mod rn_send_selection_tests {
         let legacy = select_rn_wire_path_for_send(
             &store,
             "123456789012345678",
+            &local,
             peer_identity.x25519_public.as_bytes(),
             keystore::client::PeerCapabilities::Absent,
         )
@@ -4578,6 +4622,7 @@ mod rn_send_selection_tests {
         let selected = select_rn_wire_path_for_send(
             &store,
             "123456789012345678",
+            &local,
             peer_identity.x25519_public.as_bytes(),
             verified,
         )
@@ -4668,6 +4713,7 @@ mod rn_legacy_fallback_send_path_tests {
     fn gate_off_unpinned_peer_dispatches_legacy_v3_unchanged() {
         let dir = tempfile::TempDir::new().expect("tempdir");
         let store = crate::wire_rn::RnSessionStore::new(dir.path().join("rn"));
+        let local = [0x78u8; 32];
         let peer = [0x79u8; 32];
 
         let raw_selected = crate::wire_rn::select_wire_version(
@@ -4681,6 +4727,7 @@ mod rn_legacy_fallback_send_path_tests {
         let send_path = select_rn_wire_path_for_send(
             &store,
             "900000000000000079",
+            &local,
             &peer,
             keystore::client::PeerCapabilities::Absent,
         )
@@ -4688,11 +4735,12 @@ mod rn_legacy_fallback_send_path_tests {
         assert_eq!(send_path, RnWirePath::LegacyV3);
 
         store
-            .raise_pin_to_rn(&peer)
+            .raise_pair_pin_to_rn(&local, &peer)
             .expect("test should be able to model an existing RN pin");
         let pinned = select_rn_wire_path_for_send(
             &store,
             "900000000000000079",
+            &local,
             &peer,
             keystore::client::PeerCapabilities::Absent,
         );
@@ -4893,8 +4941,7 @@ pub fn cmd_osl_encrypt_message_v2_wire(
             .scope_membership
             .lock()
             .expect("scope_membership mutex poisoned");
-        mem.admit_gc_members(&scope.id, channel_members.iter().cloned())
-            .map_err(str::to_owned)?;
+        mem.note_gc_members(&scope.id, channel_members.iter().cloned());
     }
 
     ensure_dynamic_membership_oracle_is_not_degraded(state, &scope)?;
@@ -4997,6 +5044,7 @@ pub fn cmd_osl_encrypt_message_v2_wire(
             match select_rn_wire_path_for_send(
                 &rn_store,
                 peer_did,
+                self_pk.as_bytes(),
                 recipient.x25519_pub.as_bytes(),
                 peer_capabilities,
             )? {
@@ -5117,7 +5165,7 @@ fn try_encrypt_rn_first_contact_from_state(
         Ok(caps) => caps,
         Err(e) => {
             if store
-                .load_pin(peer_identity.as_bytes())
+                .load_pair_pin(identity.x25519_public.as_bytes(), peer_identity.as_bytes())
                 .map_err(|e| format!("OSL: OSL-RN first contact: {e}"))?
                 .is_pinned_to_rn()
             {
@@ -5128,7 +5176,7 @@ fn try_encrypt_rn_first_contact_from_state(
     };
 
     let pin = store
-        .load_pin(peer_identity.as_bytes())
+        .load_pair_pin(identity.x25519_public.as_bytes(), peer_identity.as_bytes())
         .map_err(|e| format!("OSL: OSL-RN first contact: {e}"))?;
     match crate::wire_rn::select_wire_version(&pin, caps, crate::wire_rn::RnPolicy::Opportunistic)
         .map_err(|e| format!("OSL: OSL-RN first contact: {e}"))?
@@ -5337,7 +5385,7 @@ fn try_encrypt_rn_first_contact_with_bundle(
 
     let peer_identity = *peer_bundle.identity.as_bytes();
     let pin = store
-        .load_pin(&peer_identity)
+        .load_pair_pin(own_identity_public.as_bytes(), &peer_identity)
         .map_err(|e| format!("OSL: OSL-RN first contact: {e}"))?;
     match crate::wire_rn::select_wire_version(&pin, caps, crate::wire_rn::RnPolicy::Opportunistic)
         .map_err(|e| format!("OSL: OSL-RN first contact: {e}"))?
@@ -7261,7 +7309,13 @@ pub fn cmd_osl_decrypt_message_v2(
                         // real symptom. The durable detector decides whether
                         // it is a single bad packet or a desync.
                         let peer = peer.as_bytes();
-                        let _ = record_rn_receive_failure(config_dir.as_deref(), peer);
+                        let local = state
+                            .identity_slot()
+                            .as_ref()
+                            .map(|identity| *identity.x25519_public.as_bytes());
+                        if let Some(local) = local.as_ref() {
+                            let _ = record_rn_receive_failure(config_dir.as_deref(), local, peer);
+                        }
                     }
                     return Err(error);
                 }
@@ -7430,7 +7484,11 @@ fn record_rn_successful_decrypt(config_dir: Option<&Path>, peer: &[u8; 32]) -> R
         .map_err(|e| format!("OSL: RN health state could not be saved: {e}"))
 }
 
-fn record_rn_receive_failure(config_dir: Option<&Path>, peer: &[u8; 32]) -> Result<(), String> {
+fn record_rn_receive_failure(
+    config_dir: Option<&Path>,
+    local: &[u8; 32],
+    peer: &[u8; 32],
+) -> Result<(), String> {
     let dir = match config_dir {
         Some(dir) => dir.to_path_buf(),
         None => keystore::osl_config_dir()
@@ -7439,7 +7497,7 @@ fn record_rn_receive_failure(config_dir: Option<&Path>, peer: &[u8; 32]) -> Resu
     let sessions = crate::wire_rn::RnSessionStore::for_config_dir(&dir)
         .map_err(|e| format!("OSL: cannot open RN session store: {e}"))?;
     if !sessions
-        .load_pin(peer)
+        .load_pair_pin(local, peer)
         .map_err(|e| format!("OSL: RN version pin could not be read: {e}"))?
         .is_pinned_to_rn()
     {
@@ -10863,6 +10921,7 @@ fn cmd_osl_send_friend_request_with_dir(
     dir: &Path,
 ) -> Result<SendFriendRequestResult, String> {
     guard_friend_request_peer_binding(state, &peer_discord_id)?;
+    guard_friend_request_not_blocked(dir, &peer_discord_id)?;
     let scope: crate::scope::Scope = scope_input
         .try_into()
         .map_err(|e: crate::scope::ScopeError| format!("OSL: {e}"))?;
@@ -10905,6 +10964,36 @@ fn cmd_osl_send_friend_request_with_dir(
     save_pending_friend_requests(&path, &records)?;
 
     Ok(SendFriendRequestResult { request, pending })
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingFriendRequestCountDto {
+    pub person_id: String,
+    pub for_person: usize,
+    pub total: usize,
+}
+
+/// A direct, read-only count of the pending friend requests on file, so a caller
+/// can re-state what is pending from the store itself rather than from whatever a
+/// send happened to return.
+pub fn cmd_osl_count_pending_friend_requests(
+    _state: &AppState,
+    peer_discord_id: String,
+) -> Result<PendingFriendRequestCountDto, String> {
+    record_activity_on_command_entry();
+    validate_friend_request_person_id(&peer_discord_id)?;
+    let dir =
+        keystore::osl_config_dir().map_err(|e| format!("OSL: pending friend request dir: {e}"))?;
+    let records = load_pending_friend_requests(&pending_friend_requests_path(&dir))?;
+    Ok(PendingFriendRequestCountDto {
+        for_person: records
+            .iter()
+            .filter(|record| record.peer_discord_id == peer_discord_id)
+            .count(),
+        total: records.len(),
+        person_id: peer_discord_id,
+    })
 }
 
 pub fn cmd_osl_create_friend_invite_link(
@@ -13920,6 +14009,16 @@ pub struct EmailSendModeDto {
     pub name: String,
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct EmailSendReviewDto {
+    pub mode_id: String,
+    pub mode_name: String,
+    pub subject: String,
+    pub visible_subject_warning: Option<String>,
+    pub named_send_command: String,
+    pub rows: Vec<String>,
+}
+
 /// Static email auto-whitelist kind query for settings/rule wiring.
 pub fn cmd_osl_list_email_whitelist_kinds() -> Vec<EmailWhitelistKindDto> {
     record_activity_on_command_entry();
@@ -13929,6 +14028,32 @@ pub fn cmd_osl_list_email_whitelist_kinds() -> Vec<EmailWhitelistKindDto> {
             name: kind.name().to_string(),
         })
         .collect()
+}
+
+/// The send review the named Send command opens, for the composer UI.
+///
+/// `rows` is the read order: the visible-subject warning, when there is one,
+/// comes before the named Send command, never after it.
+pub fn cmd_osl_open_email_send_review(
+    mode_id: &str,
+    subject: &str,
+    body: &str,
+) -> Result<EmailSendReviewDto, String> {
+    record_activity_on_command_entry();
+    let mode = crate::email_send_modes::EmailSendMode::ALL
+        .iter()
+        .copied()
+        .find(|mode| mode.id() == mode_id)
+        .ok_or_else(|| format!("OSL: unknown email send mode: {mode_id}"))?;
+    let review = crate::email_send_modes::open_email_send_review(mode, subject, body);
+    Ok(EmailSendReviewDto {
+        mode_id: review.rule.id().to_string(),
+        mode_name: review.rule.name().to_string(),
+        subject: review.subject.clone(),
+        visible_subject_warning: review.visible_subject_warning.clone(),
+        named_send_command: review.named_send_command.to_string(),
+        rows: review.rows(),
+    })
 }
 
 /// Static email send-mode choices for settings/review wiring.
@@ -14610,7 +14735,6 @@ const OSL_EXPORT_FILES: &[&str] = &[
     "scope_blobs.json",
     crate::space_roster::SPACE_ROSTER_FILE,
     crate::tombstone_file::TOMBSTONE_FILE,
-    "profile_ui_state_v1.json",
 ];
 
 /// Account-relative files carried by an encrypted identity export.
@@ -14675,54 +14799,7 @@ fn active_account_for_transfer(state: &AppState) -> Result<String, String> {
 struct HistoryCopyPackage {
     version: u32,
     account: String,
-    messages: Vec<HistoryCopyMessage>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-struct HistoryCopyMessage {
-    source_message_id: String,
-    message: StoredMessageDto,
-    attachments: Vec<HistoryCopyAttachment>,
-    semantics: HistoryCopySemantics,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-struct HistoryCopyAttachment {
-    random_filename: String,
-    mime: String,
-    plaintext: Vec<u8>,
-    sender_discord_id: Option<String>,
-    scope_type: Option<String>,
-    scope_id: Option<String>,
-    created_at: i64,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", tag = "kind")]
-pub enum HistoryCopyExpirationState {
-    NonExpiring,
-    Active { timer_minutes: u32 },
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct HistoryCopyReaction {
-    pub reaction_id: String,
-    pub target_message_id: String,
-    pub actor_discord_id: String,
-    pub emoji: String,
-    pub reacted_at: i64,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct HistoryCopySemantics {
-    pub stable_order: u64,
-    pub thread_root_id: Option<String>,
-    pub reactions: Vec<HistoryCopyReaction>,
-    pub expiration: HistoryCopyExpirationState,
+    messages: Vec<StoredMessageDto>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -14740,13 +14817,8 @@ pub struct CopyMyHistoryHereResult {
     pub confirmation_sentence: String,
     pub copied_count: usize,
     pub plaintext_bytes_written: u64,
-    pub attachment_count: usize,
-    pub attachment_bytes_written: u64,
-    pub actual_copied_bytes_written: u64,
     pub monthly_data_bytes_before: u64,
     pub monthly_data_bytes_after: u64,
-    pub source_to_copy_ids: BTreeMap<String, String>,
-    pub source_to_copy_reaction_ids: BTreeMap<String, String>,
 }
 
 pub fn cmd_osl_copy_my_history_here_confirmation(
@@ -14763,64 +14835,9 @@ pub fn cmd_osl_copy_my_history_here_confirmation(
 }
 
 pub fn cmd_osl_history_copy_month_data_bytes(state: &AppState) -> u64 {
-    let persisted = state
-        .message_store
-        .lock()
-        .expect("message_store mutex poisoned")
-        .as_ref()
-        .and_then(|store| store.history_copy_bytes().ok());
-    persisted.unwrap_or_else(|| {
-        state
-            .history_copy_data_allowance_this_month_bytes
-            .load(Ordering::SeqCst)
-    })
-}
-
-pub fn cmd_osl_record_history_copy_semantics(
-    state: &AppState,
-    discord_message_id: String,
-    semantics: HistoryCopySemantics,
-) -> Result<(), String> {
-    let bytes = serde_json::to_vec(&semantics)
-        .map_err(|error| format!("OSL: history semantics serialize: {error}"))?;
-    let guard = state
-        .message_store
-        .lock()
-        .expect("message_store mutex poisoned");
-    let store = guard
-        .as_ref()
-        .ok_or_else(|| "OSL: message history is not open".to_string())?;
-    store
-        .put_history_copy_metadata(&discord_message_id, &bytes)
-        .map_err(|error| format!("OSL: history semantics write: {error}"))
-}
-
-pub fn cmd_osl_read_history_copy_semantics(
-    state: &AppState,
-    discord_message_id: String,
-) -> Result<Option<HistoryCopySemantics>, String> {
-    let guard = state
-        .message_store
-        .lock()
-        .expect("message_store mutex poisoned");
-    let store = guard
-        .as_ref()
-        .ok_or_else(|| "OSL: message history is not open".to_string())?;
-    let Some(bytes) = store
-        .get_history_copy_metadata(&discord_message_id)
-        .map_err(|error| format!("OSL: history semantics read: {error}"))?
-    else {
-        return Ok(None);
-    };
-    serde_json::from_slice(&bytes)
-        .map(Some)
-        .map_err(|error| format!("OSL: history semantics parse: {error}"))
-}
-
-fn fresh_history_copy_id() -> String {
-    let bytes = crypto::random::random_bytes(16);
-    let suffix: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
-    format!("osl-history-copy-{suffix}")
+    state
+        .history_copy_data_allowance_this_month_bytes
+        .load(Ordering::SeqCst)
 }
 
 pub fn cmd_osl_export_history_for_copy(
@@ -14828,32 +14845,6 @@ pub fn cmd_osl_export_history_for_copy(
     channel_id: String,
     discord_message_ids: Vec<String>,
 ) -> Result<String, String> {
-    cmd_osl_export_history_for_copy_with_observer(
-        state,
-        channel_id,
-        discord_message_ids,
-        |_, _| Ok(()),
-    )
-}
-
-/// Exercise the shipping history-export callsites with an observer placed on
-/// both sides of every physical source-store read.  The normal command above
-/// supplies a no-op observer; fault-matrix tests use this seam to prove that a
-/// source-side failure cannot publish or charge anything on the destination.
-///
-/// Boundary names deliberately describe effects, not a predeclared ordered
-/// matrix.  Task 4823 separately discovers the callsites and SQLite I/O and
-/// rejects any observed effect that has no classification.
-#[doc(hidden)]
-pub fn cmd_osl_export_history_for_copy_with_observer<F>(
-    state: &AppState,
-    channel_id: String,
-    discord_message_ids: Vec<String>,
-    mut observe: F,
-) -> Result<String, String>
-where
-    F: FnMut(&'static str, store::HistoryCopyFaultSide) -> Result<(), String>,
-{
     guard_session_on_command_entry(state)?;
     if channel_id.is_empty() {
         return Err("OSL: choose a history conversation to copy".to_string());
@@ -14871,171 +14862,30 @@ where
     let Some(store) = guard.as_ref() else {
         return Err("OSL: message history is not open".to_string());
     };
-    let selected: std::collections::BTreeSet<String> =
-        discord_message_ids.iter().cloned().collect();
-    if selected.len() != discord_message_ids.len() {
-        return Err(
-            "OSL: history copy selection contains a duplicate source message id".to_string(),
-        );
-    }
     let mut messages = Vec::with_capacity(discord_message_ids.len());
-    for (fallback_order, message_id) in discord_message_ids.into_iter().enumerate() {
-        observe(
-            "source.message.read",
-            store::HistoryCopyFaultSide::Before,
-        )?;
+    for message_id in discord_message_ids {
         let Some(message) = store
             .get(&message_id)
             .map_err(|e| format!("OSL: copy history read: {e}"))?
         else {
-            observe(
-                "source.message.read",
-                store::HistoryCopyFaultSide::After,
-            )?;
-            observe(
-                "source.retention.read",
-                store::HistoryCopyFaultSide::Before,
-            )?;
-            let retained_stub = store
-                .count_message_records(std::slice::from_ref(&message_id))
-                .map_err(|e| format!("OSL: copy history retention read: {e}"))?
-                == 1;
-            observe(
-                "source.retention.read",
-                store::HistoryCopyFaultSide::After,
-            )?;
-            if retained_stub {
-                return Err(format!(
-                    "OSL: source.message[{}].expirationState=expired-before-copy; existing retention rule destroyed its content, so no id-only stub was copied",
-                    crate::log_id::log_id(&message_id)
-                ));
-            }
             return Err(format!(
-                "OSL: source.message[{}] is not on this device",
+                "OSL: selected history message {} is not on this device",
                 crate::log_id::log_id(&message_id)
             ));
         };
-        observe(
-            "source.message.read",
-            store::HistoryCopyFaultSide::After,
-        )?;
         if message.channel_id != channel_id {
             return Err(
                 "OSL: selected history message is not in the chosen conversation".to_string(),
             );
         }
-        observe(
-            "source.attachment.read",
-            store::HistoryCopyFaultSide::Before,
-        )?;
-        let attachments = store
-            .list_history_attachments(&message_id)
-            .map_err(|e| {
-                format!(
-                    "OSL: source.message[{}].attachments read: {e}",
-                    crate::log_id::log_id(&message_id)
-                )
-            })?
-            .into_iter()
-            .map(|attachment| HistoryCopyAttachment {
-                random_filename: attachment.random_filename,
-                mime: attachment.mime,
-                plaintext: attachment.plaintext,
-                sender_discord_id: attachment.sender_discord_id,
-                scope_type: attachment.scope_type,
-                scope_id: attachment.scope_id,
-                created_at: attachment.created_at,
-            })
-            .collect();
-        observe(
-            "source.attachment.read",
-            store::HistoryCopyFaultSide::After,
-        )?;
-        observe(
-            "source.semantic.read",
-            store::HistoryCopyFaultSide::Before,
-        )?;
-        let mut semantics = match store.get_history_copy_metadata(&message_id).map_err(|e| {
-            format!(
-                "OSL: source.message[{}].semantics read: {e}",
-                crate::log_id::log_id(&message_id)
-            )
-        })? {
-            Some(bytes) => serde_json::from_slice(&bytes).map_err(|e| {
-                format!(
-                    "OSL: source.message[{}].semantics parse: {e}",
-                    crate::log_id::log_id(&message_id)
-                )
-            })?,
-            None => HistoryCopySemantics {
-                stable_order: fallback_order as u64,
-                thread_root_id: None,
-                reactions: Vec::new(),
-                expiration: HistoryCopyExpirationState::NonExpiring,
-            },
-        };
-        observe(
-            "source.semantic.read",
-            store::HistoryCopyFaultSide::After,
-        )?;
-        observe(
-            "source.expiration.read",
-            store::HistoryCopyFaultSide::Before,
-        )?;
-        semantics.expiration = match store.message_timer_minutes(&message_id).map_err(|e| {
-            format!(
-                "OSL: source.message[{}].expirationState read: {e}",
-                crate::log_id::log_id(&message_id)
-            )
-        })? {
-            Some(timer_minutes) => HistoryCopyExpirationState::Active { timer_minutes },
-            None => HistoryCopyExpirationState::NonExpiring,
-        };
-        observe(
-            "source.expiration.read",
-            store::HistoryCopyFaultSide::After,
-        )?;
-        if let Some(parent) = message.reply_parent_id.as_ref() {
-            if !selected.contains(parent) {
-                return Err(format!(
-                    "OSL: source.message[{}].replyParentId points outside the copied selection",
-                    crate::log_id::log_id(&message_id)
-                ));
-            }
-        }
-        if let Some(root) = semantics.thread_root_id.as_ref() {
-            if !selected.contains(root) {
-                return Err(format!(
-                    "OSL: source.message[{}].threadRootId points outside the copied selection",
-                    crate::log_id::log_id(&message_id)
-                ));
-            }
-        }
-        for reaction in &semantics.reactions {
-            if reaction.target_message_id != message_id {
-                return Err(format!(
-                    "OSL: source.message[{}].reactions[{}].targetMessageId points to the wrong source object",
-                    crate::log_id::log_id(&message_id),
-                    crate::log_id::log_id(&reaction.reaction_id)
-                ));
-            }
-        }
-        messages.push(HistoryCopyMessage {
-            source_message_id: message_id,
-            message: StoredMessageDto::from(message),
-            attachments,
-            semantics,
-        });
+        messages.push(StoredMessageDto::from(message));
     }
-    messages.sort_by_key(|item| item.semantics.stable_order);
-    seal_history_copy_package(
-        &HistoryCopyPackage {
-            version: 2,
-            account,
-            messages,
-        },
-        entropy,
-    )
+    let package = HistoryCopyPackage {
+        version: 1,
+        account,
+        messages,
+    };
+    seal_history_copy_package(&package, entropy)
 }
 
 fn seal_history_copy_package(
@@ -15068,6 +14918,7 @@ fn open_history_copy_package(blob_b64: &str, phrase: &str) -> Result<HistoryCopy
     }
     let mut entropy = [0u8; 16];
     entropy.copy_from_slice(&ev);
+
     let raw = STANDARD
         .decode(blob_b64.trim())
         .map_err(|e| format!("OSL: history copy: base64 decode: {e}"))?;
@@ -15087,7 +14938,7 @@ fn open_history_copy_package(blob_b64: &str, phrase: &str) -> Result<HistoryCopy
         })?;
     let package: HistoryCopyPackage =
         serde_json::from_slice(&plaintext).map_err(|e| format!("OSL: history copy parse: {e}"))?;
-    if package.version != 2 {
+    if package.version != 1 {
         return Err("OSL: history copy: unsupported or missing version".to_string());
     }
     cmd_osl_copy_my_history_here_confirmation(package.messages.len())?;
@@ -15099,60 +14950,7 @@ pub fn cmd_osl_copy_my_history_here(
     history_copy_b64: String,
     phrase: String,
 ) -> Result<CopyMyHistoryHereResult, String> {
-    cmd_osl_copy_my_history_here_with_observer(
-        state,
-        history_copy_b64,
-        phrase,
-        u64::MAX,
-        |_, _| Ok(()),
-    )
-}
-
-fn deterministic_history_copy_id(operation_id: &str, kind: &str, source_id: &str) -> String {
-    let mut digest = Sha256::new();
-    digest.update(b"OSL-history-copy-remap-v1");
-    digest.update((operation_id.len() as u64).to_le_bytes());
-    digest.update(operation_id.as_bytes());
-    digest.update((kind.len() as u64).to_le_bytes());
-    digest.update(kind.as_bytes());
-    digest.update((source_id.len() as u64).to_le_bytes());
-    digest.update(source_id.as_bytes());
-    let digest = digest.finalize();
-    let suffix: String = digest[..16]
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect();
-    format!("osl-history-copy-{suffix}")
-}
-
-/// Shipping copy implementation with a bounded allowance and a fault observer.
-/// The public command supplies an unlimited bound and a no-op observer.  Tests
-/// inject failures here without substituting a model for the real call path.
-#[doc(hidden)]
-pub fn cmd_osl_copy_my_history_here_with_observer<F>(
-    state: &AppState,
-    history_copy_b64: String,
-    phrase: String,
-    allowance_limit: u64,
-    mut observe: F,
-) -> Result<CopyMyHistoryHereResult, String>
-where
-    F: FnMut(
-        store::HistoryCopyFaultBoundary,
-        store::HistoryCopyFaultSide,
-    ) -> Result<(), String>,
-{
     guard_session_on_command_entry(state)?;
-    let operation_id = {
-        let mut digest = Sha256::new();
-        digest.update(b"OSL-history-copy-operation-v1");
-        digest.update(history_copy_b64.as_bytes());
-        digest
-            .finalize()
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect::<String>()
-    };
     let package = open_history_copy_package(&history_copy_b64, &phrase)?;
     let active_account = active_account_for_transfer(state)?;
     if package.account != active_account {
@@ -15161,242 +14959,45 @@ where
             crate::log_id::log_id(&package.account)
         ));
     }
-    // Retry/reconnect consults the durable operation ledger before allowance
-    // arithmetic or fresh work. The stored result preserves the original
-    // before/after meter values and ID map, so a lost acknowledgement can
-    // never turn into a second charge or a differently remapped graph.
-    let replay_guard = state
-        .message_store
-        .lock()
-        .expect("message_store mutex poisoned");
-    let replay_store = replay_guard
-        .as_ref()
-        .ok_or_else(|| "OSL: message history is not open on this device".to_string())?;
-    if let Some(stored_result) = replay_store
-        .history_copy_operation_result(&operation_id)
-        .map_err(|error| format!("OSL: history copy ledger read: {error}"))?
-    {
-        if std::env::var_os("OSL_TASK4823_NEUTRAL_RETRY_WRITER").is_some() {
-            let events = replay_store
-                .task_4823_neutral_retry_writer()
-                .map_err(|error| format!("TASK4823 neutral retry writer failed: {error}"))?;
-            let physical_write_seen = events.iter().any(|event| {
-                event.table == "_meta"
-                    && matches!(
-                        event.access,
-                        store::HistoryCopyIoAccess::Insert | store::HistoryCopyIoAccess::Update
-                    )
-            });
-            return Err(format!(
-                "TASK4823 unclassified durable writer=neutral_cache_checkpoint effect=retry_conditional_write physical_table=_meta runtime_write_seen={physical_write_seen}"
-            ));
-        }
-        return serde_json::from_slice(&stored_result)
-            .map_err(|error| format!("OSL: history copy stored result parse: {error}"));
-    }
-    drop(replay_guard);
     let confirmation = cmd_osl_copy_my_history_here_confirmation(package.messages.len())?;
     let before = cmd_osl_history_copy_month_data_bytes(state);
     let mut bytes_written = 0u64;
-    let mut attachment_bytes_written = 0u64;
-    let mut attachment_count = 0usize;
     let mut copied_count = 0usize;
-    let mut source_to_copy_ids = BTreeMap::new();
-    let mut source_to_copy_reaction_ids = BTreeMap::new();
-    for item in &package.messages {
-        if item.source_message_id != item.message.discord_message_id {
-            return Err(format!(
-                "OSL: source.message[{}].id does not match its packaged message id",
-                crate::log_id::log_id(&item.source_message_id)
-            ));
-        }
-        if source_to_copy_ids
-            .insert(
-                item.source_message_id.clone(),
-                deterministic_history_copy_id(&operation_id, "message", &item.source_message_id),
-            )
-            .is_some()
-        {
-            return Err("OSL: history copy contains a duplicate source message id".to_string());
-        }
-    }
-    let mut batch_messages = Vec::with_capacity(package.messages.len());
-    for item in package.messages {
-        let copy_id = source_to_copy_ids
-            .get(&item.source_message_id)
-            .cloned()
-            .ok_or_else(|| "OSL: history copy id remap is incomplete".to_string())?;
-        let plaintext_len = u64::try_from(item.message.plaintext.len())
-            .map_err(|_| "OSL: history copy byte count overflow".to_string())?;
-        let mut dto = item.message;
-        dto.discord_message_id = copy_id.clone();
-        dto.reply_parent_id = dto
-            .reply_parent_id
-            .map(|source_parent| {
-                source_to_copy_ids
-                    .get(&source_parent)
-                    .cloned()
-                    .ok_or_else(|| {
-                        format!(
-                            "OSL: source.message[{}].replyParentId has no copied object",
-                            crate::log_id::log_id(&item.source_message_id)
-                        )
-                    })
-            })
-            .transpose()?;
-        let message = StoredMessage::from(dto);
-        if message.edit_revision < 1 {
-            return Err(format!(
-                "OSL: source.message[{}].editRevision must be positive",
-                crate::log_id::log_id(&item.source_message_id)
-            ));
-        }
-        let mut semantics = item.semantics;
-        let mut edges = Vec::new();
-        if let Some(parent) = message.reply_parent_id.as_ref() {
-            edges.push(store::HistoryCopyBatchEdge {
-                edge_id: format!("reply:{}:{parent}", copy_id),
-                payload: format!("reply\0{}\0{parent}", copy_id).into_bytes(),
-            });
-        }
-        semantics.thread_root_id = semantics
-            .thread_root_id
-            .map(|source_root| {
-                source_to_copy_ids
-                    .get(&source_root)
-                    .cloned()
-                    .ok_or_else(|| {
-                        format!(
-                            "OSL: source.message[{}].threadRootId has no copied object",
-                            crate::log_id::log_id(&item.source_message_id)
-                        )
-                    })
-            })
-            .transpose()?;
-        if let Some(root) = semantics.thread_root_id.as_ref() {
-            edges.push(store::HistoryCopyBatchEdge {
-                edge_id: format!("thread:{}:{root}", copy_id),
-                payload: format!("thread\0{}\0{root}", copy_id).into_bytes(),
-            });
-        }
-        for reaction in &mut semantics.reactions {
-            let source_reaction_id = reaction.reaction_id.clone();
-            reaction.target_message_id = source_to_copy_ids
-                .get(&reaction.target_message_id)
-                .cloned()
-                .ok_or_else(|| {
-                    format!(
-                        "OSL: source.message[{}].reactions[{}].targetMessageId has no copied object",
-                        crate::log_id::log_id(&item.source_message_id),
-                        crate::log_id::log_id(&reaction.reaction_id)
-                    )
-                })?;
-            reaction.reaction_id = deterministic_history_copy_id(
-                &operation_id,
-                "reaction",
-                &source_reaction_id,
-            );
-            if source_to_copy_reaction_ids
-                .insert(source_reaction_id, reaction.reaction_id.clone())
-                .is_some()
-            {
-                return Err(format!(
-                    "OSL: source.message[{}].reactions contains a duplicate reaction id",
-                    crate::log_id::log_id(&item.source_message_id)
-                ));
-            }
-            edges.push(store::HistoryCopyBatchEdge {
-                edge_id: format!("reaction:{}", reaction.reaction_id),
-                payload: serde_json::to_vec(reaction)
-                    .map_err(|e| format!("OSL: copy reaction edge serialize: {e}"))?,
-            });
-        }
-        let timer_minutes = match semantics.expiration {
-            HistoryCopyExpirationState::Active { timer_minutes } => Some(timer_minutes),
-            HistoryCopyExpirationState::NonExpiring => None,
+    {
+        let guard = state
+            .message_store
+            .lock()
+            .expect("message_store mutex poisoned");
+        let Some(store) = guard.as_ref() else {
+            return Err("OSL: message history is not open on this device".to_string());
         };
-        let mut attachments = Vec::with_capacity(item.attachments.len());
-        for attachment in item.attachments {
-            let attachment_len = u64::try_from(attachment.plaintext.len())
-                .map_err(|_| "OSL: history attachment byte count overflow".to_string())?;
-            attachment_bytes_written = attachment_bytes_written
-                .checked_add(attachment_len)
-                .ok_or_else(|| "OSL: history attachment byte count overflow".to_string())?;
-            attachment_count += 1;
-            attachments.push(store::HistoryCopyBatchAttachment {
-                random_filename: attachment.random_filename,
-                mime: attachment.mime,
-                plaintext: attachment.plaintext,
-                sender_discord_id: attachment.sender_discord_id,
-                scope_type: attachment.scope_type,
-                scope_id: attachment.scope_id,
-                created_at: attachment.created_at,
-            });
+        for dto in package.messages {
+            let plaintext_len = u64::try_from(dto.plaintext.as_bytes().len())
+                .map_err(|_| "OSL: history copy byte count overflow".to_string())?;
+            let message = StoredMessage::from(dto);
+            store
+                .put(&message)
+                .map_err(|e| format!("OSL: copy history write: {e}"))?;
+            bytes_written = bytes_written
+                .checked_add(plaintext_len)
+                .ok_or_else(|| "OSL: history copy byte count overflow".to_string())?;
+            copied_count += 1;
         }
-        let semantic_payload = serde_json::to_vec(&semantics)
-            .map_err(|e| format!("OSL: copy history semantics serialize: {e}"))?;
-        bytes_written = bytes_written
-            .checked_add(plaintext_len)
-            .ok_or_else(|| "OSL: history copy byte count overflow".to_string())?;
-        copied_count += 1;
-        batch_messages.push(store::HistoryCopyBatchMessage {
-            message,
-            timer_minutes,
-            semantic_payload,
-            attachments,
-            edges,
-        });
     }
-    let actual_copied_bytes_written = bytes_written
-        .checked_add(attachment_bytes_written)
-        .ok_or_else(|| "OSL: history copy actual byte count overflow".to_string())?;
-    let projected_after = before
-        .checked_add(actual_copied_bytes_written)
-        .ok_or_else(|| "OSL: history copy allowance overflow".to_string())?;
-    if projected_after > allowance_limit {
-        return Err(format!(
-            "OSL: history copy allowance exhausted: before={before} copy={actual_copied_bytes_written} limit={allowance_limit}; nothing was copied or charged"
-        ));
-    }
-    let proposed_result = CopyMyHistoryHereResult {
+    let previous = state
+        .history_copy_data_allowance_this_month_bytes
+        .fetch_add(bytes_written, Ordering::SeqCst);
+    let after = previous
+        .checked_add(bytes_written)
+        .ok_or_else(|| "OSL: history copy data allowance overflow".to_string())?;
+    Ok(CopyMyHistoryHereResult {
         action_label: confirmation.action_label,
         confirmation_sentence: confirmation.sentence,
         copied_count,
         plaintext_bytes_written: bytes_written,
-        attachment_count,
-        attachment_bytes_written,
-        actual_copied_bytes_written,
         monthly_data_bytes_before: before,
-        monthly_data_bytes_after: projected_after,
-        source_to_copy_ids,
-        source_to_copy_reaction_ids,
-    };
-    let result_payload = serde_json::to_vec(&proposed_result)
-        .map_err(|error| format!("OSL: history copy result serialize: {error}"))?;
-    let batch = store::HistoryCopyBatch {
-        operation_id,
-        messages: batch_messages,
-        unique_bytes: actual_copied_bytes_written,
-        result: result_payload,
-    };
-    let guard = state
-        .message_store
-        .lock()
-        .expect("message_store mutex poisoned");
-    let store = guard
-        .as_ref()
-        .ok_or_else(|| "OSL: message history is not open on this device".to_string())?;
-    let outcome = store
-        .apply_history_copy_batch_with_observer(&batch, |boundary, side| {
-            observe(boundary, side).map_err(StoreError::Corrupted)
-        })
-        .map_err(|error| format!("OSL: atomic history copy: {error}"))?;
-    let result: CopyMyHistoryHereResult = serde_json::from_slice(&outcome.result)
-        .map_err(|error| format!("OSL: history copy stored result parse: {error}"))?;
-    state
-        .history_copy_data_allowance_this_month_bytes
-        .store(result.monthly_data_bytes_after, Ordering::SeqCst);
-    Ok(result)
+        monthly_data_bytes_after: after,
+    })
 }
 
 fn decode_export_identity(
@@ -16776,6 +16377,7 @@ mod account_transfer_tests {
 }
 
 pub fn cmd_osl_verify_main_password(password: String) -> Result<(), String> {
+    record_activity_on_command_entry();
     let dir = password_dir()?;
     crate::main_password::verify_main_password(&dir, &password)
 }
@@ -16828,7 +16430,7 @@ mod duress_gate_tests {
     }
 
     #[test]
-    fn gate_wrong_password_threshold_starts_cooldown_and_preserves_profile() {
+    fn gate_wrong_password_threshold_reports_duress_and_runs_cleanup() {
         let temp = tempfile::TempDir::new().expect("tempdir");
         let base_dir = temp.path().join("base");
         let account_dir = temp.path().join("account");
@@ -16846,11 +16448,12 @@ mod duress_gate_tests {
         crate::main_password::write_lockout_pub(
             &base_dir,
             &crate::main_password::LockoutState {
-                version: 2,
+                version: 1,
                 password_failed_attempts: crate::main_password::DURESS_WRONG_PASSWORD_ATTEMPT_LIMIT
                     - 1,
                 password_locked_until: None,
-                ..Default::default()
+                phrase_failed_attempts: 0,
+                phrase_locked_until: None,
             },
         )
         .unwrap();
@@ -16862,19 +16465,17 @@ mod duress_gate_tests {
 
         let result = cmd_osl_verify_gate_password(&state, "wrong-password".to_owned()).unwrap();
 
-        assert_eq!(result.result, "wrong");
+        assert_eq!(result.result, "duress");
         assert_eq!(
             result.attempts_used,
             crate::main_password::DURESS_WRONG_PASSWORD_ATTEMPT_LIMIT
         );
-        assert_eq!(
-            result.lockout_seconds_remaining,
-            crate::main_password::PASSWORD_COOLDOWN_SECONDS as i64
-        );
-        assert!(account_dir.join("identity.json").exists());
-        assert!(account_dir.join("prekeys.json").exists());
-        assert!(account_dir.join("store").exists());
-        assert!(base_dir.join("password_marker.json").exists());
+        assert_eq!(result.lockout_seconds_remaining, 0);
+        assert!(!account_dir.join("identity.json").exists());
+        assert!(!account_dir.join("prekeys.json").exists());
+        assert!(!account_dir.join("store").exists());
+        assert!(!base_dir.join("password_marker.json").exists());
+        assert_eq!(crate::main_password::get_file_storage_key(), None);
     }
 }
 
@@ -16949,23 +16550,20 @@ pub fn cmd_osl_verify_gate_password(
     state: &AppState,
     password: String,
 ) -> Result<GateVerifyDto, String> {
+    record_activity_on_command_entry();
     use crate::main_password::GateMatch;
     let dir = password_dir()?;
-    let _gate = crate::main_password::lock_gate_submissions()?;
+    // Lockout-window check first (same as verify_main_password).
     let mut lock = crate::main_password::read_lockout_pub(&dir);
-    let elapsed_ms = crate::main_password::elapsed_realtime_ms()?;
-    if let Some((attempts_used, lockout_seconds_remaining)) =
-        crate::main_password::refuse_or_prepare_gate_submission(
-            &dir,
-            &mut lock,
-            elapsed_ms,
-        )?
-    {
-        return Ok(GateVerifyDto {
-            result: "wrong".to_string(),
-            lockout_seconds_remaining,
-            attempts_used,
-        });
+    let now = crate::main_password::now_unix_secs_pub();
+    if let Some(until) = lock.password_locked_until {
+        if now < until {
+            return Ok(GateVerifyDto {
+                result: "wrong".to_string(),
+                lockout_seconds_remaining: until - now,
+                attempts_used: lock.password_failed_attempts,
+            });
+        }
     }
     let marker = crate::main_password::read_marker_pub(&dir)?;
     let outcome = crate::main_password::verify_gate_password_with_marker(&marker, &password)?;
@@ -17040,8 +16638,6 @@ pub fn cmd_osl_verify_gate_password(
             // deferred worker only after this local reload succeeds.
             lock.password_failed_attempts = 0;
             lock.password_locked_until = None;
-            lock.password_cooldown_started_elapsed_ms = None;
-            lock.password_cooldown_deadline_elapsed_ms = None;
             let _ = crate::main_password::write_lockout_pub(&dir, &lock);
             Ok(GateVerifyDto {
                 result: "main".to_string(),
@@ -17055,8 +16651,6 @@ pub fn cmd_osl_verify_gate_password(
             // distinguishing main from stealth via counter dynamics).
             lock.password_failed_attempts = 0;
             lock.password_locked_until = None;
-            lock.password_cooldown_started_elapsed_ms = None;
-            lock.password_cooldown_deadline_elapsed_ms = None;
             let _ = crate::main_password::write_lockout_pub(&dir, &lock);
             Ok(GateVerifyDto {
                 result: "stealth".to_string(),
@@ -17067,8 +16661,6 @@ pub fn cmd_osl_verify_gate_password(
         GateMatch::Duress => {
             lock.password_failed_attempts = 0;
             lock.password_locked_until = None;
-            lock.password_cooldown_started_elapsed_ms = None;
-            lock.password_cooldown_deadline_elapsed_ms = None;
             let _ = crate::main_password::write_lockout_pub(&dir, &lock);
             crate::main_password::execute_gate_duress(state)?;
             Ok(GateVerifyDto {
@@ -17080,8 +16672,6 @@ pub fn cmd_osl_verify_gate_password(
         GateMatch::Burn => {
             lock.password_failed_attempts = 0;
             lock.password_locked_until = None;
-            lock.password_cooldown_started_elapsed_ms = None;
-            lock.password_cooldown_deadline_elapsed_ms = None;
             let _ = crate::main_password::write_lockout_pub(&dir, &lock);
             Ok(GateVerifyDto {
                 result: "burn".to_string(),
@@ -17091,9 +16681,7 @@ pub fn cmd_osl_verify_gate_password(
         }
         GateMatch::Wrong => {
             match crate::main_password::record_wrong_password_attempt_or_duress(
-                state,
-                &mut lock,
-                elapsed_ms,
+                state, &mut lock, now,
             )? {
                 crate::main_password::WrongPasswordAttemptAction::Wrong {
                     attempts_used,
@@ -17103,6 +16691,16 @@ pub fn cmd_osl_verify_gate_password(
                     Ok(GateVerifyDto {
                         result: "wrong".to_string(),
                         lockout_seconds_remaining,
+                        attempts_used,
+                    })
+                }
+                crate::main_password::WrongPasswordAttemptAction::DuressTriggered {
+                    attempts_used,
+                } => {
+                    let _ = crate::main_password::write_lockout_pub(&dir, &lock);
+                    Ok(GateVerifyDto {
+                        result: "duress".to_string(),
+                        lockout_seconds_remaining: 0,
                         attempts_used,
                     })
                 }
@@ -17135,16 +16733,25 @@ pub struct BurnScopeDataDto {
     pub channel_id: String,
 }
 
+fn channel_ids_for_server(state: &AppState, server_id: &str) -> Vec<String> {
+    let gl = state.guild_list.lock().expect("guild_list mutex poisoned");
+    gl.iter()
+        .find(|g| g.id == server_id)
+        .map(|g| g.channel_ids.clone())
+        .unwrap_or_default()
+}
+
 /// Destroy local message rows for the channel(s) covered by
 /// `scope`. Per spec 7d-FIX1 Task 3a + 7d-D Task 2:
 ///   - DM and server_channel_full scopes resolve to a single
 ///     channel_id and `DELETE FROM messages WHERE channel_id = ?`.
 ///   - gc_full (7d-D): scope_id IS the GC channel_id — same
 ///     single-channel DELETE as DM.
-///   - gc_per_user and server_full / server_full_per_user remain
-///     NOT implemented in this phase (they'd require either
-///     per-sender row filtering or enumerating multiple
-///     channel_ids); we return a not-implemented error string
+///   - server_full / server_full_per_user enumerate the current
+///     gateway-provided guild channel inventory and delete each
+///     channel in that server.
+///   - gc_per_user remains NOT implemented in this phase (it would
+///     require per-sender row filtering); we return a not-implemented error string
 ///     so the JS caller can surface it but the rest of the burn
 ///     flow keeps going.
 pub fn cmd_osl_burn_scope_data(
@@ -17174,11 +16781,38 @@ pub fn cmd_osl_burn_scope_data(
             ));
         }
         "server_full" | "server_full_per_user" => {
-            return Err(format!(
-                "OSL: burn_scope_data: server_full burn not yet implemented (scope_id={scope_id}) — \
-                 deferred, see 7d-D spec",
-                scope_id = crate::log_id::log_id(&scope_id)
-            ));
+            let server_id = server_id.as_deref().unwrap_or(scope_id.as_str());
+            let channel_ids = channel_ids_for_server(state, server_id);
+            if channel_ids.is_empty() {
+                return Err(format!(
+                    "OSL: burn_scope_data: server_full has no channel inventory (server_id={scope_id})",
+                    scope_id = crate::log_id::log_id(server_id)
+                ));
+            }
+            let rows = if let Some(store) = state
+                .message_store
+                .lock()
+                .expect("message_store mutex poisoned")
+                .as_ref()
+            {
+                let mut rows = 0usize;
+                for channel_id in &channel_ids {
+                    rows += store
+                        .delete_messages_in_channel(channel_id)
+                        .map_err(|e| format!("OSL: delete_messages_in_channel: {e}"))?;
+                }
+                rows
+            } else {
+                0
+            };
+            eprintln!(
+                "[OSL][burn] destroyed {rows} rows across {} channels for server {server_id}",
+                channel_ids.len()
+            );
+            return Ok(BurnScopeDataDto {
+                rows_destroyed: rows,
+                channel_id: server_id.to_string(),
+            });
         }
         other => {
             return Err(format!("OSL: burn_scope_data: unknown scope_kind={other}"));
@@ -17442,8 +17076,9 @@ pub fn cmd_osl_mark_scope_burned(
         }
         g.version = 1;
     }
-    persist_burned_scopes_now(state);
-    record_burn_ledger_enrollment(state);
+    if persist_burned_scopes_now(state).is_ok() {
+        record_burn_ledger_enrollment(state);
+    }
     Ok(())
 }
 
@@ -17531,26 +17166,32 @@ pub fn cmd_osl_unburn_scope(
     scope_id: String,
 ) -> Result<bool, String> {
     record_activity_on_command_entry();
-    let removed = {
-        let mut g = state
-            .burned_scopes
-            .lock()
-            .expect("burned_scopes mutex poisoned");
-        let before = g.scopes.len();
-        g.scopes
-            .retain(|e| !(e.scope_kind == scope_kind && e.scope_id == scope_id));
-        let after = g.scopes.len();
-        if after < before {
-            g.version = 1;
-            true
-        } else {
-            false
+    let mut g = state
+        .burned_scopes
+        .lock()
+        .expect("burned_scopes mutex poisoned");
+    let before = g.scopes.len();
+    let mut next = g.clone();
+    next.scopes
+        .retain(|e| !(e.scope_kind == scope_kind && e.scope_id == scope_id));
+    if next.scopes.len() == before {
+        return Ok(false);
+    }
+    let dir = match keystore::osl_config_dir() {
+        Ok(d) => d,
+        Err(e) => {
+            record_persist_error(state, "burned_scopes dir resolve", &e);
+            return Err(format!("burned_scopes dir resolve: {e}"));
         }
     };
-    if removed {
-        persist_burned_scopes_now(state);
+    let path = dir.join("burned_scopes.json");
+    next.version = 1;
+    if let Err(e) = crate::burned_scopes_file::write_burned_scopes(&path, &next) {
+        record_persist_error(state, "burned_scopes.json", &e);
+        return Err(format!("burned_scopes.json: {e}"));
     }
-    Ok(removed)
+    *g = next;
+    Ok(true)
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -17573,24 +17214,11 @@ pub fn cmd_osl_membership_update(
     member_ids: Vec<String>,
 ) -> Result<(), String> {
     record_activity_on_command_entry();
-    let unique: std::collections::HashSet<_> = member_ids.iter().collect();
-    crate::membership_size_rules::enforce_group_chat_candidate_size(unique.len())
-        .map_err(str::to_owned)?;
-    let mut membership = state
-        .scope_membership
-        .lock()
-        .expect("scope_membership mutex poisoned");
     let mut g = state
         .channel_members
         .lock()
         .expect("channel_members mutex poisoned");
-    membership
-        .set_gc_members(&channel_id, member_ids.iter())
-        .map_err(str::to_owned)?;
     g.insert(channel_id, member_ids);
-    drop(g);
-    drop(membership);
-    persist_scope_membership_now(state);
     Ok(())
 }
 
@@ -17993,20 +17621,20 @@ pub fn cmd_osl_create_group_conversation(
     let name = normalize_group_name(name)?;
     let member_ids = normalize_group_member_ids(member_ids)?;
     let group_id = named_group_id(&name, &member_ids);
-    let mut membership = state
-        .scope_membership
-        .lock()
-        .expect("scope_membership mutex poisoned");
-    let mut channel_members = state
-        .channel_members
-        .lock()
-        .expect("channel_members mutex poisoned");
-    membership
-        .set_gc_members(&group_id, member_ids.iter())
-        .map_err(str::to_owned)?;
-    channel_members.insert(group_id.clone(), member_ids.clone());
-    drop(channel_members);
-    drop(membership);
+    {
+        let mut membership = state
+            .scope_membership
+            .lock()
+            .expect("scope_membership mutex poisoned");
+        membership.note_gc_members(&group_id, member_ids.iter());
+    }
+    {
+        let mut channel_members = state
+            .channel_members
+            .lock()
+            .expect("channel_members mutex poisoned");
+        channel_members.insert(group_id.clone(), member_ids.clone());
+    }
     persist_scope_membership_now(state);
     let scope = crate::scope::Scope::gc(group_id.clone());
     Ok(NamedGroupConversationDto {
@@ -18049,8 +17677,6 @@ fn normalize_group_member_ids(member_ids: Vec<String>) -> Result<Vec<String>, St
     if normalized.len() < 3 {
         return Err("OSL: group conversations require at least three members".to_owned());
     }
-    crate::membership_size_rules::enforce_group_chat_candidate_size(normalized.len())
-        .map_err(str::to_owned)?;
     Ok(normalized)
 }
 
@@ -18104,9 +17730,10 @@ pub fn cmd_osl_note_scope_membership(
                 }
                 _ => false,
             },
-            crate::scope::ScopeKind::Gc => m
-                .admit_gc_members(&scope.id, &member_ids)
-                .map_err(str::to_owned)?,
+            crate::scope::ScopeKind::Gc => {
+                m.note_gc_members(&scope.id, &member_ids);
+                true
+            }
             // Dm: the peer IS the scope (no accrual needed).
             // ServerFull: accrues via its channels' observations.
             crate::scope::ScopeKind::Dm | crate::scope::ScopeKind::ServerFull => false,
@@ -18609,6 +18236,68 @@ pub fn cmd_osl_check_server_person_allowed(
         permission_name: permission.name().to_string(),
         allowed: true,
     })
+}
+
+pub fn cmd_osl_set_server_person_timed_out(
+    state: &AppState,
+    server_id: String,
+    person_name: String,
+) -> Result<bool, String> {
+    record_activity_on_command_entry();
+    let mut grants = state
+        .server_permissions
+        .lock()
+        .expect("server_permissions mutex poisoned");
+    grants
+        .set_person_timed_out(server_id, person_name)
+        .map_err(|error| error.to_string())
+}
+
+pub fn cmd_osl_clear_server_person_timeout(
+    state: &AppState,
+    server_id: String,
+    person_name: String,
+) -> Result<bool, String> {
+    record_activity_on_command_entry();
+    let mut grants = state
+        .server_permissions
+        .lock()
+        .expect("server_permissions mutex poisoned");
+    grants
+        .clear_person_timeout(&server_id, &person_name)
+        .map_err(|error| error.to_string())
+}
+
+pub fn cmd_osl_accept_voice_join(
+    state: &AppState,
+    server_id: String,
+    room_id: String,
+    person_name: String,
+) -> Result<crate::server_membership::VoicePermissionAcceptance, String> {
+    record_activity_on_command_entry();
+    let grants = state
+        .server_permissions
+        .lock()
+        .expect("server_permissions mutex poisoned");
+    grants
+        .accepts_voice_join(server_id, room_id, person_name)
+        .map_err(|error| error.to_string())
+}
+
+pub fn cmd_osl_accept_voice_speak_packet(
+    state: &AppState,
+    server_id: String,
+    room_id: String,
+    person_name: String,
+) -> Result<crate::server_membership::VoicePermissionAcceptance, String> {
+    record_activity_on_command_entry();
+    let grants = state
+        .server_permissions
+        .lock()
+        .expect("server_permissions mutex poisoned");
+    grants
+        .accepts_voice_speak_packet(server_id, room_id, person_name)
+        .map_err(|error| error.to_string())
 }
 
 pub fn cmd_osl_set_limited_channel_members(
@@ -19348,6 +19037,52 @@ pub fn cmd_osl_save_bad_message_rule(
     })
 }
 
+/// TASK 1460: the read-only answer to "Test these rules".
+///
+/// `deleted_count` and `deletion_call_count` are reported next to the matches
+/// so the rules page can show what would be marked *and* that nothing was
+/// removed to find it out.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct BadMessagePreviewDto {
+    pub scanned_message_count: usize,
+    pub match_count: usize,
+    pub matches: Vec<crate::bad_message_preview::BadMessagePreviewMatch>,
+    pub deleted_count: usize,
+    pub deletion_call_count: usize,
+    pub read_call_count: usize,
+}
+
+/// Run the saved bad-message rules over `messages` as a find-only preview.
+pub fn cmd_osl_preview_bad_message_rules(
+    state: &AppState,
+    messages: Vec<crate::bad_message_preview::PreviewMessage>,
+) -> Result<BadMessagePreviewDto, String> {
+    record_activity_on_command_entry();
+    let rules: Vec<crate::bad_message_rules::BadMessageRule> = {
+        let prefs = state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned");
+        let mut rules: Vec<_> = prefs.bad_message_rules.values().cloned().collect();
+        rules.sort_by(|a, b| a.rule_name.cmp(&b.rule_name));
+        rules
+    };
+    if rules.is_empty() {
+        return Err("OSL: no saved bad-message rules to test".to_string());
+    }
+
+    let connection = crate::bad_message_preview::FixtureServiceConnection::new(messages);
+    let preview = crate::bad_message_preview::preview_bad_message_rules(&rules, &connection)?;
+    Ok(BadMessagePreviewDto {
+        scanned_message_count: preview.scanned_message_count,
+        match_count: preview.match_count(),
+        matches: preview.matches,
+        deleted_count: preview.deleted_count,
+        deletion_call_count: connection.deletion_call_count(),
+        read_call_count: connection.read_call_count(),
+    })
+}
+
 /// TASK 1459: AutoScrub's bad-message rule listing. Reuses the same
 /// [`BadMessageRuleDto`] shape and the same
 /// [`crate::bad_message_rules::BadMessageRule`] rule types as normal Scrub's
@@ -19412,6 +19147,57 @@ pub fn cmd_osl_save_autoscrub_bad_message_rule(
     })
 }
 
+/// Persist the explicit agreement shown before AutoScrub's Find-and-delete
+/// mode. The validator runs before mutation, so an unticked or incomplete
+/// replacement leaves any prior agreement intact.
+pub fn cmd_osl_save_autoscrub_deletion_agreement(
+    state: &AppState,
+    request: crate::autoscrub_deletion_agreement::AutoScrubDeletionAgreementRequest,
+    config_dir: Option<std::path::PathBuf>,
+) -> Result<crate::autoscrub_deletion_agreement::AutoScrubDeletionAgreement, String> {
+    record_activity_on_command_entry();
+    let agreement = {
+        let prefs = state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned");
+        crate::autoscrub_deletion_agreement::build_deletion_agreement(
+            request,
+            &prefs.autoscrub_bad_message_rules,
+        )?
+    };
+    {
+        let mut prefs = state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned");
+        prefs.version = crate::app_preferences::APP_PREFERENCES_VERSION;
+        prefs.autoscrub_deletion_agreement = Some(agreement.clone());
+    }
+    persist_app_preferences_now(state, config_dir);
+    Ok(agreement)
+}
+
+/// The backend authority check for the "Find and delete" action. It refuses
+/// until a complete agreement has been saved, and refuses again if the action
+/// names different accounts/rules or a saved private-word rule has changed.
+pub fn cmd_osl_authorize_autoscrub_find_and_delete(
+    state: &AppState,
+    selected_account_ids: Vec<String>,
+    selected_rule_names: Vec<String>,
+) -> Result<crate::autoscrub_deletion_agreement::AutoScrubFindAndDeleteAuthorization, String> {
+    record_activity_on_command_entry();
+    let prefs = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned");
+    crate::autoscrub_deletion_agreement::authorize_find_and_delete(
+        prefs.autoscrub_deletion_agreement.as_ref(),
+        &selected_account_ids,
+        &selected_rule_names,
+        &prefs.autoscrub_bad_message_rules,
+    )
+}
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct NewFriendDefaultsDto {
     pub account_reach: String,
@@ -19666,6 +19452,12 @@ pub struct TelegramWhitelistKindDto {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MessengerWhitelistKindDto {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TelegramAutoWhitelistRuleDto {
     pub rule_lookup: String,
     pub choice: String,
@@ -19715,6 +19507,17 @@ pub fn cmd_osl_get_telegram_whitelist_kinds() -> Result<Vec<TelegramWhitelistKin
     Ok(crate::auto_whitelist_rules::TelegramWhitelistKind::ALL
         .into_iter()
         .map(|kind| TelegramWhitelistKindDto {
+            id: kind.id().to_string(),
+            name: kind.name().to_string(),
+        })
+        .collect())
+}
+
+pub fn cmd_osl_get_messenger_whitelist_kinds() -> Result<Vec<MessengerWhitelistKindDto>, String> {
+    record_activity_on_command_entry();
+    Ok(crate::auto_whitelist_rules::MessengerWhitelistKind::ALL
+        .into_iter()
+        .map(|kind| MessengerWhitelistKindDto {
             id: kind.id().to_string(),
             name: kind.name().to_string(),
         })
@@ -19935,14 +19738,12 @@ fn auto_rule_lookup_for_record(
     }
 }
 
-/// Applies the saved policy to a place which was actually discovered by a
-/// provider.  The provider connector calls this production policy boundary;
-/// `cmd_osl_new_place` is only the legacy IPC wrapper around it.
-pub fn apply_discovered_place(
+pub fn cmd_osl_new_place(
     state: &AppState,
     record: crate::allowed_places::AllowedPlaceRecord,
     app_data_dir: Option<PathBuf>,
 ) -> Result<NewPlaceDecisionDto, String> {
+    record_activity_on_command_entry();
     record.validate().map_err(|error| format!("OSL: {error}"))?;
     let (app_kind, rule) = {
         let prefs = state
@@ -20007,15 +19808,6 @@ pub fn apply_discovered_place(
             ))
         }
     }
-}
-
-pub fn cmd_osl_new_place(
-    state: &AppState,
-    record: crate::allowed_places::AllowedPlaceRecord,
-    app_data_dir: Option<PathBuf>,
-) -> Result<NewPlaceDecisionDto, String> {
-    record_activity_on_command_entry();
-    apply_discovered_place(state, record, app_data_dir)
 }
 
 pub fn cmd_osl_direct_new_place(
@@ -20104,27 +19896,14 @@ pub struct AllowedPlaceSearchResultDto {
     pub stable_id: String,
     pub place_name: String,
     pub person_name: String,
+    /// TASK 0868 — whether this place is allowed right now, so the Whitelisting
+    /// screen can draw the row's tick from the store instead of guessing.
+    pub allowed: bool,
 }
 
-pub fn cmd_osl_search_allowed_places(
-    app_data_dir: PathBuf,
-    query: String,
-) -> Result<Vec<AllowedPlaceSearchResultDto>, String> {
-    record_activity_on_command_entry();
-    let results = crate::allowed_places::search_allowed_place_records(&app_data_dir, &query)
-        .map_err(|error| format!("OSL: {error}"))?
-        .into_iter()
-        .map(|place| AllowedPlaceSearchResultDto {
-            app: place.app,
-            account: place.account,
-            kind: place.kind,
-            stable_id: place.stable_id,
-            place_name: place.place_name,
-            person_name: place.person_name,
-        })
-        .collect();
-    Ok(results)
-}
+
+
+
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct SignalWhitelistKindDto {
@@ -20273,6 +20052,9 @@ pub struct MessageDefaultsDto {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct DirectNewMessagePlanDto {
+    /// Fresh opaque identity for this exact plan. Callers must not reuse a
+    /// previous plan merely because its defaults happen to match.
+    pub plan_id: String,
     pub kind: String,
     pub conversation_kind: String,
     pub scope: crate::app_preferences::MessageScopeDefault,
@@ -20411,6 +20193,8 @@ pub fn cmd_osl_read_message_default_cover_writing(state: &AppState) -> Result<St
 pub fn cmd_osl_start_direct_new_message_plan(
     state: &AppState,
 ) -> Result<DirectNewMessagePlanDto, String> {
+    use rand::{rngs::OsRng, RngCore};
+
     record_activity_on_command_entry();
     let defaults = state
         .app_preferences
@@ -20418,7 +20202,17 @@ pub fn cmd_osl_start_direct_new_message_plan(
         .expect("app_preferences mutex poisoned")
         .message_defaults
         .clone();
+    let mut plan_id_bytes = [0_u8; 16];
+    OsRng.fill_bytes(&mut plan_id_bytes);
+    let plan_id = format!(
+        "plan-{}",
+        plan_id_bytes
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    );
     Ok(DirectNewMessagePlanDto {
+        plan_id,
         kind: "direct".to_string(),
         conversation_kind: "direct".to_string(),
         scope: defaults.scope,
@@ -21293,6 +21087,21 @@ pub struct AlertModeChoiceDto {
     pub mode: String,
 }
 
+/// The concrete local effects requested for one received message.
+///
+/// The trusted desktop host consumes these two lists directly: each notice is
+/// displayed once and each sound is played once. Keeping the effects separate
+/// makes it impossible for a quiet alert to accidentally gain a sound merely
+/// because it has a notice.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ReceivedMessageAlertDto {
+    pub message_id: String,
+    pub mode: String,
+    pub notices: Vec<String>,
+    pub sounds: Vec<String>,
+}
+
 impl From<crate::app_preferences::AlertModeChoice> for AlertModeChoiceDto {
     fn from(mode: crate::app_preferences::AlertModeChoice) -> Self {
         Self {
@@ -21328,6 +21137,41 @@ pub fn cmd_osl_read_alert_mode_choice(state: &AppState) -> Result<AlertModeChoic
         .expect("app_preferences mutex poisoned")
         .alert_mode_choice;
     Ok(mode.into())
+}
+
+/// Dispatch the local notice and sound effects for one message using the
+/// owner's saved alert mode. The message itself is never suppressed; this only
+/// determines the separate local attention effects.
+pub fn cmd_osl_alert_for_received_message(
+    state: &AppState,
+    message_id: String,
+) -> Result<ReceivedMessageAlertDto, String> {
+    record_activity_on_command_entry();
+    let message_id = message_id.trim();
+    if message_id.is_empty() {
+        return Err("OSL: received-message alert requires a message id".to_owned());
+    }
+
+    let mode = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned")
+        .alert_mode_choice;
+    let effect_id = message_id.to_owned();
+    let (notices, sounds) = match mode {
+        crate::app_preferences::AlertModeChoice::Silent => (Vec::new(), Vec::new()),
+        crate::app_preferences::AlertModeChoice::Quiet => (vec![effect_id], Vec::new()),
+        crate::app_preferences::AlertModeChoice::Normal => {
+            (vec![effect_id.clone()], vec![effect_id])
+        }
+    };
+
+    Ok(ReceivedMessageAlertDto {
+        message_id: message_id.to_owned(),
+        mode: mode.words().to_owned(),
+        notices,
+        sounds,
+    })
 }
 
 pub fn cmd_osl_reset_alert_mode_choice(
@@ -21601,40 +21445,7 @@ pub fn cmd_osl_read_discovery_replies_switch(state: &AppState) -> Result<String,
         .app_preferences
         .lock()
         .expect("app_preferences mutex poisoned");
-    if prefs.discovery_off_pending {
-        Ok("turning_off".to_owned())
-    } else {
-        Ok(prefs.discovery_replies.as_str().to_owned())
-    }
-}
-
-fn persist_discovery_preferences(
-    state: &AppState,
-    prefs: &crate::app_preferences::AppPreferences,
-    config_dir: Option<&Path>,
-) -> Result<(), String> {
-    let dir = match config_dir {
-        Some(dir) => dir.to_path_buf(),
-        None => keystore::osl_base_dir().map_err(|error| error.to_string())?,
-    };
-    let path = dir.join("app_preferences.json");
-    crate::app_preferences::write_app_preferences(&path, prefs).map_err(|error| {
-        record_persist_error(state, "app_preferences.json", &error);
-        error
-    })
-}
-
-fn discovery_client_authority(
-    state: &AppState,
-) -> Result<Option<(KeyServerClient, keystore::Identity)>, String> {
-    let client = state.keyserver_slot().clone();
-    let identity = state.identity_slot().clone();
-    match (client, identity) {
-        (Some(client), Some(identity)) => Ok(Some((client, identity))),
-        (None, None) => Ok(None),
-        (None, Some(_)) => Err("OSL: discovery transition needs a key server".to_owned()),
-        (Some(_), None) => Err("OSL: discovery transition needs a loaded identity".to_owned()),
-    }
+    Ok(prefs.discovery_replies.as_str().to_owned())
 }
 
 pub fn cmd_osl_set_discovery_replies_switch(
@@ -21644,103 +21455,16 @@ pub fn cmd_osl_set_discovery_replies_switch(
 ) -> Result<String, String> {
     record_activity_on_command_entry();
     let switch = crate::app_preferences::parse_discovery_replies_switch(&value)?;
-    let _transition = state
-        .discovery_transition_lock
-        .lock()
-        .expect("discovery_transition_lock mutex poisoned");
-    let current = state
-        .app_preferences
-        .lock()
-        .expect("app_preferences mutex poisoned")
-        .clone();
-
-    if switch == crate::app_preferences::DiscoveryRepliesSwitch::Off {
-        if current.discovery_replies == switch && !current.discovery_off_pending {
-            return Ok("off".to_owned());
-        }
-
-        // This durable intent is written before network I/O. A crash or
-        // transport failure therefore leaves publishing and replies gated,
-        // while reads say `turning_off` rather than prematurely claiming off.
-        let mut pending = current;
-        pending.version = crate::app_preferences::APP_PREFERENCES_VERSION;
-        pending.discovery_off_pending = true;
-        persist_discovery_preferences(state, &pending, config_dir.as_deref())?;
-        *state
+    {
+        let mut prefs = state
             .app_preferences
             .lock()
-            .expect("app_preferences mutex poisoned") = pending.clone();
-
-        let (client, identity) = discovery_client_authority(state)?.ok_or_else(|| {
-            "OSL: enabled discovery transition needs a loaded identity and key server".to_owned()
-        })?;
-        client
-            .take_back_discovery_cards(&identity)
-            .map_err(|error| format!("OSL: discovery take-back failed: {error}"))?;
-
-        let mut finished = pending;
-        finished.discovery_replies = crate::app_preferences::DiscoveryRepliesSwitch::Off;
-        finished.discovery_off_pending = false;
-        persist_discovery_preferences(state, &finished, config_dir.as_deref())?;
-        *state
-            .app_preferences
-            .lock()
-            .expect("app_preferences mutex poisoned") = finished;
-        return Ok("off".to_owned());
+            .expect("app_preferences mutex poisoned");
+        prefs.version = crate::app_preferences::APP_PREFERENCES_VERSION;
+        prefs.discovery_replies = switch;
     }
-
-    if let Some((client, identity)) = discovery_client_authority(state)? {
-        client
-            .enable_discovery_replies(&identity)
-            .map_err(|error| format!("OSL: discovery enable failed: {error}"))?;
-    }
-    let mut enabled = current;
-    enabled.version = crate::app_preferences::APP_PREFERENCES_VERSION;
-    enabled.discovery_replies = crate::app_preferences::DiscoveryRepliesSwitch::On;
-    enabled.discovery_off_pending = false;
-    persist_discovery_preferences(state, &enabled, config_dir.as_deref())?;
-    *state
-        .app_preferences
-        .lock()
-        .expect("app_preferences mutex poisoned") = enabled;
-    Ok("on".to_owned())
-}
-
-/// Finish a transition whose durable intent survived a process/OS restart.
-/// This is safe to call repeatedly: take-back and the final preference write
-/// are idempotent.
-pub fn cmd_osl_resume_discovery_off_transition(
-    state: &AppState,
-    config_dir: Option<std::path::PathBuf>,
-) -> Result<String, String> {
-    record_activity_on_command_entry();
-    let _transition = state
-        .discovery_transition_lock
-        .lock()
-        .expect("discovery_transition_lock mutex poisoned");
-    let mut prefs = state
-        .app_preferences
-        .lock()
-        .expect("app_preferences mutex poisoned")
-        .clone();
-    if !prefs.discovery_off_pending {
-        return Ok(prefs.discovery_replies.as_str().to_owned());
-    }
-    let (client, identity) = discovery_client_authority(state)?.ok_or_else(|| {
-        "OSL: pending discovery take-back needs a loaded identity and key server".to_owned()
-    })?;
-    client
-        .take_back_discovery_cards(&identity)
-        .map_err(|error| format!("OSL: discovery take-back resume failed: {error}"))?;
-    prefs.discovery_replies = crate::app_preferences::DiscoveryRepliesSwitch::Off;
-    prefs.discovery_off_pending = false;
-    prefs.version = crate::app_preferences::APP_PREFERENCES_VERSION;
-    persist_discovery_preferences(state, &prefs, config_dir.as_deref())?;
-    *state
-        .app_preferences
-        .lock()
-        .expect("app_preferences mutex poisoned") = prefs;
-    Ok("off".to_owned())
+    persist_app_preferences_now(state, config_dir);
+    Ok(switch.as_str().to_owned())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -21758,13 +21482,6 @@ pub fn cmd_osl_walk_discovery_publish_path(
         .app_preferences
         .lock()
         .expect("app_preferences mutex poisoned");
-    if prefs.discovery_off_pending {
-        return Ok(DiscoveryPublishReportDto {
-            cards_written: 0,
-            answers_written: 0,
-            status: "skipped: discovery replies are turning off".to_owned(),
-        });
-    }
     if prefs.discovery_replies == crate::app_preferences::DiscoveryRepliesSwitch::Off {
         return Ok(DiscoveryPublishReportDto {
             cards_written: 0,
@@ -21784,91 +21501,6 @@ pub fn cmd_osl_walk_discovery_publish_path(
         answers_written: cards_written,
         status: "published".to_owned(),
     })
-}
-
-pub fn cmd_osl_publish_discovery_card(
-    state: &AppState,
-    app_id: String,
-    account_handle: String,
-    sealed_note: String,
-) -> Result<DiscoveryPublishReportDto, String> {
-    record_activity_on_command_entry();
-    let _transition = state
-        .discovery_transition_lock
-        .lock()
-        .expect("discovery_transition_lock mutex poisoned");
-    let prefs = state
-        .app_preferences
-        .lock()
-        .expect("app_preferences mutex poisoned")
-        .clone();
-    if prefs.discovery_off_pending
-        || prefs.discovery_replies == crate::app_preferences::DiscoveryRepliesSwitch::Off
-    {
-        return Ok(DiscoveryPublishReportDto {
-            cards_written: 0,
-            answers_written: 0,
-            status: "refused: discovery replies are off".to_owned(),
-        });
-    }
-    let setting = match prefs.discovery_setting {
-        crate::app_preferences::DiscoverySetting::Never => {
-            return Ok(DiscoveryPublishReportDto {
-                cards_written: 0,
-                answers_written: 0,
-                status: "refused: discovery setting is never".to_owned(),
-            });
-        }
-        crate::app_preferences::DiscoverySetting::Allowed => "allowed",
-        crate::app_preferences::DiscoverySetting::SharedRoom => "shared-room",
-        crate::app_preferences::DiscoverySetting::Anyone => "allowed",
-    };
-    let (client, identity) = discovery_client_authority(state)?.ok_or_else(|| {
-        "OSL: discovery publish needs a loaded identity and key server".to_owned()
-    })?;
-    let published = client
-        .publish_discovery_card(&identity, &app_id, &account_handle, setting, &sealed_note)
-        .map_err(|error| format!("OSL: discovery publish failed: {error}"))?;
-    Ok(DiscoveryPublishReportDto {
-        cards_written: published.wrote as usize,
-        answers_written: 0,
-        status: "published".to_owned(),
-    })
-}
-
-pub fn cmd_osl_answer_discovery_ping(state: &AppState) -> Result<Vec<u8>, String> {
-    record_activity_on_command_entry();
-    let _transition = state
-        .discovery_transition_lock
-        .lock()
-        .expect("discovery_transition_lock mutex poisoned");
-    let prefs = state
-        .app_preferences
-        .lock()
-        .expect("app_preferences mutex poisoned");
-    if prefs.discovery_off_pending
-        || prefs.discovery_replies == crate::app_preferences::DiscoveryRepliesSwitch::Off
-        || prefs.discovery_setting == crate::app_preferences::DiscoverySetting::Never
-    {
-        Ok(Vec::new())
-    } else {
-        Ok(b"OSL-DISCOVERY-REPLY-v1".to_vec())
-    }
-}
-
-pub fn cmd_osl_query_discovery_card(
-    state: &AppState,
-    drawer_name: String,
-    label: String,
-) -> Result<Option<keystore::client::DiscoveryCardResponse>, String> {
-    record_activity_on_command_entry();
-    let client = state
-        .keyserver_slot()
-        .clone()
-        .ok_or_else(|| "OSL: discovery query needs a key server".to_owned())?;
-    client
-        .read_discovery_card(&drawer_name, &label)
-        .map_err(|error| format!("OSL: discovery query failed: {error}"))
 }
 
 // ---- Phase 9-D: onboarding tour + VPN warning ----
@@ -22041,12 +21673,12 @@ pub fn cmd_osl_list_burned_scopes(state: &AppState) -> Result<Vec<BurnedScopeDto
         .collect())
 }
 
-fn persist_burned_scopes_now(state: &AppState) {
+fn persist_burned_scopes_now(state: &AppState) -> Result<(), String> {
     let dir = match keystore::osl_config_dir() {
         Ok(d) => d,
         Err(e) => {
-            record_persist_error(state, "burned_scopes dir resolve", e);
-            return;
+            record_persist_error(state, "burned_scopes dir resolve", &e);
+            return Err(format!("burned_scopes dir resolve: {e}"));
         }
     };
     let path = dir.join("burned_scopes.json");
@@ -22056,8 +21688,10 @@ fn persist_burned_scopes_now(state: &AppState) {
         .expect("burned_scopes mutex poisoned");
     if let Err(e) = crate::burned_scopes_file::write_burned_scopes(&path, &g) {
         drop(g);
-        record_persist_error(state, "burned_scopes.json", e);
+        record_persist_error(state, "burned_scopes.json", &e);
+        return Err(format!("burned_scopes.json: {e}"));
     }
+    Ok(())
 }
 
 /// 7d-B3: wipe every OSL file. Also clears in-memory AppState so the
@@ -23670,10 +23304,17 @@ fn direct_chat_security_status(
     let Ok(peer_identity) = rn_peer_identity_from_entry(peer_discord_id, &peer_entry) else {
         return Ok(DirectChatSecurityStatus::refused());
     };
+    let local_identity = {
+        let identity = state.identity_slot();
+        let Some(identity) = identity.as_ref() else {
+            return Ok(DirectChatSecurityStatus::refused());
+        };
+        *identity.x25519_public.as_bytes()
+    };
     let Ok(store) = rn_session_store_from_config_dir() else {
         return Ok(DirectChatSecurityStatus::refused());
     };
-    let pin = match store.load_pin(peer_identity.as_bytes()) {
+    let pin = match store.load_pair_pin(&local_identity, peer_identity.as_bytes()) {
         Ok(pin) => pin,
         Err(_) => return Ok(DirectChatSecurityStatus::refused()),
     };
@@ -23965,6 +23606,7 @@ fn update_saved_friend_record(
                 .to_string(),
             block_state,
             choices: accepted_choices.unwrap_or_default(),
+            picture: None,
         });
     Ok(())
 }
@@ -24201,6 +23843,201 @@ pub fn cmd_osl_query_friends_tabs(state: &AppState) -> Result<SavedFriendsTabsQu
         blocked,
     })
 }
+
+
+// =====================================================================
+// TASK 0828 - Home "OSL Friends" panel rows.
+//
+// One row per accepted saved friend, carrying the three things the panel
+// draws: the username saved with that friend, the picture they permitted us
+// to show (or a coloured initial when no picture is permitted), and the saved
+// friend identifier the row is routed by.
+//
+// The picture rule is the one gate 0237 connected: a picture is only ever
+// carried for a person who is an accepted friend *and* who is on the permitted
+// list `AppState::friend_ids` — the same list `guard_picture_cache_access`
+// checks before any image is handed over. Everybody else — pending, declined,
+// blocked, or simply not permitted — gets the initial, and a person who is not
+// an accepted friend produces no row at all, so neither their identifier nor
+// any picture stored against them is in the answer.
+// =====================================================================
+
+/// Palette for the coloured first-letter circle a row falls back to.
+const HOME_FRIEND_INITIAL_COLOURS: [&str; 8] = [
+    "#2563eb", "#7c3aed", "#db2777", "#dc2626", "#ea580c", "#ca8a04", "#16a34a", "#0d9488",
+];
+
+/// A picture that was permitted and is being shown.
+pub const HOME_FRIEND_PICTURE_PRESENT: &str = "image-present";
+/// No permitted picture: the row draws its coloured initial instead.
+pub const HOME_FRIEND_PICTURE_ABSENT: &str = "image-absent";
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct HomeFriendRowDto {
+    /// The saved friend identifier (`StoredFriendRecord::record_id`) this row
+    /// is routed by.
+    pub friend_id: String,
+    /// The friend's own identity id, for the friend page this row opens.
+    pub osl_user_id: String,
+    /// The username saved with this friend.
+    pub username: String,
+    /// Only ever `Some` for a permitted picture.
+    pub picture: Option<String>,
+    pub picture_status: String,
+    /// Shown when no picture is permitted.
+    pub initial: String,
+    pub initial_colour: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct HomeFriendsPanelDto {
+    pub rows: Vec<HomeFriendRowDto>,
+    pub friend_count: usize,
+    /// How many of the rows carry a permitted picture.
+    pub picture_count: usize,
+}
+
+fn home_friend_is_shown(record: &crate::friend_request::StoredFriendRecord) -> bool {
+    record.state == crate::friend_request::StoredFriendState::Accepted
+        && record.block_state == crate::friend_request::StoredFriendBlockState::NotBlocked
+}
+
+fn home_friend_initial(username: &str) -> String {
+    username
+        .trim()
+        .chars()
+        .find(|character| !character.is_control() && !character.is_whitespace())
+        .unwrap_or('O')
+        .to_uppercase()
+        .collect()
+}
+
+fn home_friend_initial_colour(record_id: &str, remote_identity_id: &str) -> String {
+    let mut hash = Sha256::new();
+    hash.update(b"OSL-HOME-FRIEND-ROW-INITIAL-v1");
+    for part in [record_id, remote_identity_id] {
+        hash.update((part.len() as u64).to_le_bytes());
+        hash.update(part.as_bytes());
+    }
+    let digest = hash.finalize();
+    let index = usize::from(digest[0]) % HOME_FRIEND_INITIAL_COLOURS.len();
+    HOME_FRIEND_INITIAL_COLOURS[index].to_string()
+}
+
+fn home_friend_row(
+    record: &crate::friend_request::StoredFriendRecord,
+    permitted_ids: &std::collections::HashSet<String>,
+) -> HomeFriendRowDto {
+    // The picture leaves the store only for an accepted friend who is also on
+    // the permitted list. Anything else keeps `picture: None`.
+    let picture =
+        if home_friend_is_shown(record) && permitted_ids.contains(&record.remote_identity_id) {
+            record.picture.clone()
+        } else {
+            None
+        };
+    let picture_status = if picture.is_some() {
+        HOME_FRIEND_PICTURE_PRESENT
+    } else {
+        HOME_FRIEND_PICTURE_ABSENT
+    }
+    .to_string();
+    HomeFriendRowDto {
+        friend_id: record.record_id.clone(),
+        osl_user_id: record.remote_identity_id.clone(),
+        username: record.display_name.trim().to_string(),
+        picture,
+        picture_status,
+        initial: home_friend_initial(&record.display_name),
+        initial_colour: home_friend_initial_colour(&record.record_id, &record.remote_identity_id),
+    }
+}
+
+fn home_friend_permitted_ids(state: &AppState) -> std::collections::HashSet<String> {
+    state
+        .friend_ids
+        .lock()
+        .expect("friend_ids mutex poisoned")
+        .iter()
+        .cloned()
+        .collect()
+}
+
+/// Read the Home "OSL Friends" panel rows straight from saved state.
+pub fn cmd_osl_read_home_friend_rows(state: &AppState) -> Result<HomeFriendsPanelDto, String> {
+    record_activity_on_command_entry();
+    let dir = saved_friend_request_dir()?;
+    let file = load_saved_friend_request_file_with_dir(&dir)?;
+    let permitted_ids = home_friend_permitted_ids(state);
+    let mut rows = file
+        .friends
+        .iter()
+        .filter(|record| home_friend_is_shown(record))
+        .map(|record| home_friend_row(record, &permitted_ids))
+        .collect::<Vec<_>>();
+    rows.sort_by(|left, right| {
+        left.username
+            .cmp(&right.username)
+            .then_with(|| left.friend_id.cmp(&right.friend_id))
+    });
+    let picture_count = rows.iter().filter(|row| row.picture.is_some()).count();
+    Ok(HomeFriendsPanelDto {
+        friend_count: rows.len(),
+        picture_count,
+        rows,
+    })
+}
+
+/// Save (or clear, with `None`) the picture one accepted friend permitted for
+/// their Home row. A person who is not an accepted friend is refused by name;
+/// nothing is written for them.
+pub fn cmd_osl_save_home_friend_picture(
+    state: &AppState,
+    local_identity_id: String,
+    remote_identity_id: String,
+    picture: Option<String>,
+) -> Result<HomeFriendRowDto, String> {
+    record_activity_on_command_entry();
+    let local_identity_id = local_identity_id.trim().to_string();
+    let remote_identity_id = remote_identity_id.trim().to_string();
+    if local_identity_id.is_empty() || remote_identity_id.is_empty() {
+        return Err("OSL: friend picture fields are missing".to_string());
+    }
+    let picture = match picture {
+        Some(picture) => {
+            let picture = picture.trim().to_string();
+            if !picture.starts_with(crate::friend_request::FRIEND_PICTURE_PREFIX)
+                || picture.len() == crate::friend_request::FRIEND_PICTURE_PREFIX.len()
+                || picture.len() > crate::friend_request::MAX_FRIEND_PICTURE_BYTES
+            {
+                return Err("OSL: friend picture is not an inline image".to_string());
+            }
+            Some(picture)
+        }
+        None => None,
+    };
+
+    let dir = saved_friend_request_dir()?;
+    let mut file = load_saved_friend_request_file_with_dir(&dir)?;
+    let record = file
+        .friends
+        .iter_mut()
+        .find(|friend| {
+            friend.local_identity_id == local_identity_id
+                && friend.remote_identity_id == remote_identity_id
+        })
+        .ok_or_else(|| "OSL: friend is unknown".to_string())?;
+    if !home_friend_is_shown(record) {
+        return Err("OSL: friend picture is not permitted".to_string());
+    }
+    record.picture = picture;
+    let row = home_friend_row(record, &home_friend_permitted_ids(state));
+    save_saved_friend_request_file_with_dir(&dir, &file)?;
+    Ok(row)
+}
+
 
 pub fn cmd_osl_accept_saved_friend_request(
     state: &AppState,
@@ -24735,6 +24572,18 @@ impl ProtectedPlaceAction {
             Self::Scrub => "scrub",
         }
     }
+
+    /// Which half of a conversation this action belongs to, for the TASK 4263
+    /// honest-refusal guard. `Scrub` is deliberately neither: taking OSL's own
+    /// text back off a page is cleanup, not traffic, and a half restored
+    /// service must still be able to clean up after itself.
+    fn surface_direction(self) -> Option<SurfaceDirection> {
+        match self {
+            Self::Read | Self::Show => Some(SurfaceDirection::Receive),
+            Self::Type | Self::Send => Some(SurfaceDirection::Send),
+            Self::Scrub => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -24757,6 +24606,13 @@ pub fn cmd_osl_trace_allowed_place_protected_message_path(
         action.as_str(),
         place.stable_id
     )];
+    // TASK 4263. This runs BEFORE the allowed-place check on purpose: a place on
+    // one of the three can be perfectly whitelisted and the service still cannot
+    // carry a message, so the person has to be told which app and which part,
+    // not "place not allowed", which would be a lie about the reason.
+    if let Some(direction) = action.surface_direction() {
+        crate::half_restored_surface::guard_surface_direction(&place.app, direction)?;
+    }
     crate::allowed_places::require_allowed_place_record(&app_data_dir, &place)
         .map_err(|e| format!("OSL: allowed-place check refused: {e}"))?;
     trace.push(format!(
@@ -24864,6 +24720,17 @@ impl AllowedPlaceAction {
             Self::Scrub => "Scrub item",
         }
     }
+
+    /// See `ProtectedPlaceAction::surface_direction`. `Prepare` counts as a send
+    /// attempt because a draft that is allowed to exist on a service that cannot
+    /// send it is exactly the half working appearance TASK 4263 forbids.
+    fn surface_direction(self) -> Option<SurfaceDirection> {
+        match self {
+            Self::Read => Some(SurfaceDirection::Receive),
+            Self::Prepare | Self::Place => Some(SurfaceDirection::Send),
+            Self::Scrub => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -24879,6 +24746,10 @@ pub fn cmd_osl_run_allowed_place_action(
     action: AllowedPlaceAction,
     place: crate::allowed_places::AllowedPlaceRecord,
 ) -> Result<AllowedPlaceActionReceiptDto, String> {
+    // TASK 4263: the three refuse by name before anything else is decided.
+    if let Some(direction) = action.surface_direction() {
+        crate::half_restored_surface::guard_surface_direction(&place.app, direction)?;
+    }
     crate::allowed_places::require_allowed_place_record(&app_data_dir, &place)
         .map_err(|e| format!("OSL: place not allowed: {e}"))?;
     Ok(AllowedPlaceActionReceiptDto {
@@ -24913,6 +24784,16 @@ fn guard_picture_cache_access(
     } else {
         Err("OSL: picture access blocked".to_string())
     }
+}
+
+/// Read-only: may `person_id` open a cached picture right now?
+///
+/// Same guard the picture cache runs, so a caller cannot be told "allowed"
+/// by one rule and refused by another.
+pub fn cmd_osl_picture_access_allowed(state: &AppState, person_id: String) -> Result<bool, String> {
+    record_activity_on_command_entry();
+    validate_friend_request_person_id(&person_id)?;
+    Ok(guard_picture_cache_access(state, "image/png", Some(&person_id)).is_ok())
 }
 
 #[derive(Debug, Serialize, Clone, PartialEq, Eq)]
@@ -25056,12 +24937,12 @@ fn count_allowed_places_for_optional_dir(
 fn clear_allowed_places_for_optional_dir(
     allowed_place_dir: Option<&Path>,
     person_id: &str,
-) -> Result<(), String> {
-    if let Some(dir) = allowed_place_dir {
-        let _ = crate::allowed_places::remove_allowed_place_records_for_person(dir, person_id)
-            .map_err(|error| error.to_string())?;
+) -> Result<usize, String> {
+    match allowed_place_dir {
+        Some(dir) => crate::allowed_places::remove_allowed_place_records_for_person(dir, person_id)
+            .map_err(|error| error.to_string()),
+        None => Ok(0),
     }
-    Ok(())
 }
 
 pub fn cmd_osl_block_friend_request(
@@ -25094,7 +24975,7 @@ pub fn cmd_osl_block_friend_request(
         persist_peer_map_now(state);
     }
 
-    clear_allowed_places_for_optional_dir(allowed_place_dir.as_deref(), &peer_discord_id)?;
+    let _ = clear_allowed_places_for_optional_dir(allowed_place_dir.as_deref(), &peer_discord_id)?;
 
     let blocked_path = blocked_people_path(&dir);
     let mut blocked = load_blocked_people(&blocked_path)?;
@@ -25144,7 +25025,7 @@ pub fn cmd_osl_unblock_person(
     if grants_removed > 0 {
         persist_peer_map_now(state);
     }
-    clear_allowed_places_for_optional_dir(allowed_place_dir.as_deref(), &peer_discord_id)?;
+    let _ = clear_allowed_places_for_optional_dir(allowed_place_dir.as_deref(), &peer_discord_id)?;
 
     Ok(UnblockPersonResult {
         person_id: peer_discord_id.clone(),
@@ -25155,6 +25036,98 @@ pub fn cmd_osl_unblock_person(
             allowed_place_dir.as_deref(),
             &peer_discord_id,
         )?,
+    })
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoveFriendResult {
+    pub person_id: String,
+    pub removed_request_id: String,
+    pub accepted_friend_count: usize,
+    pub friendship_state: String,
+    pub grants_removed: usize,
+    pub allowed_places_removed: usize,
+    pub allowed_places: usize,
+    pub picture_access_allowed: bool,
+}
+
+fn saved_request_names_person(
+    entry: &crate::friend_request::StoredFriendRequestFileEntry,
+    person_id: &str,
+) -> bool {
+    entry.target_id == person_id || entry.requester_id == person_id
+}
+
+/// Drop one person from the friend-id snapshot the picture-cache guard reads,
+/// then report whether that person may still open a picture.
+///
+/// The snapshot lock is released before the guard runs: the guard takes the
+/// same lock.
+fn clear_friend_picture_access(state: &AppState, person_id: &str) -> bool {
+    {
+        let mut friends = state.friend_ids.lock().expect("friend_ids mutex poisoned");
+        friends.retain(|friend_id| friend_id != person_id);
+    }
+    guard_picture_cache_access(state, "image/png", Some(person_id)).is_ok()
+}
+
+/// Remove one accepted friend.
+///
+/// Named-person only: the friendship row, the allowed places that friendship
+/// created, and the picture access it granted are cleared for `person_id` and
+/// for nobody else. Absence is never treated as permission — a person who is
+/// not currently accepted is refused rather than silently "removed", so a
+/// mistyped id cannot read as a successful removal.
+pub fn cmd_osl_remove_friend(
+    state: &AppState,
+    person_id: String,
+    allowed_place_dir: Option<PathBuf>,
+) -> Result<RemoveFriendResult, String> {
+    record_activity_on_command_entry();
+    validate_friend_request_person_id(&person_id)?;
+
+    let dir = saved_friend_request_dir()?;
+    let mut file = load_saved_friend_request_file_with_dir(&dir)?;
+    let accepted_index = file
+        .accepted
+        .iter()
+        .position(|entry| saved_request_names_person(entry, &person_id))
+        .ok_or_else(|| "OSL: friend is not accepted".to_string())?;
+    let entry = file.accepted.remove(accepted_index);
+    update_saved_friend_record(
+        &mut file,
+        &entry.requester_id,
+        &entry.target_id,
+        None,
+        crate::friend_request::StoredFriendState::None,
+        crate::friend_request::StoredFriendBlockState::NotBlocked,
+        None,
+    )?;
+    file.declined_or_revoked.push(entry.clone());
+    save_saved_friend_request_file_with_dir(&dir, &file)?;
+
+    let grants_removed = clear_friendship_grants(state, &person_id);
+    if grants_removed > 0 {
+        persist_peer_map_now(state);
+    }
+
+    let allowed_places_removed =
+        clear_allowed_places_for_optional_dir(allowed_place_dir.as_deref(), &person_id)?;
+    let picture_access_allowed = clear_friend_picture_access(state, &person_id);
+
+    Ok(RemoveFriendResult {
+        removed_request_id: entry.request_id,
+        accepted_friend_count: file.accepted.len(),
+        friendship_state: friendship_state_with_dir(state, &dir, &person_id)?.to_owned(),
+        grants_removed,
+        allowed_places_removed,
+        allowed_places: count_allowed_places_for_optional_dir(
+            allowed_place_dir.as_deref(),
+            &person_id,
+        )?,
+        picture_access_allowed,
+        person_id,
     })
 }
 
@@ -25270,4 +25243,160 @@ pub fn cmd_osl_burn_both_sides_server_copies(
         choice: "Both Sides".to_string(),
         remote_removal_count: response.deleted_count,
     })
+}
+
+// ---------------------------------------------------------------------------
+// TASK 5031 — the THIS PERSON block.
+//
+// "Rename them, just for me" and "give them a colour, just for me" are local
+// overlays. Everything below reads the other account's profile name from the
+// friend record and the overlay from its own file, and never writes one into
+// the other. `crates/ipc/src/this_person_overlay.rs` holds the rules.
+// ---------------------------------------------------------------------------
+
+use crate::this_person_overlay::{
+    PersonPlaceLabel, SafetyNumberPersonIdentity, ThisPersonOverlay, ThisPersonOverlayError,
+};
+
+/// The THIS PERSON block as the chat-settings modal draws it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ThisPersonBlockDto {
+    pub person_id: String,
+    /// The other account's own profile name, exactly as their record holds it.
+    pub profile_name: String,
+    pub local_rename: Option<String>,
+    pub local_colour: Option<String>,
+    /// The colour actually drawn — the chosen one, or the derived one when the
+    /// operator has chosen none.
+    pub colour: String,
+    pub colour_choices: Vec<String>,
+    /// Said on the setting itself, not only in the docs.
+    pub local_only_sentence: &'static str,
+}
+
+fn this_person_error(error: ThisPersonOverlayError) -> String {
+    error.to_string()
+}
+
+/// The other account's own profile record for `person_id`.
+///
+/// Read-only here on purpose: no command in this block may write to it. A local
+/// rename that edited this record would be visible to every other reader of the
+/// roster as if the person had published that name themselves.
+fn stored_friend_profile_name(app_data_dir: &Path, person_id: &str) -> Result<String, String> {
+    let state = crate::friend_request::load_friend_request_file_state(app_data_dir)
+        .map_err(|error| format!("OSL: {error:?}"))?;
+    state
+        .friends
+        .iter()
+        .find(|friend| friend.remote_identity_id == person_id)
+        .map(|friend| friend.display_name.clone())
+        .ok_or_else(|| ThisPersonOverlayError::UnknownPerson.to_string())
+}
+
+fn this_person_block(
+    app_data_dir: &Path,
+    person_id: &str,
+    overlay: &ThisPersonOverlay,
+) -> Result<ThisPersonBlockDto, String> {
+    let profile_name = stored_friend_profile_name(app_data_dir, person_id)?;
+    let resolved = crate::this_person_overlay::resolve_this_person(person_id, &profile_name, overlay);
+    Ok(ThisPersonBlockDto {
+        person_id: person_id.to_owned(),
+        profile_name,
+        local_rename: overlay.local_rename.clone(),
+        local_colour: overlay.local_colour.clone(),
+        colour: resolved.colour,
+        colour_choices: crate::this_person_overlay::THIS_PERSON_COLOUR_CHOICES
+            .iter()
+            .map(|colour| (*colour).to_owned())
+            .collect(),
+        local_only_sentence: crate::this_person_overlay::THIS_PERSON_LOCAL_ONLY_SENTENCE,
+    })
+}
+
+pub fn cmd_osl_this_person_block(
+    app_data_dir: PathBuf,
+    person_id: String,
+) -> Result<ThisPersonBlockDto, String> {
+    record_activity_on_command_entry();
+    let overlay = crate::this_person_overlay::read_this_person_overlay(&app_data_dir, &person_id)
+        .map_err(this_person_error)?;
+    this_person_block(&app_data_dir, &person_id, &overlay)
+}
+
+/// Save the local rename. `None` (or a blank string) clears it, which restores
+/// the profile name everywhere without touching the local colour.
+pub fn cmd_osl_set_this_person_local_rename(
+    app_data_dir: PathBuf,
+    person_id: String,
+    rename: Option<String>,
+) -> Result<ThisPersonBlockDto, String> {
+    record_activity_on_command_entry();
+    // Refuse first, so an unknown person never leaves an orphan overlay behind.
+    stored_friend_profile_name(&app_data_dir, &person_id)?;
+    let overlay = crate::this_person_overlay::set_this_person_local_rename(
+        &app_data_dir,
+        &person_id,
+        rename.as_deref(),
+    )
+    .map_err(this_person_error)?;
+    this_person_block(&app_data_dir, &person_id, &overlay)
+}
+
+pub fn cmd_osl_clear_this_person_local_rename(
+    app_data_dir: PathBuf,
+    person_id: String,
+) -> Result<ThisPersonBlockDto, String> {
+    cmd_osl_set_this_person_local_rename(app_data_dir, person_id, None)
+}
+
+pub fn cmd_osl_set_this_person_local_colour(
+    app_data_dir: PathBuf,
+    person_id: String,
+    colour: Option<String>,
+) -> Result<ThisPersonBlockDto, String> {
+    record_activity_on_command_entry();
+    stored_friend_profile_name(&app_data_dir, &person_id)?;
+    let overlay = crate::this_person_overlay::set_this_person_local_colour(
+        &app_data_dir,
+        &person_id,
+        colour.as_deref(),
+    )
+    .map_err(this_person_error)?;
+    this_person_block(&app_data_dir, &person_id, &overlay)
+}
+
+/// The three places this person's name and colour are drawn: sidebar row,
+/// thread header, notification. One resolved answer, three surfaces.
+pub fn cmd_osl_this_person_places(
+    app_data_dir: PathBuf,
+    person_id: String,
+) -> Result<Vec<PersonPlaceLabel>, String> {
+    record_activity_on_command_entry();
+    let profile_name = stored_friend_profile_name(&app_data_dir, &person_id)?;
+    let overlay = crate::this_person_overlay::read_this_person_overlay(&app_data_dir, &person_id)
+        .map_err(this_person_error)?;
+    Ok(crate::this_person_overlay::this_person_places(
+        &person_id,
+        &profile_name,
+        &overlay,
+    ))
+}
+
+/// The identity line above the safety number. The profile name is always
+/// present; a local rename can only sit beside it.
+pub fn cmd_osl_this_person_safety_number_identity(
+    app_data_dir: PathBuf,
+    person_id: String,
+) -> Result<SafetyNumberPersonIdentity, String> {
+    record_activity_on_command_entry();
+    let profile_name = stored_friend_profile_name(&app_data_dir, &person_id)?;
+    let overlay = crate::this_person_overlay::read_this_person_overlay(&app_data_dir, &person_id)
+        .map_err(this_person_error)?;
+    Ok(crate::this_person_overlay::safety_number_person_identity(
+        &person_id,
+        &profile_name,
+        &overlay,
+    ))
 }

@@ -59,11 +59,15 @@
     {
       "source_task": "1155",
       "place": "Telegram story",
+      "research_task": "1029a",
+      "build_task": "4218",
       "disposition": "look-only refused"
     },
     {
       "source_task": "1190",
       "place": "WhatsApp Status",
+      "research_task": "1089d",
+      "build_task": "4220",
       "disposition": "look-only refused"
     }
   ]

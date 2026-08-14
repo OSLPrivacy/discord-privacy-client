@@ -38,6 +38,7 @@
 
 pub mod fetcher;
 pub mod manifest;
+pub mod placing_contract;
 // t8-e1 added the profile bridge, t8-e2 the hourly refresh. Different modules,
 // same declaration block -- both belong.
 pub mod profile_bridge;
@@ -47,6 +48,11 @@ pub use fetcher::{FetchError, ManifestFetcher, ManifestSource, ManifestState, So
 pub use manifest::{
     canonical_manifest_bytes, parse_signed_manifest, sign_manifest, verify_manifest, ManifestError,
     SelectorManifest, SignedManifest, MANIFEST_DOMAIN, MAX_MANIFEST_AGE_SECONDS,
+};
+pub use placing_contract::{
+    place_marked_message_in_all_conversations, seeded_task_3421_conversations,
+    task_3421_finish_line_holds, ConversationBox, ConversationSet, DraftOnlyPlacingJob,
+    MarkedMessagePlacingJob, MessagingSurface, NoopPlacingJob, PlacementObservation,
 };
 pub use profile_bridge::{
     compiled_in_profile_payload, fetched_profile_payload, ProfileBridgeError,

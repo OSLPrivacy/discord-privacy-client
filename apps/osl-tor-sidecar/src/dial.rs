@@ -20,6 +20,9 @@ use crate::status::{StatusEvent, StatusSink};
 /// Upstream dial deadline. Cold-cache Tor circuit builds are slow, so
 /// this is generous; expiry surfaces as HOST_UNREACHABLE to the client.
 const DIAL_TIMEOUT: Duration = Duration::from_secs(180);
+/// Tor startup has a wide but finite deadline, so the app always receives a
+/// ready or error event instead of remaining silently connecting forever.
+const BOOTSTRAP_TIMEOUT: Duration = Duration::from_secs(180);
 
 /// An established upstream connection, ready to relay.
 pub enum Upstream {
@@ -45,6 +48,34 @@ impl Dialer {
             cache_dir: config.cache_dir.clone(),
             tor: OnceCell::new(),
         }
+    }
+
+    /// Reach a terminal route state before the hub enables OSL sends.
+    pub async fn bootstrap(&self, sink: &StatusSink) -> Result<(), String> {
+        match self.mode {
+            DialMode::Direct => sink.emit(&StatusEvent::Bootstrap {
+                state: "direct_fixture",
+                percent: 100,
+            }),
+            DialMode::Tor => {
+                let client = self.tor_client(sink).await?;
+                match tokio::time::timeout(BOOTSTRAP_TIMEOUT, client.bootstrap()).await {
+                    Ok(Ok(())) => sink.emit(&StatusEvent::Bootstrap {
+                        state: "bootstrapped",
+                        percent: 100,
+                    }),
+                    Ok(Err(error)) => return Err(format!("Tor bootstrap failed: {error}")),
+                    Err(_) => {
+                        return Err(format!(
+                            "Tor bootstrap timed out after {}s",
+                            BOOTSTRAP_TIMEOUT.as_secs()
+                        ))
+                    }
+                }
+            }
+        }
+        sink.emit(&StatusEvent::Ready);
+        Ok(())
     }
 
     pub async fn dial(&self, sink: &StatusSink, target: &Target) -> Result<Upstream, String> {
@@ -123,7 +154,7 @@ impl Dialer {
         let (Some(state_dir), Some(cache_dir)) = (&self.state_dir, &self.cache_dir) else {
             return Err("tor dial mode has no state/cache directories".to_string());
         };
-        sink.emit(&StatusEvent::Bootstrap { state: "creating" });
+        sink.emit(&StatusEvent::Bootstrap { state: "creating", percent: 5 });
         let config = TorClientConfigBuilder::from_directories(state_dir, cache_dir)
             .build()
             .map_err(|error| format!("arti configuration rejected: {error}"))?;
@@ -134,7 +165,7 @@ impl Dialer {
             .bootstrap_behavior(BootstrapBehavior::OnDemand)
             .create_unbootstrapped()
             .map_err(|error| format!("arti client creation failed: {error}"))?;
-        sink.emit(&StatusEvent::Bootstrap { state: "created" });
+        sink.emit(&StatusEvent::Bootstrap { state: "created", percent: 10 });
         Ok(client)
     }
 }

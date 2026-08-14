@@ -1,0 +1,11 @@
+[package]
+name = "osl-task-1237-check"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[[test]]
+name = "outlook_web_connection"
+path = "tests/outlook_web_connection.rs"

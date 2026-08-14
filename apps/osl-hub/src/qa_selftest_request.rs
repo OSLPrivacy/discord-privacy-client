@@ -23,13 +23,7 @@
 //! report, because a report is written to disk.
 
 use crate::broker::{
-    NativeOverlayAcknowledgmentStatus,
-    OpenedNativeOverlayText,
-    OpenedNativeOverlayTextBatch,
-};
-use sha2::{
-    Digest,
-    Sha256,
+    NativeOverlayAcknowledgmentStatus, OpenedNativeOverlayText, OpenedNativeOverlayTextBatch,
 };
 use crate::native_apps::NativeAppId;
 use crate::native_window_host::DiscordSessionMode;
@@ -41,6 +35,98 @@ use sha2::{Digest, Sha256};
 /// cheap shape gate so an absurd request is refused by name before it reaches
 /// any OSL state.
 const MAX_MESSAGE_ID_BYTES: usize = 128;
+
+/// A provider result without either of these fields is not evidence.  Keep the
+/// labels stable so a harness can distinguish an unavailable version probe
+/// from a malformed result row.
+pub const REFUSAL_PROVIDER_NAME_MISSING: &str = "provider-name-missing";
+pub const REFUSAL_PROVIDER_VERSION_MISSING: &str = "provider-version-missing";
+
+/// The runtime identity captured alongside a provider test result.
+///
+/// This is deliberately constructed as a pair: callers cannot create a
+/// successful result and forget the exact app/browser version it exercised.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderVersion {
+    pub provider_name: String,
+    pub exact_version: String,
+}
+
+impl ProviderVersion {
+    pub fn new(
+        provider_name: impl Into<String>,
+        exact_version: impl Into<String>,
+    ) -> Result<Self, &'static str> {
+        let provider_name = provider_name.into();
+        let exact_version = exact_version.into();
+        if provider_name.trim().is_empty() {
+            return Err(REFUSAL_PROVIDER_NAME_MISSING);
+        }
+        if exact_version.trim().is_empty() {
+            return Err(REFUSAL_PROVIDER_VERSION_MISSING);
+        }
+        Ok(Self {
+            provider_name,
+            exact_version,
+        })
+    }
+}
+
+/// Which execution boundary produced a provider result.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ProviderTestMode {
+    Automated,
+    Live,
+}
+
+/// A serializable provider result that is valid only with runtime identity.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderVersionedTestResult {
+    pub mode: ProviderTestMode,
+    pub result_id: String,
+    pub provider_name: String,
+    pub exact_version: String,
+    pub passed: bool,
+}
+
+impl ProviderVersionedTestResult {
+    pub fn new(
+        mode: ProviderTestMode,
+        result_id: impl Into<String>,
+        provider_name: impl Into<String>,
+        exact_version: impl Into<String>,
+        passed: bool,
+    ) -> Result<Self, &'static str> {
+        let provider = ProviderVersion::new(provider_name, exact_version)?;
+        Ok(Self {
+            mode,
+            result_id: result_id.into(),
+            provider_name: provider.provider_name,
+            exact_version: provider.exact_version,
+            passed,
+        })
+    }
+}
+
+/// Validate the persisted shape, rather than relying only on the in-memory
+/// constructor.  This is the reader used by automation before it accepts a
+/// saved result as evidence.
+pub fn inspect_saved_provider_result(serialized: &str) -> Result<ProviderVersion, &'static str> {
+    let value: serde_json::Value =
+        serde_json::from_str(serialized).map_err(|_| REFUSAL_PROVIDER_NAME_MISSING)?;
+    let provider_name = value
+        .get("providerName")
+        .and_then(serde_json::Value::as_str)
+        .ok_or(REFUSAL_PROVIDER_NAME_MISSING)?;
+    let exact_version = value
+        .get("exactVersion")
+        .and_then(serde_json::Value::as_str)
+        .ok_or(REFUSAL_PROVIDER_VERSION_MISSING)?;
+    ProviderVersion::new(provider_name, exact_version)
+}
 
 /// What one triggered invocation is being asked to drive.
 ///
@@ -887,6 +973,7 @@ pub struct DrainReport {
     pub acknowledgment_kind_order: Vec<&'static str>,
     pub fetched: u32,
     pub deferred_rows: u32,
+    pub already_opened_count: u32,
     pub decrypt_display_enabled: bool,
     pub context_verified_count: usize,
     pub person_to_person_e2ee_count: usize,
@@ -921,6 +1008,7 @@ impl DrainReport {
             acknowledgment_kind_order: acknowledgment_kind_order(batch),
             fetched: batch.fetched,
             deferred_rows: batch.deferred_rows,
+            already_opened_count: batch.already_opened,
             decrypt_display_enabled: batch.decrypt_display_enabled,
             context_verified_count: count(|message| message.context_verified),
             person_to_person_e2ee_count: count(|message| message.person_to_person_e2ee),
@@ -1664,6 +1752,9 @@ mod tests {
                 .collect(),
             decrypt_display_enabled: true,
             deferred_rows: 0,
+            unrecognized_wire_rows: 0,
+            content_gone_rows: 0,
+            already_opened: 0,
         }
     }
 
@@ -2035,6 +2126,83 @@ mod tests {
         assert_eq!(report.opened_count, 0);
         let encoded = serde_json::to_string(&report).expect("encode");
         assert!(!encoded.contains("peer-0000"), "{encoded}");
+    }
+
+    #[test]
+    fn task_3633_runtime_provider_results_are_versioned_or_refused() {
+        use crate::native_apps::{
+            provider_version_target_exact_version, provider_version_target_name,
+            PROVIDER_VERSION_TARGETS,
+        };
+
+        let mut accepted_results = 0usize;
+        let mut refused_results = 0usize;
+        for (index, target) in PROVIDER_VERSION_TARGETS.into_iter().enumerate() {
+            let provider_name = provider_version_target_name(target);
+            let exact_version = provider_version_target_exact_version(target);
+            for mode in [ProviderTestMode::Automated, ProviderTestMode::Live] {
+                match ProviderVersionedTestResult::new(
+                    mode,
+                    format!("task-3633-runtime-{index}"),
+                    provider_name,
+                    exact_version.clone().unwrap_or_default(),
+                    true,
+                ) {
+                    Ok(result) => {
+                        let saved = serde_json::to_string(&result).expect("serialize result");
+                        let inspected = inspect_saved_provider_result(&saved)
+                            .expect("saved runtime provider result must retain both fields");
+                        assert_eq!(inspected.provider_name, provider_name);
+                        assert_eq!(inspected.exact_version, result.exact_version);
+                        accepted_results += 1;
+                        println!(
+                            "TASK3633_RESULT provider={} mode={mode:?} exact_version={}",
+                            inspected.provider_name, inspected.exact_version
+                        );
+                    }
+                    Err(refusal) => {
+                        assert_eq!(exact_version, None);
+                        assert_eq!(refusal, REFUSAL_PROVIDER_VERSION_MISSING);
+                        refused_results += 1;
+                        println!(
+                            "TASK3633_REFUSED provider={provider_name} mode={mode:?} refusal={refusal}"
+                        );
+                    }
+                }
+            }
+        }
+
+        assert_eq!(PROVIDER_VERSION_TARGETS.len(), 17);
+        assert_eq!(accepted_results + refused_results, 34);
+        println!(
+            "TASK3633_PROVIDER_TARGET_COUNT={}",
+            PROVIDER_VERSION_TARGETS.len()
+        );
+        println!("TASK3633_ACCEPTED_RUNTIME_RESULT_COUNT={accepted_results}");
+        println!("TASK3633_REFUSED_RUNTIME_RESULT_COUNT={refused_results}");
+    }
+
+    #[test]
+    fn task_3633_reader_refuses_a_saved_result_without_provider_or_version() {
+        let runtime_provider = crate::native_apps::native_app_display_name(NativeAppId::Discord);
+        let cases = [
+            (
+                r#"{"exactVersion":"runtime-observed"}"#.to_owned(),
+                REFUSAL_PROVIDER_NAME_MISSING,
+            ),
+            (
+                format!(r#"{{"providerName":"{runtime_provider}"}}"#),
+                REFUSAL_PROVIDER_VERSION_MISSING,
+            ),
+            (
+                format!(r#"{{"providerName":"{runtime_provider}","exactVersion":"   "}}"#),
+                REFUSAL_PROVIDER_VERSION_MISSING,
+            ),
+        ];
+        for (saved, expected_refusal) in cases {
+            assert_eq!(inspect_saved_provider_result(&saved), Err(expected_refusal));
+            println!("TASK3633_SAVED_RESULT_REFUSAL={expected_refusal}");
+        }
     }
 }
 

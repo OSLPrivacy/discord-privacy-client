@@ -1,10 +1,13 @@
-// Connects the timer overlay picker (timer-overlay.ts) to the send timer
-// value the message is actually sent with. Mirrors the validation in
-// apps/osl-hub/src/security.rs (timer_picker_state / TIMER_PICKER_MAX_DAYS =
-// 30 days, i.e. day 31 is rejected) so the UI and the backend agree on what
-// a "valid" timer picker save looks like before any IPC round trip exists.
+// Connects TASK 0554's timer overlay to the send timer value. The active app's
+// visible policy is also enforced here, so hand-editing the four fields cannot
+// bypass a greyed-out preset.
 
-import { defaultTimerOverlayState, type TimerOverlayState } from "./timer-overlay";
+import {
+  defaultTimerOverlayState,
+  TIMER_OVERLAY_POLICIES,
+  type TimerOverlayApp,
+  type TimerOverlayState,
+} from "./timer-overlay";
 
 export const TIMER_OVERLAY_MAX_DAYS = 30;
 
@@ -23,8 +26,27 @@ function parseTimerOverlayPart(raw: string, label: string, maximum: number): num
   return value;
 }
 
-/** Pure validation + duration calculation, mirroring security.rs::timer_picker_duration_seconds. */
-export function timerOverlaySaveDurationSeconds(state: TimerOverlayState): TimerOverlaySaveResult {
+export function timerOverlayStateForDuration(durationSeconds: number): TimerOverlayState {
+  const days = Math.floor(durationSeconds / 86_400);
+  const afterDays = durationSeconds % 86_400;
+  const hours = Math.floor(afterDays / 3_600);
+  const afterHours = afterDays % 3_600;
+  const minutes = Math.floor(afterHours / 60);
+  const seconds = afterHours % 60;
+  const twoDigits = (value: number): string => value.toString().padStart(2, "0");
+  return {
+    days: twoDigits(days),
+    hours: twoDigits(hours),
+    minutes: twoDigits(minutes),
+    seconds: twoDigits(seconds),
+  };
+}
+
+/** Pure validation plus app-specific duration admission. */
+export function timerOverlaySaveDurationSeconds(
+  state: TimerOverlayState,
+  appName: TimerOverlayApp = "Discord",
+): TimerOverlaySaveResult {
   try {
     const days = parseTimerOverlayPart(state.days, "days", TIMER_OVERLAY_MAX_DAYS);
     const hours = parseTimerOverlayPart(state.hours, "hours", 23);
@@ -33,6 +55,13 @@ export function timerOverlaySaveDurationSeconds(state: TimerOverlayState): Timer
     const durationSeconds = days * 86_400 + hours * 3_600 + minutes * 60 + seconds;
     if (durationSeconds === 0) {
       return { ok: false, error: "OSL timer picker duration must be at least 01 second" };
+    }
+    const policy = TIMER_OVERLAY_POLICIES[appName];
+    if (durationSeconds > policy.maxSeconds) {
+      return {
+        ok: false,
+        error: `OSL: ${policy.appName} cannot keep that timer; longest supported timer is ${policy.maxLabel}`,
+      };
     }
     return { ok: true, durationSeconds };
   } catch (error) {
@@ -45,24 +74,19 @@ export interface TimerOverlaySaveActions {
   getSendTimerValueSeconds(): number | null;
   getValidationError(): string | null;
   setField(key: keyof TimerOverlayState, raw: string): void;
+  choose(durationSeconds: number): boolean;
   save(): TimerOverlaySaveResult;
   subscribe(listener: () => void): () => void;
 }
 
-/**
- * Holds the live picker state plus, once `save()` succeeds, the send timer
- * value (duration in seconds) that a send command should use. A failed
- * `save()` clears the send value and records the validation message instead,
- * so the overlay can show it without a stale value lingering.
- */
 export function createTimerOverlaySaveActions(
   initialState: TimerOverlayState = defaultTimerOverlayState(),
+  appName: TimerOverlayApp = "Discord",
 ): TimerOverlaySaveActions {
   let state = initialState;
   let sendTimerValueSeconds: number | null = null;
   let validationError: string | null = null;
   const listeners = new Set<() => void>();
-
   const notify = () => {
     for (const listener of listeners) listener();
   };
@@ -75,8 +99,15 @@ export function createTimerOverlaySaveActions(
       state = { ...state, [key]: raw };
       notify();
     },
+    choose(durationSeconds) {
+      if (durationSeconds <= 0 || durationSeconds > TIMER_OVERLAY_POLICIES[appName].maxSeconds) return false;
+      state = timerOverlayStateForDuration(durationSeconds);
+      validationError = null;
+      notify();
+      return true;
+    },
     save() {
-      const result = timerOverlaySaveDurationSeconds(state);
+      const result = timerOverlaySaveDurationSeconds(state, appName);
       if (result.ok) {
         sendTimerValueSeconds = result.durationSeconds;
         validationError = null;
@@ -94,26 +125,26 @@ export function createTimerOverlaySaveActions(
   };
 }
 
-/**
- * Wires timer-overlay.ts's rendered fields and Save button
- * (`#timer-overlay-save`, `#timer-overlay-error`) to a
- * `TimerOverlaySaveActions` controller: field input reflects into the
- * controller's state, and clicking Save runs validation and shows the
- * rejection message (e.g. day 31) instead of silently doing nothing.
- */
 export function bindTimerOverlaySave(root: ParentNode, actions: TimerOverlaySaveActions): void {
   for (const key of ["days", "hours", "minutes", "seconds"] as const) {
     const input = root.querySelector<HTMLInputElement>(`#timer-overlay-${key}`);
-    input?.addEventListener("input", () => {
-      actions.setField(key, input.value);
+    input?.addEventListener("input", () => actions.setField(key, input.value));
+  }
+  for (const choice of root.querySelectorAll<HTMLButtonElement>("[data-timer-choice-seconds]:not(:disabled)")) {
+    choice.addEventListener("click", () => {
+      const durationSeconds = Number(choice.dataset.timerChoiceSeconds);
+      if (!actions.choose(durationSeconds)) return;
+      const state = actions.getState();
+      for (const key of ["days", "hours", "minutes", "seconds"] as const) {
+        const input = root.querySelector<HTMLInputElement>(`#timer-overlay-${key}`);
+        if (input) input.value = state[key];
+      }
     });
   }
   const saveButton = root.querySelector<HTMLButtonElement>("#timer-overlay-save");
   const errorOutput = root.querySelector<HTMLOutputElement>("#timer-overlay-error");
   saveButton?.addEventListener("click", () => {
     const result = actions.save();
-    if (errorOutput) {
-      errorOutput.textContent = result.ok ? "" : result.error;
-    }
+    if (errorOutput) errorOutput.textContent = result.ok ? "" : result.error;
   });
 }

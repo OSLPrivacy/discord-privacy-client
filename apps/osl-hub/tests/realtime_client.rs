@@ -305,6 +305,13 @@ fn task_4405_realtime_pipe_opens_ticks_reconnects_and_idle_hour_spends_no_preten
     assert_eq!(report.opened_connections, 3);
     assert_eq!(stats.handshakes, 3);
     assert_eq!(stats.frames_seen, IDLE_HOUR_TICKS);
+    for (index, size) in report.frame_sizes.iter().copied().enumerate() {
+        let frame_number = index + 1;
+        assert_eq!(
+            size, FRAME_BYTES,
+            "TASK4405_FRAME_{frame_number}_SIZE_GAVE_SOMETHING_AWAY expected {FRAME_BYTES} got {size}"
+        );
+    }
     assert!(stats.all_frames_were_spaces);
     assert_eq!(unique_intervals, [TICK_INTERVAL].into_iter().collect());
     assert_eq!(unique_frame_sizes, [FRAME_BYTES].into_iter().collect());

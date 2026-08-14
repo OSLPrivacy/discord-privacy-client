@@ -1,0 +1,59 @@
+{
+  "tiles": [
+    {
+      "tileId": "ready-control",
+      "capabilityFacts": {
+        "serviceId": "discord",
+        "placing": true,
+        "reading": true,
+        "opening": true,
+        "realTwoPersonProtectedMessaging": true
+      },
+      "statusData": { "generatedLabel": "Ready" }
+    },
+    {
+      "tileId": "placing-only-control",
+      "capabilityFacts": {
+        "serviceId": "telegram",
+        "placing": true,
+        "reading": false,
+        "opening": true,
+        "realTwoPersonProtectedMessaging": false
+      },
+      "statusData": { "generatedLabel": "Ready" }
+    },
+    {
+      "tileId": "reading-only-control",
+      "capabilityFacts": {
+        "serviceId": "whatsapp",
+        "placing": false,
+        "reading": true,
+        "opening": true,
+        "realTwoPersonProtectedMessaging": false
+      },
+      "statusData": { "generatedLabel": "Reading only" }
+    },
+    {
+      "tileId": "opens-the-app-control",
+      "capabilityFacts": {
+        "serviceId": "email",
+        "placing": false,
+        "reading": false,
+        "opening": true,
+        "realTwoPersonProtectedMessaging": false
+      },
+      "statusData": { "generatedLabel": "Opens the app" }
+    },
+    {
+      "tileId": "not-started-control",
+      "capabilityFacts": {
+        "serviceId": "signal",
+        "placing": false,
+        "reading": false,
+        "opening": false,
+        "realTwoPersonProtectedMessaging": false
+      },
+      "statusData": { "generatedLabel": "Not started" }
+    }
+  ]
+}

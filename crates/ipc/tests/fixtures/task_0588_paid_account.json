@@ -1,0 +1,7 @@
+{
+  "account": "task-0588-paid-account",
+  "stored_bytes_ceiling": 161061273600,
+  "daily_upload_bytes_ceiling": 5368709120,
+  "upload_bytes": 1073741824,
+  "parallel_uploads": 16
+}

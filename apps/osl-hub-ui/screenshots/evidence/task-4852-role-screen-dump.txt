@@ -1,0 +1,45 @@
+TASK4852 role screen dump
+role: Moderator
+row: read a text channel | KEY | Not a rule. They do not have the key.
+row: read channel history | KEY | Not a rule. They do not have the key.
+row: read message reactions | RELAY | OSL's relay refuses it. It still cannot read what you write.
+row: read attached file names | KEY | Not a rule. They do not have the key.
+row: see the member list | RELAY | OSL's relay refuses it. It still cannot read what you write.
+row: see audit log entries | TRUST | A modified app could ignore this. Everyone else's app will still hide it.
+row: send a message | KEY | Not a rule. They do not have the key.
+row: edit your own message | KEY | Not a rule. They do not have the key.
+row: delete your own message | KEY | Not a rule. They do not have the key.
+row: attach pictures | KEY | Not a rule. They do not have the key.
+row: attach files | KEY | Not a rule. They do not have the key.
+row: add reactions | RELAY | OSL's relay refuses it. It still cannot read what you write.
+row: mention everyone | TRUST | A modified app could ignore this. Everyone else's app will still hide it.
+row: use external emoji | RELAY | OSL's relay refuses it. It still cannot read what you write.
+row: create a thread | RELAY | OSL's relay refuses it. It still cannot read what you write.
+row: read a thread | KEY | Not a rule. They do not have the key.
+row: send in a thread | KEY | Not a rule. They do not have the key.
+row: rename a thread | RELAY | OSL's relay refuses it. It still cannot read what you write.
+row: archive a thread | RELAY | OSL's relay refuses it. It still cannot read what you write.
+row: join voice | RELAY | OSL's relay refuses it. It still cannot read what you write.
+row: speak in voice | RELAY | OSL's relay refuses it. It still cannot read what you write.
+row: share screen in voice | RELAY | OSL's relay refuses it. It still cannot read what you write.
+row: move self between voice channels | RELAY | OSL's relay refuses it. It still cannot read what you write.
+row: use voice activity | RELAY | OSL's relay refuses it. It still cannot read what you write.
+row: timeout a member | TRUST | A modified app could ignore this. Everyone else's app will still hide it.
+row: kick a member | TRUST | A modified app could ignore this. Everyone else's app will still hide it.
+row: ban a member | TRUST | A modified app could ignore this. Everyone else's app will still hide it.
+row: delete another member's message | TRUST | A modified app could ignore this. Everyone else's app will still hide it.
+row: request clients hide a delivered message | RELAY | OSL's relay refuses it. It still cannot read what you write.
+row: pin or unpin a message | RELAY | OSL's relay refuses it. It still cannot read what you write.
+row: review reported messages | TRUST | A modified app could ignore this. Everyone else's app will still hide it.
+row: manage roles | TRUST | A modified app could ignore this. Everyone else's app will still hide it.
+row: manage channels | TRUST | A modified app could ignore this. Everyone else's app will still hide it.
+row: manage invite links | TRUST | A modified app could ignore this. Everyone else's app will still hide it.
+row: create invite links | RELAY | OSL's relay refuses it. It still cannot read what you write.
+row: change member nicknames | TRUST | A modified app could ignore this. Everyone else's app will still hide it.
+row: manage server webhooks | TRUST | A modified app could ignore this. Everyone else's app will still hide it.
+row: change enclave appearance | TRUST | A modified app could ignore this. Everyone else's app will still hide it.
+row: change role appearance | TRUST | A modified app could ignore this. Everyone else's app will still hide it.
+row: change channel appearance | RELAY | OSL's relay refuses it. It still cannot read what you write.
+legend: KEY | Not a rule. They do not have the key.
+legend: RELAY | OSL's relay refuses it. It still cannot read what you write.
+legend: TRUST | A modified app could ignore this. Everyone else's app will still hide it.

@@ -1,0 +1,11 @@
+[package]
+name = "task-3557-locked-normal-commands"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[[test]]
+name = "locked_normal_commands"
+path = "tests/locked_normal_commands.rs"
+
+[workspace]

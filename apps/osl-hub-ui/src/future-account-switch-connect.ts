@@ -53,7 +53,7 @@ export async function loadFutureAccountSwitchStates(
       );
       // A friend whose state cannot be read keeps no entry: the switch draws
       // off, and the next open retries instead of trusting a guess.
-      if (setting && setting.personId === personId) states.set(personId, false);
+      if (setting && setting.personId === personId) states.set(personId, setting.enabled);
     } catch (error) {
       dependencies.recordBackendFailure(GET_FUTURE_ACCOUNT_COMMAND, error);
     }

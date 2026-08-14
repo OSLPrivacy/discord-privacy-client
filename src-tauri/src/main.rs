@@ -125,6 +125,12 @@ use ipc::commands::{
     cmd_osl_burn_their_side_message,
     cmd_osl_get_ask_before_irreversible_actions_choice,
     cmd_osl_set_ask_before_irreversible_actions_choice,
+    cmd_osl_reset_ask_before_irreversible_actions_choice,
+    cmd_osl_reset_start_with_windows_choice,
+    cmd_osl_reset_idle_lock_time_choice,
+    cmd_osl_reset_alert_mode_choice,
+    cmd_osl_reset_language_choice,
+    cmd_osl_reset_follow_active_app_choice,
     cmd_osl_list_email_send_modes,
     cmd_osl_list_email_whitelist_kinds,
     cmd_osl_remove_sender_message_records,
@@ -2229,6 +2235,96 @@ async fn osl_set_ask_before_irreversible_actions_choice(
     .map_err(|e| format!("OSL: join error: {e}"))?
 }
 
+/// Task 3164: reset ask_before_irreversible_actions to default
+#[tauri::command]
+async fn osl_reset_ask_before_irreversible_actions_choice(
+    app: tauri::AppHandle,
+) -> Result<String, String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        let dir = keystore::osl_config_dir().ok();
+        cmd_osl_reset_ask_before_irreversible_actions_choice(state.inner(), dir)
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+/// Task 3164: reset start_with_windows to default
+#[tauri::command]
+async fn osl_reset_start_with_windows_choice(
+    app: tauri::AppHandle,
+) -> Result<String, String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        let dir = keystore::osl_config_dir().ok();
+        cmd_osl_reset_start_with_windows_choice(state.inner(), dir)
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+/// Task 3164: reset idle_lock_time_choice to default
+#[tauri::command]
+async fn osl_reset_idle_lock_time_choice(
+    app: tauri::AppHandle,
+) -> Result<String, String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        let dir = keystore::osl_config_dir().ok();
+        cmd_osl_reset_idle_lock_time_choice(state.inner(), dir)
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+/// Task 3164: reset alert_mode_choice to default
+#[tauri::command]
+async fn osl_reset_alert_mode_choice(
+    app: tauri::AppHandle,
+) -> Result<String, String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        let dir = keystore::osl_config_dir().ok();
+        cmd_osl_reset_alert_mode_choice(state.inner(), dir)
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+/// Task 3164: reset language to default
+#[tauri::command]
+async fn osl_reset_language_choice(
+    app: tauri::AppHandle,
+) -> Result<String, String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        let dir = keystore::osl_config_dir().ok();
+        cmd_osl_reset_language_choice(state.inner(), dir)
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+/// Task 3164: reset follow_active_app_choice to default
+#[tauri::command]
+async fn osl_reset_follow_active_app_choice(
+    app: tauri::AppHandle,
+) -> Result<String, String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        let dir = keystore::osl_config_dir().ok();
+        cmd_osl_reset_follow_active_app_choice(state.inner(), dir)
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
 // ---- Phase 9-D: onboarding tour + VPN warning ----
 
 /// 9-TD1.4: read + clear the most recent disk-persist failure
@@ -3664,6 +3760,12 @@ fn main() {
             osl_set_app_preferences,
             osl_get_ask_before_irreversible_actions_choice,
             osl_set_ask_before_irreversible_actions_choice,
+            osl_reset_ask_before_irreversible_actions_choice,
+            osl_reset_start_with_windows_choice,
+            osl_reset_idle_lock_time_choice,
+            osl_reset_alert_mode_choice,
+            osl_reset_language_choice,
+            osl_reset_follow_active_app_choice,
             osl_tour_get_state,
             osl_tour_advance,
             osl_tour_complete,

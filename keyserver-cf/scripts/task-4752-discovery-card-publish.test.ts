@@ -6,7 +6,6 @@ import {
   discoveryEpochIndex,
   handleDiscoveryCardsPublish,
   handleDiscoveryCardsTakeBack,
-  handleDiscoveryRepliesEnable,
 } from "../src/lib/discovery-card.js";
 
 interface StoredDiscoveryCard {
@@ -23,13 +22,6 @@ interface StoredDiscoveryCard {
 
 class DiscoveryCardDb {
   readonly rows = new Map<string, StoredDiscoveryCard>();
-  readonly enabled = new Map<string, boolean>();
-
-  async batch<T = unknown>(statements: D1PreparedStatement[]): Promise<D1Result<T>[]> {
-    const results: D1Result<T>[] = [];
-    for (const statement of statements) results.push(await statement.run<T>());
-    return results;
-  }
 
   prepare(sql: string): D1PreparedStatement {
     const db = this;
@@ -48,30 +40,11 @@ class DiscoveryCardDb {
               }
               return { meta: { changes } } as D1Result;
             }
-            if (/INSERT OR IGNORE INTO discovery_reply_state/u.test(sql)) {
+            if (/DELETE FROM discovery_cards WHERE writer_account_id = \?/u.test(sql)) {
               const accountId = args[0] as string;
-              if (!db.enabled.has(accountId)) db.enabled.set(accountId, true);
-              return { meta: { changes: 1 } } as D1Result;
-            }
-            if (/INSERT INTO discovery_reply_state/u.test(sql)) {
-              const accountId = args[0] as string;
-              db.enabled.set(accountId, /VALUES \(\?1, 1,/u.test(sql));
-              return { meta: { changes: 1 } } as D1Result;
-            }
-            if (/DELETE FROM discovery_cards[\s\S]*writer_account_id = \?/u.test(sql)) {
-              const accountId = args[0] as string;
-              if (/AND EXISTS/u.test(sql) && db.enabled.get(accountId) !== true) {
-                return { meta: { changes: 0 } } as D1Result;
-              }
               let changes = 0;
               for (const [key, row] of db.rows) {
-                const scopedPublishDelete = /writer_app_id/u.test(sql);
-                if (
-                  row.writer_account_id === accountId
-                  && (!scopedPublishDelete
-                    || (row.writer_app_id === args[1]
-                      && row.discovery_epoch_index === args[2]))
-                ) {
+                if (row.writer_account_id === accountId) {
                   db.rows.delete(key);
                   changes += 1;
                 }
@@ -80,9 +53,6 @@ class DiscoveryCardDb {
             }
             if (/INSERT INTO discovery_cards/u.test(sql)) {
               const hasWriterColumns = /writer_account_id/u.test(sql);
-              if (/WHERE EXISTS/u.test(sql) && db.enabled.get(args[6] as string) !== true) {
-                return { meta: { changes: 0 } } as D1Result;
-              }
               const row = {
                 drawer_name: args[0] as string,
                 label: args[1] as string,
@@ -166,20 +136,9 @@ async function takeBack(store: D1Database) {
   return await response.json() as { removed: number };
 }
 
-async function enableReplies(store: D1Database) {
-  const response = await handleDiscoveryRepliesEnable(
-    jsonRequest("http://test/v1/discovery-cards/enable-replies", {
-      account_id: "task-4752-account",
-    }),
-    store,
-  );
-  expect(response.status).toBe(200);
-}
-
 describe("TASK4752 publish a card and take it back", () => {
   it("publishes, takes back, switches, and repeats without duplicate live cards", async () => {
     const store = db();
-    await enableReplies(store);
     const initial = await accountRowCount(store, "task-4752-account");
     expect(initial).toBe(0);
 
@@ -195,7 +154,6 @@ describe("TASK4752 publish a card and take it back", () => {
     expect(afterBack).toBe(0);
     console.log(`TASK4752 take-back removed ${back.removed} rows ${afterBack}`);
 
-    await enableReplies(store);
     const allowedAgain = await publish(store, "allowed");
     const afterAllowedAgain = await accountRowCount(store, "task-4752-account");
     expect(allowedAgain.wrote).toBe(1);
@@ -221,7 +179,6 @@ describe("TASK4752 publish a card and take it back", () => {
 
   it("take-back deletes this account across drawers and both kept weeks", async () => {
     const store = db() as unknown as DiscoveryCardDb & D1Database;
-    await enableReplies(store);
     const current = currentDiscoveryEpochStamp();
     const previous = addDiscoveryEpochWeeks(current, -1);
     const cards = [
@@ -233,7 +190,7 @@ describe("TASK4752 publish a card and take it back", () => {
         discovery_epoch: current,
       }),
       await buildDiscoveryCard({
-        app_id: "signal",
+        app_id: "discord",
         account_handle: "drawer-b@example",
         setting_material: "discord:task-4752-account:allowed:b",
         sealed_note: "sealed-b",
@@ -270,81 +227,5 @@ describe("TASK4752 publish a card and take it back", () => {
       `TASK4752 two-week-all-drawers removed ${back.removed} ` +
         `survivor_other=${await accountRowCount(store, "task-4752-other")}`,
     );
-  });
-});
-
-describe("TASK4764 authoritative off ordering", () => {
-  it("deletes every target in both retained weeks, preserves same-drawer protected bytes, and refuses publish after off", async () => {
-    const store = db() as unknown as DiscoveryCardDb & D1Database;
-    const current = currentDiscoveryEpochStamp();
-    const previous = addDiscoveryEpochWeeks(current, -1);
-    const target = "task-4764-target";
-    const protectedAccount = "task-4764-protected";
-    const rows: StoredDiscoveryCard[] = [];
-    for (const [drawer, epoch] of [["a10", current], ["a10", previous], ["b20", current], ["b20", previous]] as const) {
-      for (const [writer, prefix] of [[target, "TARGET"], [protectedAccount, "PROTECTED"]] as const) {
-        const label = `${prefix}-${drawer}-${epoch}`.padEnd(22, "x");
-        rows.push({
-          drawer_name: drawer,
-          label,
-          sealed_note: `${prefix}-BYTES-${drawer}-${epoch}`,
-          discovery_epoch: epoch,
-          discovery_epoch_index: discoveryEpochIndex(epoch)!,
-          updated_at: 1,
-          writer_account_id: writer,
-          writer_app_id: "discord",
-          writer_setting: "allowed",
-        });
-      }
-    }
-    for (const row of rows) store.rows.set(`${row.drawer_name}:${row.label}`, row);
-
-    const enable = await handleDiscoveryRepliesEnable(
-      jsonRequest("http://test/v1/discovery-cards/enable-replies", { account_id: target }),
-      store,
-    );
-    expect(enable.status).toBe(200);
-    const beforeRace = await handleDiscoveryCardsPublish(
-      jsonRequest("http://test/v1/discovery-cards/publish", {
-        account_id: target,
-        app_id: "discord",
-        account_handle: "race-before-off",
-        setting: "allowed",
-        sealed_note: "TARGET-RACING-BYTES",
-      }),
-      store,
-    );
-    expect(beforeRace.status).toBe(201);
-
-    const off = await handleDiscoveryCardsTakeBack(
-      jsonRequest("http://test/v1/discovery-cards/take-back", { account_id: target }),
-      store,
-    );
-    expect(off.status).toBe(200);
-    expect(await accountRowCount(store, target)).toBe(0);
-    expect(await accountRowCount(store, protectedAccount)).toBe(4);
-    const protectedBefore = rows
-      .filter((row) => row.writer_account_id === protectedAccount)
-      .map((row) => `${row.drawer_name}:${row.label}:${row.sealed_note}`)
-      .sort();
-    const protectedAfter = Array.from(store.rows.values())
-      .filter((row) => row.writer_account_id === protectedAccount)
-      .map((row) => `${row.drawer_name}:${row.label}:${row.sealed_note}`)
-      .sort();
-    expect(protectedAfter).toEqual(protectedBefore);
-
-    const afterOff = await handleDiscoveryCardsPublish(
-      jsonRequest("http://test/v1/discovery-cards/publish", {
-        account_id: target,
-        app_id: "discord",
-        account_handle: "race-after-off",
-        setting: "allowed",
-        sealed_note: "TARGET-AFTER-OFF-BYTES",
-      }),
-      store,
-    );
-    expect(afterOff.status).toBe(409);
-    expect(await accountRowCount(store, target)).toBe(0);
-    console.log("TASK4764 server_order target_live=0 protected_live=4 publish_after_off=409 drawers=a10,b20 weeks=2");
   });
 });

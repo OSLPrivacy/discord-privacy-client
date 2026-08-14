@@ -40,6 +40,8 @@ export const OSL_CHAT_DELIVERY_INTERVAL_MS = 30_000;
 /** Retained history/timeline depth, matching the pre-extraction behaviour. */
 const OSL_CHAT_MESSAGE_RETENTION = 200;
 
+export const OSL_CHAT_OPEN_REFUSAL_SENTENCE = "This encrypted message could not be opened";
+
 export function oslChatUnrecognizedWireRowsNotice(count: number): string {
   const rows = count === 1 ? "1 protected message" : `${count.toLocaleString("en-US")} protected messages`;
   const subjects = count === 1 ? "That row was" : "Those rows were";
@@ -79,6 +81,7 @@ export interface OslChatDeliveryHost {
   activateContext(personId: string): Promise<OslChatDeliveryContext | null>;
   closeContext(): Promise<boolean>;
   drainInbox(): Promise<NativeDiscordOverlayOpenedBatch | null>;
+  drainRefusal?(): string | null;
   loadHistory(): Promise<OslChatHistoryRow[] | null>;
   /**
    * @param background `true` for a conversation the user is not looking at
@@ -86,6 +89,7 @@ export interface OslChatDeliveryHost {
    * new messages render in place.
    */
   commitBatch(personId: string, batch: NativeDiscordOverlayOpenedBatch, background: boolean): void;
+  commitNotice?(personId: string, message: OslChatMessage, background: boolean): void;
   commitHistory(personId: string, rows: readonly OslChatHistoryRow[], context: OslChatDeliveryContext): void;
 }
 
@@ -166,6 +170,7 @@ export function oslChatHistoryMessages(
       body: row.plaintext,
       state: incoming ? "received" as const : "sent" as const,
       timestampLabel: formatTimestamp(row.createdAt),
+      dateLabel: oslChatDateLabel(row.createdAt),
       reactions: row.reactions,
     };
   });
@@ -182,7 +187,36 @@ export function receivedOslChatBatchMessage(
     body: incoming.plaintext,
     state: incoming.viewOnceConsumed ? "opened" : "received",
     timestampLabel: formatTimestamp(incoming.createdAt),
+    dateLabel: oslChatDateLabel(incoming.createdAt),
+    expiresAt: incoming.expiresAt,
   };
+}
+
+export function pruneExpiredOslChatMessages(
+  messages: readonly OslChatMessage[],
+  nowSeconds: number,
+): OslChatMessage[] {
+  return messages.filter((message) => message.expiresAt === undefined || message.expiresAt > nowSeconds);
+}
+
+export function oslChatOpenRefusalMessage(
+  localMessageId: string,
+  refusal: string,
+  timestampLabel: string,
+): OslChatMessage | null {
+  if (refusal !== OSL_CHAT_OPEN_REFUSAL_SENTENCE) return null;
+  return {
+    messageId: localMessageId,
+    direction: "incoming",
+    body: refusal,
+    state: "failed",
+    timestampLabel,
+  };
+}
+
+function oslChatDateLabel(epochSeconds: number): string {
+  return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", year: "numeric" })
+    .format(new Date(epochSeconds * 1_000));
 }
 
 /**
@@ -213,7 +247,7 @@ function unrecognizedWireRowsBatch(count: number): NativeDiscordOverlayOpenedBat
     decryptDisplayEnabled: true,
     deferredRows: 0,
     unrecognizedWireRows: 0,
-    contentGoneRows: 0,
+    contentGoneRows: 0, alreadyOpened: 0,
   };
 }
 
@@ -242,7 +276,14 @@ export function createOslChatDeliveryRuntime(
     // The user may have sent or navigated while protection was being applied.
     if (host.conversationBusy() || host.openConversationId() !== personId) return;
     const batch = await host.drainInbox();
-    if (!batch) return;
+    if (!batch) {
+      const refusal = host.drainRefusal?.() ?? null;
+      const notice = refusal
+        ? oslChatOpenRefusalMessage(`open-refusal-${Date.now()}`, refusal, "Now")
+        : null;
+      if (notice && host.openConversationId() === personId) host.commitNotice?.(personId, notice, false);
+      return;
+    }
     if (host.openConversationId() !== personId) return;
     host.commitBatch(personId, batch, false);
     if (batch.unrecognizedWireRows > 0) {

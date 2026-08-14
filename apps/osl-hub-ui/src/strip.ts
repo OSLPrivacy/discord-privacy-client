@@ -44,8 +44,6 @@ export interface OslStripOptions {
 export interface OslStripHandle {
   readonly root: HTMLElement;
   update(state: OslStripState): void;
-  /** Opens (rather than toggles) the quick-settings panel. Used by the last coach tip. */
-  openQuickSettings(): void;
   destroy(): void;
 }
 
@@ -97,19 +95,19 @@ export function createOslStrip(host: HTMLElement, options: OslStripOptions): Osl
   <div class="osl-strip" role="toolbar" aria-label="OSL strip" data-osl-strip data-reveal-visible="false">
     <div class="osl-strip__cluster osl-strip__cluster--left">
       <button class="osl-strip__logo" type="button" data-chip="home" aria-label="OSL — back to home"><img src="${escapeHtml(options.logoUrl)}" alt=""/></button>
-      <button class="osl-strip__chip" type="button" data-chip="plan" data-coach-anchor="your-plan"><span class="osl-strip__face"></span></button>
-      <button class="osl-strip__chip osl-strip__chip--icon" type="button" data-chip="quick" data-coach-anchor="quick-settings" aria-haspopup="menu" aria-expanded="false" aria-label="Quick settings">${ICONS.tune}</button>
-      <button class="osl-strip__chip osl-strip__chip--icon" type="button" data-chip="burn" data-coach-anchor="burn" aria-label="Burn">${ICONS.flame}</button>
+      <button class="osl-strip__chip" type="button" data-chip="plan"><span class="osl-strip__face"></span></button>
+      <button class="osl-strip__chip osl-strip__chip--icon" type="button" data-chip="quick" aria-haspopup="menu" aria-expanded="false" aria-label="Quick settings">${ICONS.tune}</button>
+      <button class="osl-strip__chip osl-strip__chip--icon" type="button" data-chip="burn" aria-label="Burn">${ICONS.flame}</button>
     </div>
     <div class="osl-strip__spring"></div>
     <div class="osl-strip__cluster osl-strip__cluster--right">
-      <button class="osl-strip__chip" type="button" data-chip="whitelist" data-coach-anchor="verified-senders" aria-haspopup="menu" aria-expanded="false">${ICONS.shield}<span class="osl-strip__face"></span></button>
+      <button class="osl-strip__chip" type="button" data-chip="whitelist" aria-haspopup="menu" aria-expanded="false">${ICONS.shield}<span class="osl-strip__face"></span></button>
       <span class="osl-strip__divider" aria-hidden="true"></span>
-      <button class="osl-strip__chip" type="button" data-chip="timer" data-coach-anchor="timer" aria-haspopup="menu" aria-expanded="false">${ICONS.clock}<span class="osl-strip__face"></span></button>
-      <button class="osl-strip__chip" type="button" data-chip="once" data-coach-anchor="view-once">${ICONS.onceEye}<span class="osl-strip__face"></span></button>
+      <button class="osl-strip__chip" type="button" data-chip="timer" aria-haspopup="menu" aria-expanded="false">${ICONS.clock}<span class="osl-strip__face"></span></button>
+      <button class="osl-strip__chip" type="button" data-chip="once">${ICONS.onceEye}<span class="osl-strip__face"></span></button>
       <span class="osl-strip__divider" aria-hidden="true"></span>
-      <button class="osl-strip__chip osl-strip__chip--icon" type="button" data-chip="lock" data-coach-anchor="lock"></button>
-      <button class="osl-strip__chip osl-strip__chip--icon" type="button" data-chip="eye" data-coach-anchor="reveal" aria-pressed="false" aria-label="Click to see the real message">${ICONS.eye}</button>
+      <button class="osl-strip__chip osl-strip__chip--icon" type="button" data-chip="lock"></button>
+      <button class="osl-strip__chip osl-strip__chip--icon" type="button" data-chip="eye" aria-pressed="false" aria-label="Click to see the real message">${ICONS.eye}</button>
       <span class="osl-strip__divider osl-strip__divider--wc" aria-hidden="true"></span>
       <button class="osl-strip__wc" type="button" data-window-control="minimise" aria-label="Minimise">${ICONS.minimise}</button>
       <button class="osl-strip__wc" type="button" data-window-control="maximise" aria-label="Maximise">${ICONS.maximise}</button>
@@ -306,10 +304,5 @@ export function createOslStrip(host: HTMLElement, options: OslStripOptions): Osl
     host.innerHTML = "";
   }
 
-  function openQuickSettings(): void {
-    openPanel = "quick";
-    renderPanels();
-  }
-
-  return { root, update, openQuickSettings, destroy };
+  return { root, update, destroy };
 }

@@ -1,0 +1,24 @@
+{
+  "files": [
+    {
+      "kind": "program",
+      "originalName": "task-3220-program.exe",
+      "renamedName": "quarterly-plan.pdf"
+    },
+    {
+      "kind": "archive",
+      "originalName": "task-3220-archive.zip",
+      "renamedName": "meeting-agenda.md"
+    },
+    {
+      "kind": "disk_image",
+      "originalName": "task-3220-disk.iso",
+      "renamedName": "travel-budget.csv"
+    },
+    {
+      "kind": "script",
+      "originalName": "task-3220-script.sh",
+      "renamedName": "shopping-list.txt"
+    }
+  ]
+}

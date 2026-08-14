@@ -1,4 +1,5 @@
 use ipc::allowed_places::AllowedPlaceRecord;
+use ipc::auto_whitelist_rules::parse_messenger_whitelist_kind;
 use ipc::commands::{cmd_osl_new_place, cmd_osl_save_auto_whitelist_rule};
 use ipc::AppState;
 use std::process::ExitCode;
@@ -19,11 +20,11 @@ fn main() -> ExitCode {
 }
 
 fn run(kind: &str) -> Result<(), String> {
+    parse_messenger_whitelist_kind(kind)?;
     let state = AppState::new();
-    if matches!(kind, "direct_message" | "group_chat") {
-        let rule_key = format!("messenger:{kind}");
-        cmd_osl_save_auto_whitelist_rule(&state, rule_key, "always".to_owned(), None)?;
-    }
+    let kind = parse_messenger_whitelist_kind(kind)?.id();
+    let rule_key = format!("messenger:{kind}");
+    cmd_osl_save_auto_whitelist_rule(&state, rule_key, "always".to_owned(), None)?;
 
     let place = AllowedPlaceRecord {
         app: "messenger".to_owned(),

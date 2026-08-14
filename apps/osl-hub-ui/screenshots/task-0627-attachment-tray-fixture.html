@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en" data-fixture-os="linux">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark light" />
+    <link rel="stylesheet" href="/src/styles.css" />
+    <link rel="stylesheet" href="/src/attachment-tray-screen.css" />
+    <title>OSL Privacy - TASK 0627</title>
+  </head>
+  <body class="attachment-tray-stage">
+    <div id="app"></div>
+    <script type="module">
+      const { renderAttachmentTrayScreen } = await import("/src/attachment-tray-screen.ts");
+      const { ATTACHMENT_TRAY_SCREEN_PREVIEWS, ATTACHMENT_TRAY_SCREEN_RECORDS } = await import(
+        "/src/attachment-tray-screen-data.ts"
+      );
+
+      // Capture the user-visible consequence of adding files, rather than
+      // rendering a prefilled static string: the tray begins empty and each
+      // selected record is appended before the fixed-screen image is taken.
+      const records = [];
+      const previews = {};
+      const render = () => {
+        document.querySelector("#app").innerHTML = renderAttachmentTrayScreen(records, previews);
+      };
+      const addAttachmentToTray = (record) => {
+        records.push(record);
+        const preview = ATTACHMENT_TRAY_SCREEN_PREVIEWS[record.removableId];
+        if (preview) previews[record.removableId] = preview;
+        render();
+      };
+
+      render();
+      addAttachmentToTray(ATTACHMENT_TRAY_SCREEN_RECORDS[0]);
+      addAttachmentToTray(ATTACHMENT_TRAY_SCREEN_RECORDS[1]);
+      await document.fonts.ready;
+      const images = [...document.querySelectorAll(".attachment-tray-card-preview-image")];
+      await Promise.all(images.map((image) => image.complete ? null : image.decode().catch(() => null)));
+      document.documentElement.dataset.addedCount = String(records.length);
+      document.documentElement.dataset.task0627 = "ready";
+    </script>
+  </body>
+</html>

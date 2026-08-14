@@ -8,7 +8,7 @@ vi.mock("@tauri-apps/api/event", () => ({ emitTo: mocks.emitTo, listen: mocks.li
 vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: mocks.getCurrentWindow }));
 
 const shippingHomeAppIds = [
-  "discord", "gmail", "outlook", "proton", "yahoo", "aol", "gmx", "maildotcom", "icloud", "tuta",
+  "discord", "gmail", "outlook", "proton", "yahoo", "aol", "gmx", "maildotcom", "icloud",
 ] as const;
 
 // D-251: `src/main.ts` is ~10k lines, and importing it costs seconds. This file

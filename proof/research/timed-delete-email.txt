@@ -1,0 +1,7 @@
+checked 2026-08-08
+claim supported: OSL timed delete cannot recall an email after normal delivery
+
+Microsoft Support says personal email accounts cannot use message recall and, once sent, the message is outside the sender's control. Its "Undo send" feature delays sending rather than recalling a delivered message:
+https://support.microsoft.com/en-us/outlook/mail/how-to-recall-an-email-in-outlook-requirements-limitations-steps
+
+Microsoft documents a narrow Microsoft 365 same-organization, unopened-message exception. OSL does not operate that Exchange-only facility, so it cannot promise or perform recall for email. This proof supports the product warning's OSL/timed-delete scope; it does not claim that no proprietary mail server has any administrative recall feature.

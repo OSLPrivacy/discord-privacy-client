@@ -76,6 +76,42 @@ export function resetAppearancePreferences(storage: AppearanceStorage): Appearan
   return saveAppearancePreferences(storage, { ...defaultAppearancePreferences });
 }
 
+/**
+ * Holds the unsaved Appearance screen state.  Preview changes only replace this
+ * in-memory draft; the one storage write is deliberately owned by `save`.
+ */
+export interface AppearancePreferencesEditor {
+  preview(next: AppearancePreferences): AppearancePreferences;
+  cancel(): AppearancePreferences;
+  save(storage: AppearanceStorage): AppearancePreferences;
+  reset(storage: AppearanceStorage): AppearancePreferences;
+}
+
+export function createAppearancePreferencesEditor(initial: AppearancePreferences): AppearancePreferencesEditor {
+  let saved = parseAppearancePreferences(JSON.stringify(initial));
+  let draft = { ...saved };
+  return {
+    preview(next) {
+      draft = parseAppearancePreferences(JSON.stringify(next));
+      return { ...draft };
+    },
+    cancel() {
+      draft = { ...saved };
+      return { ...draft };
+    },
+    save(storage) {
+      saved = saveAppearancePreferences(storage, draft);
+      draft = { ...saved };
+      return { ...saved };
+    },
+    reset(storage) {
+      saved = resetAppearancePreferences(storage);
+      draft = { ...saved };
+      return { ...saved };
+    },
+  };
+}
+
 function label(value: string): string {
   return value[0].toUpperCase() + value.slice(1);
 }

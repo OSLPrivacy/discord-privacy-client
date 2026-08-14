@@ -15,6 +15,24 @@ describe("username canonicalization", () => {
       expect(validNormalizedUsername(value)).toBe(false);
   });
 
+  it("proves the name boundary accepts one and sixteen, and refuses the rest", () => {
+    const cases = [
+      ["one character", "a", true],
+      ["sixteen characters", "a".repeat(16), true],
+      ["seventeen characters", "a".repeat(17), false],
+      ["empty", "", false],
+      ["space", " ", false],
+      ["dash", "-", false],
+      ["emoji", "😀", false],
+    ] as const;
+
+    for (const [label, name, expected] of cases) {
+      const actual = validNormalizedUsername(name);
+      console.log(`NAME_CHECK ${label} ${JSON.stringify(name)} accepted=${actual}`);
+      expect(actual, `${label}: ${JSON.stringify(name)}`).toBe(expected);
+    }
+  });
+
   // D-248. The skeleton is what makes `idx_username_directory_skeleton` bite.
   it("folds ASCII confusables that the shipping grammar accepts", () => {
     // Every one of these is claimable under USERNAME_RE, so each pair is a

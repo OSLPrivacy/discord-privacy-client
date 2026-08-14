@@ -20,6 +20,116 @@ pub use crate::native_a11y::{
 pub const WHATSAPP_ROOT_WINDOW_CLASS: &str = "WinUIDesktopWin32WindowClass";
 pub const WHATSAPP_CARRIER_PREFIX: &str = "OSL1.WA.";
 
+/// The only reviewed ways a person can ask OSL to prepare a WhatsApp cover.
+///
+/// This is deliberately not an insertion mode.  A trigger says when the
+/// person invokes preparation; [`WhatsAppCoverInsertion`] says how the already
+/// prepared cover is inserted.  Keeping the two axes separate prevents a UI
+/// label such as "Type naturally" from becoming an unreviewed send trigger.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WhatsAppSendTrigger {
+    Enter,
+    EnterX2,
+    Clipboard,
+}
+
+impl WhatsAppSendTrigger {
+    pub const ALL: [Self; 3] = [Self::Enter, Self::EnterX2, Self::Clipboard];
+
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Enter => "Enter",
+            Self::EnterX2 => "Enter x2",
+            Self::Clipboard => "Clipboard",
+        }
+    }
+
+    pub fn parse(name: &str) -> Result<Self, WhatsAppCoverPreparationError> {
+        match name {
+            "Enter" => Ok(Self::Enter),
+            "Enter x2" => Ok(Self::EnterX2),
+            "Clipboard" => Ok(Self::Clipboard),
+            // These names belonged to a broader send-choice vocabulary.  They
+            // are refused explicitly so a caller cannot silently downgrade a
+            // WhatsApp trigger into a different behavior.
+            "Manual" | "Instant" | "Match typing" => Err(
+                WhatsAppCoverPreparationError::RefusedTriggerName(name.to_owned()),
+            ),
+            _ => Err(WhatsAppCoverPreparationError::UnknownTriggerName(
+                name.to_owned(),
+            )),
+        }
+    }
+}
+
+/// The independent setting for inserting an already prepared cover.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WhatsAppCoverInsertion {
+    InsertOnSend,
+    TypeNaturally,
+}
+
+impl WhatsAppCoverInsertion {
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::InsertOnSend => "Insert on send",
+            Self::TypeNaturally => "Type naturally",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum WhatsAppCoverPreparationError {
+    RefusedTriggerName(String),
+    UnknownTriggerName(String),
+    EmptyCover,
+}
+
+impl std::fmt::Display for WhatsAppCoverPreparationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::RefusedTriggerName(name) => write!(
+                f,
+                "WhatsApp send trigger {name:?} is refused; choose Enter, Enter x2, or Clipboard"
+            ),
+            Self::UnknownTriggerName(name) => write!(f, "unknown WhatsApp send trigger {name:?}"),
+            Self::EmptyCover => f.write_str("WhatsApp cover must not be empty"),
+        }
+    }
+}
+
+impl std::error::Error for WhatsAppCoverPreparationError {}
+
+/// A prepared WhatsApp cover.  This records the trigger and the independent
+/// insertion preference; it does not place text or commit a message.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WhatsAppPreparedCover {
+    pub prepared: bool,
+    pub trigger: WhatsAppSendTrigger,
+    pub cover_insertion: WhatsAppCoverInsertion,
+    pub cover_text: String,
+    pub cover_bytes: usize,
+}
+
+/// Validate one exact trigger and prepare its cover without sending it.
+pub fn prepare_whatsapp_cover_for_trigger(
+    trigger_name: &str,
+    cover_insertion: WhatsAppCoverInsertion,
+    cover_text: &str,
+) -> Result<WhatsAppPreparedCover, WhatsAppCoverPreparationError> {
+    let trigger = WhatsAppSendTrigger::parse(trigger_name)?;
+    if cover_text.is_empty() {
+        return Err(WhatsAppCoverPreparationError::EmptyCover);
+    }
+    Ok(WhatsAppPreparedCover {
+        prepared: true,
+        trigger,
+        cover_insertion,
+        cover_text: cover_text.to_owned(),
+        cover_bytes: cover_text.len(),
+    })
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WhatsAppProcessKind {
     StoreAppRoot,
@@ -909,6 +1019,97 @@ fn whatsapp_composer_failure(error: Uia2ComposerError) -> WhatsAppPlacementStatu
     }
 }
 
+/// The direct, read-only observation of WhatsApp's visible typing box.
+///
+/// `value` is returned exactly as UI Automation reports it; the state never
+/// infers an empty value from the element name or placeholder.  Focus is a
+/// separate UIA property, so a visible and writable composer whose focus has
+/// moved elsewhere is reported as `Unfocused`, rather than being mistaken for
+/// a ready-to-type empty box.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WhatsAppBoxStateRead {
+    pub state: WhatsAppBoxFocusState,
+    pub value: String,
+    pub focused_element: Option<Uia2Editable>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WhatsAppBoxFocusState {
+    FocusedEmpty,
+    FocusedNonempty,
+    Unfocused,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WhatsAppBoxReadError {
+    AppWindowUnavailable,
+    WebView2ContentUnavailable,
+    WakeRefused,
+    AccessibilityUnavailable,
+    CallTimedOut,
+    ComposerUnavailable,
+    ComposerNotWritable,
+    ComposerAmbiguous,
+    ValueUnavailable,
+}
+
+/// Read the one visible WhatsApp composer selected by the calibrated UIA2
+/// plan. This method makes no focus changes and performs no write.
+pub fn read_whatsapp_box_state(
+    host: &dyn Uia2Syscalls,
+) -> Result<WhatsAppBoxStateRead, WhatsAppBoxReadError> {
+    let acquired =
+        acquire_uia2_window(WHATSAPP_UIA2_WINDOW_PLAN, host).map_err(whatsapp_box_acquire_error)?;
+    let editables =
+        acquire_uia2_editables(host, acquired).map_err(|_| WhatsAppBoxReadError::CallTimedOut)?;
+    let composer = resolve_uia2_composer(WHATSAPP_COMPOSER_MATCHER, &editables)
+        .map_err(whatsapp_box_composer_error)?;
+    let value = read_uia2_composer_value(host, acquired, &composer)
+        .map_err(|_| WhatsAppBoxReadError::CallTimedOut)?
+        .ok_or(WhatsAppBoxReadError::ValueUnavailable)?;
+    let (state, focused_element) = if composer.has_keyboard_focus {
+        (
+            if value.is_empty() {
+                WhatsAppBoxFocusState::FocusedEmpty
+            } else {
+                WhatsAppBoxFocusState::FocusedNonempty
+            },
+            Some(composer),
+        )
+    } else {
+        (WhatsAppBoxFocusState::Unfocused, None)
+    };
+    Ok(WhatsAppBoxStateRead {
+        state,
+        value,
+        focused_element,
+    })
+}
+
+fn whatsapp_box_acquire_error(error: Uia2AcquireError) -> WhatsAppBoxReadError {
+    match whatsapp_acquire_failure(error) {
+        WhatsAppPlacementStatus::AppWindowUnavailable => WhatsAppBoxReadError::AppWindowUnavailable,
+        WhatsAppPlacementStatus::WebView2ContentUnavailable => {
+            WhatsAppBoxReadError::WebView2ContentUnavailable
+        }
+        WhatsAppPlacementStatus::WakeRefused => WhatsAppBoxReadError::WakeRefused,
+        WhatsAppPlacementStatus::AccessibilityUnavailable { .. } => {
+            WhatsAppBoxReadError::AccessibilityUnavailable
+        }
+        WhatsAppPlacementStatus::CallTimedOut => WhatsAppBoxReadError::CallTimedOut,
+        _ => unreachable!("acquisition status must map to a read error"),
+    }
+}
+
+fn whatsapp_box_composer_error(error: Uia2ComposerError) -> WhatsAppBoxReadError {
+    match whatsapp_composer_failure(error) {
+        WhatsAppPlacementStatus::ComposerUnavailable => WhatsAppBoxReadError::ComposerUnavailable,
+        WhatsAppPlacementStatus::ComposerNotWritable => WhatsAppBoxReadError::ComposerNotWritable,
+        WhatsAppPlacementStatus::ComposerAmbiguous => WhatsAppBoxReadError::ComposerAmbiguous,
+        _ => unreachable!("composer status must map to a read error"),
+    }
+}
+
 /// Resolve WhatsApp's composer through the shared substrate and place a
 /// carrier into it. Placement only.
 ///
@@ -1780,6 +1981,85 @@ mod tests {
         RecordedHost::new(whatsapp_graph(), WHATSAPP_MEASURED_ELEMENTS)
             .chromium(2)
             .with_editables(editables)
+    }
+
+    #[derive(Clone)]
+    struct BoxStateFixture {
+        label: &'static str,
+        value: &'static str,
+        focused: bool,
+        expected_state: WhatsAppBoxFocusState,
+    }
+
+    fn box_state_fixture_host(fixture: &BoxStateFixture) -> RecordedHost {
+        let mut editable = composer("Type a message");
+        editable.has_keyboard_focus = fixture.focused;
+        let host = whatsapp_host(vec![editable]);
+        *host.value.borrow_mut() = Some(fixture.value.to_owned());
+        host
+    }
+
+    #[test]
+    fn task_1063_direct_reader_distinguishes_empty_nonempty_and_unfocused_fixture_records() {
+        let fixtures = [
+            BoxStateFixture {
+                label: "empty",
+                value: "",
+                focused: true,
+                expected_state: WhatsAppBoxFocusState::FocusedEmpty,
+            },
+            BoxStateFixture {
+                label: "nonempty",
+                value: "prepared WhatsApp draft",
+                focused: true,
+                expected_state: WhatsAppBoxFocusState::FocusedNonempty,
+            },
+            BoxStateFixture {
+                label: "unfocused",
+                value: "draft left visible after focus moved",
+                focused: false,
+                expected_state: WhatsAppBoxFocusState::Unfocused,
+            },
+        ];
+
+        for fixture in &fixtures {
+            let read = read_whatsapp_box_state(&box_state_fixture_host(fixture))
+                .expect("prepared WhatsApp box-state fixture reads directly");
+            println!(
+                "TASK1063 fixture={} state={:?} value={:?} focused_element={}",
+                fixture.label,
+                read.state,
+                read.value,
+                read.focused_element.is_some(),
+            );
+            assert_eq!(
+                read.state, fixture.expected_state,
+                "fixture={}",
+                fixture.label
+            );
+            assert_eq!(read.value, fixture.value, "fixture={}", fixture.label);
+            assert_eq!(
+                read.focused_element.is_some(),
+                fixture.focused,
+                "fixture={}",
+                fixture.label
+            );
+        }
+
+        let renamed_nonempty = BoxStateFixture {
+            label: "nonempty-renamed",
+            value: "renamed prepared WhatsApp draft",
+            focused: true,
+            expected_state: WhatsAppBoxFocusState::FocusedNonempty,
+        };
+        let read = read_whatsapp_box_state(&box_state_fixture_host(&renamed_nonempty))
+            .expect("renamed nonempty fixture reads directly");
+        println!(
+            "TASK1063 fixture={} state={:?} value={:?} changed=true",
+            renamed_nonempty.label, read.state, read.value,
+        );
+        assert_eq!(read.value, renamed_nonempty.value);
+        assert_ne!(read.value, fixtures[1].value);
     }
 
     /// The shell with no sibling WebView2 window: what a single-window probe

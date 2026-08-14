@@ -1,9 +1,9 @@
 <#
 Runs a PowerShell payload in the logged-on VM desktop session.
 
-Azure VM run-command runs as SYSTEM in session 0. Window and accessibility work
-must be delegated to a scheduled task registered with LogonType Interactive so
-the payload executes where the desktop actually is.
+Azure VM run-command runs as SYSTEM in session 0. Window, browser, and desktop
+state checks must be delegated to an Interactive scheduled task so the payload
+executes where the owner desktop actually is.
 #>
 param(
   [Parameter(Mandatory = $true)]
@@ -11,6 +11,9 @@ param(
   [string]$InvocationId,
 
   [uri]$PayloadUri,
+
+  [ValidatePattern('^C:\\OSL\\desktop-runner\\payloads\\[A-Za-z0-9_.-]+\.ps1$')]
+  [string]$PayloadPath = '',
 
   [ValidatePattern('^[A-Za-z0-9+/=]+$')]
   [string]$PayloadBase64 = '',
@@ -28,7 +31,10 @@ param(
   [ValidatePattern('^[A-Za-z0-9_.\\-]+$')]
   [string]$InteractiveUser = 'osladmin',
 
-  [ValidateRange(5, 900)]
+  [ValidatePattern('^[A-Za-z0-9_ .:\\-]*$')]
+  [string]$PayloadArguments = '',
+
+  [ValidateRange(5, 2400)]
   [int]$WaitSeconds = 90
 )
 
@@ -40,14 +46,14 @@ $root = 'C:\OSL\desktop-runner'
 $outRoot = 'C:\OSL\out'
 $allowedPayloadHost = 'osltestartifactsa7d5.blob.core.windows.net'
 $invocationRoot = Join-Path $root $InvocationId
-$payloadPath = Join-Path $invocationRoot 'payload.ps1'
+$payloadFilePath = Join-Path $invocationRoot 'payload.ps1'
 $wrapperPath = Join-Path $invocationRoot 'wrapper.ps1'
 $stdoutPath = Join-Path $invocationRoot 'stdout.txt'
 $stderrPath = Join-Path $invocationRoot 'stderr.txt'
 $taskLogPath = Join-Path $outRoot "$InvocationId.log"
 $resultPath = Join-Path $invocationRoot 'result.json'
 $resultTemporary = "$resultPath.tmp"
-$taskName = "OSLQA_4951_$InvocationId"
+$taskName = "OSLQA_$InvocationId"
 
 if (Test-Path -LiteralPath $invocationRoot) { throw 'desktop-runner invocation already exists' }
 [void](New-Item -ItemType Directory -Path $invocationRoot -Force)
@@ -78,8 +84,13 @@ function Save-ManagedIdentityArtifact([uri]$Uri, [string]$Destination) {
   }
 }
 
-if ($PayloadUri) {
-  Save-ManagedIdentityArtifact $PayloadUri $payloadPath
+if ($PayloadPath) {
+  if (-not (Test-Path -LiteralPath $PayloadPath -PathType Leaf)) {
+    throw 'staged desktop-runner payload path is missing'
+  }
+  Copy-Item -LiteralPath $PayloadPath -Destination $payloadFilePath -Force
+} elseif ($PayloadUri) {
+  Save-ManagedIdentityArtifact $PayloadUri $payloadFilePath
 } elseif ($PayloadGzipBase64) {
   $compressedBytes = [Convert]::FromBase64String($PayloadGzipBase64)
   $inputStream = [IO.MemoryStream]::new($compressedBytes)
@@ -87,7 +98,7 @@ if ($PayloadUri) {
   $outputStream = [IO.MemoryStream]::new()
   try {
     $gzipStream.CopyTo($outputStream)
-    [IO.File]::WriteAllBytes($payloadPath, $outputStream.ToArray())
+    [IO.File]::WriteAllBytes($payloadFilePath, $outputStream.ToArray())
   } finally {
     $outputStream.Dispose()
     $gzipStream.Dispose()
@@ -95,11 +106,11 @@ if ($PayloadUri) {
   }
 } elseif ($PayloadBase64) {
   $payloadBytes = [Convert]::FromBase64String($PayloadBase64)
-  [IO.File]::WriteAllBytes($payloadPath, $payloadBytes)
+  [IO.File]::WriteAllBytes($payloadFilePath, $payloadBytes)
 } else {
-  throw 'desktop-runner requires PayloadUri or PayloadBase64'
+  throw 'desktop-runner requires PayloadPath, PayloadUri, PayloadBase64, or PayloadGzipBase64'
 }
-$actualPayloadSha = (Get-FileHash -LiteralPath $payloadPath -Algorithm SHA256).Hash.ToLowerInvariant()
+$actualPayloadSha = (Get-FileHash -LiteralPath $payloadFilePath -Algorithm SHA256).Hash.ToLowerInvariant()
 if ($actualPayloadSha -cne $PayloadSha256.ToLowerInvariant()) { throw 'payload SHA-256 mismatch' }
 
 $explorers = @(Get-CimInstance Win32_Process -Filter "Name = 'explorer.exe'" | Where-Object {
@@ -116,11 +127,10 @@ if ($owner.ReturnValue -ne 0 -or $owner.User -cne $InteractiveUser) {
 Set-StrictMode -Version Latest
 `$started = [DateTime]::UtcNow.ToString('o')
 `$exitCode = 1
-`$runnerError = `$null
 try {
   `$processInfo = [Diagnostics.ProcessStartInfo]::new()
   `$processInfo.FileName = 'powershell.exe'
-  `$processInfo.Arguments = '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$($payloadPath.Replace('"', '\"'))"'
+  `$processInfo.Arguments = '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$($payloadFilePath.Replace('"', '\"'))" $PayloadArguments'
   `$processInfo.UseShellExecute = `$false
   `$processInfo.RedirectStandardOutput = `$true
   `$processInfo.RedirectStandardError = `$true
@@ -135,7 +145,6 @@ try {
   `$status = if (`$exitCode -eq 0) { 'completed' } else { 'payloadFailed' }
 } catch {
   `$status = 'runnerFailed'
-  `$runnerError = `$_.Exception.Message
 }
 `$completed = [DateTime]::UtcNow.ToString('o')
 `$json = '{"InvocationId":"$InvocationId","Terminal":true,"Status":"' + `$status +
@@ -190,3 +199,4 @@ if ($stderr) {
   Write-Output $stderr.TrimEnd()
   Write-Output 'DESKTOP-RUNNER STDERR-END'
 }
+exit [int]$result.PayloadExitCode

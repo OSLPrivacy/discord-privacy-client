@@ -58,6 +58,7 @@ const discordService: LinkedService = {
   sidebarOrder: 0,
   category: "consumer",
   launchState: "available",
+  generatedLabel: "Ready",
   supportsNativePreview: true,
   supportsProtectedPreview: true,
   accounts: [

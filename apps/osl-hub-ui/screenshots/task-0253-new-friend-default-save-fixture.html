@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Task 0253 new friend defaults</title>
+  </head>
+  <body>
+    <main id="fixture" data-task-0253-state="loading"></main>
+    <script type="module">
+      const {
+        GET_NEW_FRIEND_DEFAULTS_COMMAND,
+        SAVE_NEW_FRIEND_DEFAULTS_COMMAND,
+        connectNewFriendDefaultControls,
+        loadNewFriendDefaults,
+        newFriendDefaultControlsMarkup,
+      } = await import("/src/new-friend-default-controls.ts");
+
+      const storageKey = "task-0253-new-friend-defaults";
+      const startingDefaults = {
+        account_reach: "approved_chats_only",
+        auto_whitelist: "never",
+        verification_warnings: "always",
+      };
+      window.task0253CommandCalls = [];
+      const port = {
+        async invoke(command, args) {
+          window.task0253CommandCalls.push({ command, args: args ?? null });
+          if (command === GET_NEW_FRIEND_DEFAULTS_COMMAND) {
+            return JSON.parse(localStorage.getItem(storageKey) ?? JSON.stringify(startingDefaults));
+          }
+          if (command === SAVE_NEW_FRIEND_DEFAULTS_COMMAND) {
+            // Match cmd_osl_save_new_friend_defaults: its response/read DTO
+            // uses the display label for this field, while accepting the
+            // stable underscore id sent by the controls.
+            const stored = {
+              ...args.defaults,
+              auto_whitelist: args.defaults.auto_whitelist.replaceAll("_", " "),
+            };
+            localStorage.setItem(storageKey, JSON.stringify(stored));
+            return stored;
+          }
+          throw new Error(`unexpected command ${command}`);
+        },
+      };
+
+      const fixture = document.querySelector("#fixture");
+      const model = await loadNewFriendDefaults(port);
+      if (!model) throw new Error("fixture backend returned invalid defaults");
+      fixture.innerHTML = newFriendDefaultControlsMarkup({ ...model, idPrefix: "task-0253" });
+      connectNewFriendDefaultControls(fixture, port, (saved) => {
+        fixture.dataset.task0253Saved = [
+          saved.accountReach,
+          saved.autoWhitelist,
+          saved.verificationWarnings,
+        ].join(",");
+      });
+      fixture.dataset.task0253State = "ready";
+    </script>
+  </body>
+</html>

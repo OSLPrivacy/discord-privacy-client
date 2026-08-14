@@ -44,8 +44,8 @@ fn task_4200_instagram_finish_line_names_the_full_kind_list() {
             "direct message",
             "group chat",
             "public post",
+            "comment",
             "story",
-            "reel",
         ]
     );
     assert_eq!(kinds.len(), names.len());

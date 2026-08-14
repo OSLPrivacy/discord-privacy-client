@@ -1,0 +1,20 @@
+{
+  "window": {
+    "width": 1280,
+    "height": 800
+  },
+  "screen": {
+    "state": "ready",
+    "groupName": "Weekend plans",
+    "memberCount": "3 members",
+    "memberCountValue": "3",
+    "actions": "Chat actions",
+    "actionLabels": [
+      "Search",
+      "Settings"
+    ]
+  },
+  "groupPngBytes": 18273,
+  "emptyPngBytes": 10609,
+  "differsFromEmptyState": true
+}

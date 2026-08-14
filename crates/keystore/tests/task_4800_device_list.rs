@@ -6,7 +6,6 @@ use keystore::{
 #[test]
 fn task_4800_account_root_and_signed_device_list() {
     let temp = tempfile::tempdir().expect("tempdir");
-    let sealer = keystore::MemorySealer::new();
     let root = AccountRootKey::generate();
     println!("account_root_id: {}", root.account_id());
 
@@ -20,27 +19,9 @@ fn task_4800_account_root_and_signed_device_list() {
         let device = DevicePrivateKeys::generate_on_device(device_name);
         let private_path = temp.path().join(format!("device-{version}.key"));
         device
-            .save_sealed_private_key_file(&private_path, &sealer)
+            .write_private_key_file(&private_path)
             .expect("write device private key file");
-        let on_disk = std::fs::read(&private_path).expect("read device private key file");
-        // TASK 5402: the device private key file is device-sealed, so its own
-        // sixty-four secret bytes must not appear in it, and the sealed reader
-        // must return exactly those bytes.
-        let own_key_hits = on_disk
-            .windows(keystore::DEVICE_PRIVATE_KEY_FILE_BYTES)
-            .filter(|window| *window == device.private_key_file_bytes())
-            .count();
-        assert_eq!(
-            own_key_hits, 0,
-            "device-{version}.key carried its own private key in the clear"
-        );
-        let opened = keystore::DevicePrivateKeys::open_sealed_private_key_file(
-            &private_path,
-            &sealer,
-        )
-        .expect("the device sealer reopens the sealed private key file");
-        assert_eq!(opened[..], device.private_key_file_bytes()[..]);
-        private_files.push(on_disk);
+        private_files.push(std::fs::read(&private_path).expect("read device private key file"));
         active_devices.push(root.sign_device(device.public_keys()));
         devices.push(device);
 

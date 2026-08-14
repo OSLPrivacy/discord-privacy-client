@@ -22,7 +22,6 @@ export const browserServiceQaIds = [
   "gmx",
   "maildotcom",
   "icloud",
-  "tuta",
 ] as const satisfies readonly HomeAppId[];
 
 export type BrowserServiceQaId = (typeof browserServiceQaIds)[number];

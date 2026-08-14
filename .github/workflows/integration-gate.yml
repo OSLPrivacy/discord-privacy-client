@@ -2,7 +2,7 @@
 #
 # WHY THIS FILE EXISTS
 # --------------------
-# Until this landed, `gh run list --branch integration/full` returned
+# Until this landed, `gh run list --branch integrate/first-usable` returned
 # NOTHING. Every workflow in this directory triggered on `push: branches: [main]`
 # plus `pull_request`, and the integration branch is pushed to neither. So every
 # workflow in the repository was a statement about `main` -- not about the branch
@@ -62,17 +62,17 @@ concurrency:
   cancel-in-progress: true
 
 on:
-  # `integration/**`, not just `integration/full`. The defect was not that
+  # `integrate/**`, not just `integrate/first-usable`. The defect was not that
   # one branch name was missing from a list -- it was that "the branch we
   # integrate into" was not a thing CI had an opinion about. Any future
   # integration branch inherits the gate the day it is created, which is the
   # only version of this fix that does not have to be re-applied by hand.
   push:
     branches:
-      - 'integration/**'
+      - 'integrate/**'
   pull_request:
     branches:
-      - 'integration/**'
+      - 'integrate/**'
   # D-195. `workflow_dispatch` is not decoration here; see the `[skip ci]` note
   # below. It is the only trigger GitHub does not let a commit message suppress.
   workflow_dispatch:
@@ -189,6 +189,11 @@ jobs:
         run: |
           node scripts/stage-tor-sidecar.mjs --target x86_64-pc-windows-msvc
           cargo check --manifest-path apps/osl-hub/Cargo.toml --features desktop --locked
+      # Keep the placement contract independently runnable. The parent hub's
+      # all-targets check includes unrelated known-broken imports, which must
+      # not prevent this focused placement gate from executing.
+      - name: task 3406 placement tests
+        run: cargo test --manifest-path apps/osl-hub/task_3406_place_text/Cargo.toml --test task_3406_place_text_command --locked -- --test-threads=1
       # D-172. The strictly wider `--all-targets` check, run for the first time
       # in this repository's history by run 30928896726, which found that
       # apps/osl-hub/tests/web_surface_a11y_spike.rs has not compiled at all:

@@ -30,7 +30,6 @@ describe("UI entitlement gates", () => {
       access: "free",
       requestedCarrier: "local-ai",
       localModelAvailable: true,
-      cloudConsent: "granted",
     })).toBe("word-bank");
     const lapsedPro = {
       access: "free",
@@ -41,36 +40,21 @@ describe("UI entitlement gates", () => {
 
     expect(aiCarrierForEntitlement({
       access: lapsedPro.access,
-      requestedCarrier: "cloud",
+      requestedCarrier: "local-ai",
       localModelAvailable: true,
-      cloudConsent: "granted",
     })).toBe("word-bank");
   });
 
-  it("allows only an entitled, available local model or consented cloud carrier", () => {
+  it("allows only an entitled, available local model", () => {
     expect(aiCarrierForEntitlement({
       access: "pro",
       requestedCarrier: "local-ai",
       localModelAvailable: false,
-      cloudConsent: "granted",
     })).toBe("word-bank");
     expect(aiCarrierForEntitlement({
       access: "offlineGrace",
       requestedCarrier: "local-ai",
       localModelAvailable: true,
-      cloudConsent: "declined",
     })).toBe("local-ai");
-    expect(aiCarrierForEntitlement({
-      access: "pro",
-      requestedCarrier: "cloud",
-      localModelAvailable: false,
-      cloudConsent: "declined",
-    })).toBe("word-bank");
-    expect(aiCarrierForEntitlement({
-      access: "pro",
-      requestedCarrier: "cloud",
-      localModelAvailable: false,
-      cloudConsent: "granted",
-    })).toBe("cloud");
   });
 });

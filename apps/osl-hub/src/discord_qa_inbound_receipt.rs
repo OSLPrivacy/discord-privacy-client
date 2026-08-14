@@ -680,6 +680,7 @@ mod tests {
             deferred_rows: 0,
             unrecognized_wire_rows: 0,
             content_gone_rows: 0,
+            already_opened: 0,
         }
     }
 
@@ -726,6 +727,7 @@ mod tests {
             deferred_rows: 0,
             unrecognized_wire_rows: 0,
             content_gone_rows: 0,
+            already_opened: 0,
         };
         write_receipt(&path, &empty).expect("empty poll");
         assert_eq!(std::fs::read(&path).expect("read after"), before);
@@ -793,6 +795,7 @@ mod tests {
             deferred_rows: 0,
             unrecognized_wire_rows: 0,
             content_gone_rows: 0,
+            already_opened: 0,
         };
         let empty_receipt = poll_receipt_for(Ok(&empty));
         assert_eq!(empty_receipt.outcome, "success_empty");

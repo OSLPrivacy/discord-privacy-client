@@ -1,21 +1,17 @@
-//! A single, fail-closed inventory of every user setting saved by the Hub.
+//! The fail-closed Settings-screen ownership inventory.
 //!
-//! Names are stable backend identifiers rather than UI labels.  The group is
-//! the exact Settings screen title that owns the setting, so a direct read can
-//! explain where the owner can change it.
+//! A setting can be reset only through the screen which owns it.  Keeping the
+//! mapping here makes an omitted persisted setting visible instead of silently
+//! assigning it to a guessed screen.
 
-/// One saved setting and the Settings screen that owns it.
+/// One persisted setting and the Settings screen that owns it.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub struct SavedSettingGroup {
     pub setting: &'static str,
     pub group: &'static str,
 }
 
-/// The complete set of saved settings covered by TASK 0796's direct reads.
-///
-/// Keep this inventory deliberately explicit. A new persisted setting must be
-/// added here before it can claim a Settings group; unknown names are refused
-/// below instead of being silently assigned to a guessed screen.
+/// Every setting covered by the safe-settings reset surface.
 pub const SAVED_SETTING_GROUPS: [SavedSettingGroup; 29] = [
     SavedSettingGroup {
         setting: "auto_whitelist_rule",
@@ -135,11 +131,7 @@ pub const SAVED_SETTING_GROUPS: [SavedSettingGroup; 29] = [
     },
 ];
 
-/// Read the named Settings screen for a saved setting.
-///
-/// This is intentionally fail-closed: a persisted setting without an explicit
-/// inventory entry is refused with its supplied name, making an omitted group
-/// visible to both callers and tests.
+/// Returns the owning Settings screen for a saved setting.
 pub fn saved_setting_group(setting: &str) -> Result<&'static str, String> {
     SAVED_SETTING_GROUPS
         .iter()
@@ -148,33 +140,39 @@ pub fn saved_setting_group(setting: &str) -> Result<&'static str, String> {
         .ok_or_else(|| format!("OSL saved setting '{setting}' has no Settings group"))
 }
 
+/// Refuses unknown screen labels, including spelling and case variants.
+pub fn validate_saved_settings_group(group: &str) -> Result<(), String> {
+    const GROUPS: [&str; 7] = [
+        "Whitelisting",
+        "Account",
+        "Privacy",
+        "Notifications",
+        "Apps and sending",
+        "Look",
+        "Behaviour",
+    ];
+    if !GROUPS.contains(&group) {
+        return Err(format!("OSL Settings group '{group}' is unknown"));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{saved_setting_group, SAVED_SETTING_GROUPS};
+    use super::{saved_setting_group, validate_saved_settings_group, SAVED_SETTING_GROUPS};
 
     #[test]
-    fn direct_read_names_a_group_for_every_saved_setting() {
-        let direct_reads = SAVED_SETTING_GROUPS
-            .iter()
-            .map(|entry| {
-                let group = saved_setting_group(entry.setting).expect("saved setting has a group");
-                assert_eq!(group, entry.group);
-                format!("{}={group}", entry.setting)
-            })
-            .collect::<Vec<_>>();
-
-        println!(
-            "TASK0860 direct_read_count={} {}",
-            direct_reads.len(),
-            direct_reads.join(" | ")
-        );
+    fn every_saved_setting_has_one_named_settings_group() {
+        for entry in SAVED_SETTING_GROUPS {
+            assert_eq!(saved_setting_group(entry.setting).unwrap(), entry.group);
+            validate_saved_settings_group(entry.group).unwrap();
+        }
     }
 
     #[test]
-    fn setting_without_a_group_is_refused_by_name() {
-        let missing = "unassigned-setting-0860";
-        let error = saved_setting_group(missing).expect_err("unassigned setting must be refused");
-        assert!(error.contains(missing));
-        println!("TASK0860 refusal={error}");
+    fn unknown_settings_group_is_refused() {
+        let error = validate_saved_settings_group("unknown-0861")
+            .expect_err("a reset must never guess an unknown Settings screen");
+        assert!(error.contains("unknown-0861"));
     }
 }

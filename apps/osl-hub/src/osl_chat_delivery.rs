@@ -9,9 +9,6 @@ use crate::eager_fetch::{
     CipherStoreTransport, EagerFetchDriver, LocalMessageStore, PointerArrival,
 };
 use crate::realtime_client::AuthorizedFetch;
-#[cfg(feature = "core")]
-use crate::shipping_receive::ShippingProtectedOverlay;
-use crate::shipping_receive::{self, ArrivedMessageRow, ShippingReceiveJournal};
 
 pub const OSL_CHAT_POINTER_PATH_ENV: &str = "OSL_CHAT_POINTER_PATH";
 
@@ -21,72 +18,20 @@ pub fn osl_chat_pointer_path_enabled_from_env() -> bool {
         .unwrap_or(true)
 }
 
+/// Recover deployed store authority from an authenticated OSL Chat carrier
+/// without fetching it. Ordinary chat returns `Ok(None)`.
+pub fn pointer_arrival_from_osl_chat_cover(
+    scope: &ipc::scope::ScopeInput,
+    detection_key: &[u8; 32],
+    cover_text: &str,
+) -> Result<Option<PointerArrival>, String> {
+    ipc::prose_token::prose_token_pointer_arrival(scope, detection_key, cover_text)
+        .map(|pointer| pointer.map(Into::into))
+        .map_err(|error| error.to_string())
+}
+
 /// Fetch, authenticate/decrypt, and durably persist an OSL Chat payload on
 /// pointer arrival.  ACK ownership remains with the post-persistence path.
-pub fn route_osl_chat_arrival<P, F>(
-    carrier_row_id: impl Into<String>,
-    payload: P,
-    journal: &mut ShippingReceiveJournal,
-    open: F,
-) -> Result<(), String>
-where
-    F: FnOnce(ArrivedMessageRow<P>) -> Result<(), String>,
-{
-    shipping_receive::receive_arrived_message(
-        ArrivedMessageRow::osl_chats(carrier_row_id, payload),
-        journal,
-        open,
-    )
-}
-
-/// Receive the already authenticated text emitted by a connected OSL Chats
-/// session and present it through the same protected eye record as email.
-/// A missing connection is deliberately an error, rather than a local record
-/// insertion: there is no receive event without the live session transport.
-#[cfg(feature = "core")]
-pub fn route_osl_chat_protected_text_arrival(
-    connection_live: bool,
-    message_id: impl Into<String>,
-    cover_text: impl Into<String>,
-    private_words: impl Into<String>,
-    journal: &mut ShippingReceiveJournal,
-    overlay: &mut ShippingProtectedOverlay,
-) -> Result<(), String> {
-    if !connection_live {
-        return Err("OSL Chats receive connection is unavailable".to_owned());
-    }
-    let app_row_id = message_id.into();
-    let record = crate::broker::ProtectedRowRecord {
-        app_id: "osl-chats".to_owned(),
-        app_row_id: app_row_id.clone(),
-        cover_text: cover_text.into(),
-        private_words: private_words.into(),
-        opened: true,
-    };
-    shipping_receive::receive_arrived_message(
-        ArrivedMessageRow::osl_chats(app_row_id, record),
-        journal,
-        |row| overlay.record_opened(row),
-    )
-}
-
-pub fn route_osl_chat_arrived_row<T, S>(
-    driver: &mut EagerFetchDriver<T, S>,
-    pointer: &PointerArrival,
-    journal: &mut ShippingReceiveJournal,
-) -> Result<(), String>
-where
-    T: CipherStoreTransport,
-    S: LocalMessageStore,
-{
-    route_osl_chat_arrival(pointer.blob_id.clone(), pointer.clone(), journal, |row| {
-        driver.on_pointer_arrival(&row.payload)
-    })
-}
-
-/// Compatibility entry point for existing pointer consumers.  It still enters
-/// the shared shipping job; callers that need service attribution can retain
-/// the supplied journal through [`route_osl_chat_arrived_row`].
 pub fn receive_osl_chat_pointer<T, S>(
     driver: &mut EagerFetchDriver<T, S>,
     pointer: &PointerArrival,
@@ -95,41 +40,9 @@ where
     T: CipherStoreTransport,
     S: LocalMessageStore,
 {
-    let mut journal = ShippingReceiveJournal::default();
-    route_osl_chat_arrived_row(driver, pointer, &mut journal)
+    driver.on_pointer_arrival(pointer)
 }
 
-pub fn route_osl_chat_authorized_arrival<T, S>(
-    driver: &mut EagerFetchDriver<T, S>,
-    fetch: AuthorizedFetch,
-    pointer_path_enabled: bool,
-    journal: &mut ShippingReceiveJournal,
-) -> Result<bool, String>
-where
-    T: CipherStoreTransport,
-    S: LocalMessageStore,
-{
-    if !pointer_path_enabled {
-        return Ok(false);
-    }
-    fetch.fetch_with(|blob_id, bearer_capability| {
-        route_osl_chat_arrived_row(
-            driver,
-            &PointerArrival {
-                blob_id: blob_id.to_hex(),
-                fetch_cap: bearer_capability.as_bytes().to_vec(),
-                manage_cap: Vec::new(),
-            },
-            journal,
-        )?;
-        Ok::<(), String>(())
-    })?;
-    Ok(true)
-}
-
-/// Compatibility entry point for the realtime pointer path.  It preserves
-/// arrival semantics while funnelling each actual fetch through the shared
-/// shipping job.
 pub fn receive_osl_chat_authorized_fetch<T, S>(
     driver: &mut EagerFetchDriver<T, S>,
     fetch: AuthorizedFetch,
@@ -139,6 +52,39 @@ where
     T: CipherStoreTransport,
     S: LocalMessageStore,
 {
-    let mut journal = ShippingReceiveJournal::default();
-    route_osl_chat_authorized_arrival(driver, fetch, pointer_path_enabled, &mut journal)
+    if !pointer_path_enabled {
+        return Ok(false);
+    }
+    fetch.fetch_with(|blob_id, bearer_capability| {
+        receive_osl_chat_pointer(
+            driver,
+            &PointerArrival {
+                blob_id: blob_id.to_hex(),
+                fetch_cap: bearer_capability.as_bytes().to_vec(),
+                manage_cap: Vec::new(),
+            },
+        )?;
+        Ok::<(), String>(())
+    })?;
+    Ok(true)
+}
+
+/// Decode a real cover pointer and run the shared eager-fetch driver. No fetch
+/// occurs for ordinary chat text.
+pub fn receive_osl_chat_cover_pointer<T, S>(
+    driver: &mut EagerFetchDriver<T, S>,
+    scope: &ipc::scope::ScopeInput,
+    detection_key: &[u8; 32],
+    cover_text: &str,
+) -> Result<bool, String>
+where
+    T: CipherStoreTransport,
+    S: LocalMessageStore,
+{
+    let Some(pointer) = pointer_arrival_from_osl_chat_cover(scope, detection_key, cover_text)?
+    else {
+        return Ok(false);
+    };
+    receive_osl_chat_pointer(driver, &pointer)?;
+    Ok(true)
 }

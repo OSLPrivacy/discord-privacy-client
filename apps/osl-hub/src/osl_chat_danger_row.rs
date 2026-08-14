@@ -258,10 +258,7 @@ impl OslChatDangerRowState {
         clear_chat_history_this_device_command(store, input)
     }
 
-    pub fn block_person(
-        &self,
-        input: BlockPersonRequest,
-    ) -> Result<DangerRowReceipt, String> {
+    pub fn block_person(&self, input: BlockPersonRequest) -> Result<DangerRowReceipt, String> {
         block_person_command(self, input)
     }
 
@@ -496,7 +493,11 @@ pub fn deliver_incoming_osl_chat_message(
             holder: Some(record.person_id.clone()),
             detail: BLOCKED_MESSAGE_REFUSAL_REASON.to_owned(),
         };
-        if !record.refused.iter().any(|seen| seen.item_id == item.item_id) {
+        if !record
+            .refused
+            .iter()
+            .any(|seen| seen.item_id == item.item_id)
+        {
             record.refused.push(item.clone());
         }
         let mut receipt = block_receipt_from(record, 0, 0);

@@ -1,0 +1,30 @@
+{
+  "platform": "linux",
+  "window": {
+    "width": 1280,
+    "height": 800
+  },
+  "screenshot": "task-0555-timer-overlay.png",
+  "screen": {
+    "chat": "OSL chat with Asha",
+    "scrim": "rgba(10, 10, 10, 0.72)",
+    "fields": [
+      {
+        "label": "Days",
+        "value": "00"
+      },
+      {
+        "label": "Hours",
+        "value": "00"
+      },
+      {
+        "label": "Minutes",
+        "value": "00"
+      },
+      {
+        "label": "Seconds",
+        "value": "00"
+      }
+    ]
+  }
+}

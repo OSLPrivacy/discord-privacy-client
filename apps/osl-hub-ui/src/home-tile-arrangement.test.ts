@@ -12,6 +12,7 @@ const defaults = [
   "telegram",
   "signal",
   "whatsapp",
+  "messenger",
   "gmail",
   "outlook",
   "proton",
@@ -20,7 +21,6 @@ const defaults = [
   "gmx",
   "maildotcom",
   "icloud",
-  "tuta",
   "osl-chats",
   "osl-mail",
   "osl-notes",
@@ -56,8 +56,8 @@ describe("TASK 0814 tile arrangement actions", () => {
     const afterShow = readHomeTileArrangement(defaults, arrangement);
     console.log(`TASK0814 after_show_hidden=${csv(afterShow.hidden)}`);
 
-    const requestedOrder = "scrub,discord,telegram,signal,gmail,whatsapp,outlook,proton,yahoo,aol,gmx,maildotcom,icloud,tuta,osl-chats,osl-mail,osl-notes";
-    const requestedVisible = "scrub,discord,telegram,signal,gmail,whatsapp,outlook,proton,yahoo,aol,gmx,maildotcom,icloud,tuta,osl-chats,osl-notes";
+    const requestedOrder = "scrub,discord,telegram,signal,whatsapp,gmail,messenger,outlook,proton,yahoo,aol,gmx,maildotcom,icloud,osl-chats,osl-mail,osl-notes";
+    const requestedVisible = "scrub,discord,telegram,signal,whatsapp,gmail,messenger,outlook,proton,yahoo,aol,gmx,maildotcom,icloud,osl-chats,osl-notes";
     const requestedHidden = "osl-mail";
     console.log(`TASK0814 requested_order=${requestedOrder}`);
     console.log(`TASK0814 requested_visible=${requestedVisible}`);

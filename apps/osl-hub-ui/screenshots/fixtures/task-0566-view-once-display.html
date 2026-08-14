@@ -1,0 +1,75 @@
+<!doctype html>
+<!-- TASK 0566: fixed Linux capture of an opened view-once display. -->
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="color-scheme" content="dark" />
+    <title>OSL Chat view-once display</title>
+    <style>
+      html, body, #app { width: 100%; min-height: 100%; }
+      body { margin: 0; overflow: hidden; background: #0a0a0a; }
+      #app { height: 100vh; }
+      .task-0566-open { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+      .task-0566-display { position: fixed; inset: 0; z-index: 1000; display: grid; place-items: center; padding: 24px; color: var(--text); }
+      .task-0566-display[hidden] { display: none; }
+      .task-0566-backdrop { position: absolute; inset: 0; background: rgba(0, 0, 0, .74); backdrop-filter: blur(2px); }
+      .task-0566-card { position: relative; width: min(510px, calc(100% - 48px)); min-height: 320px; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; gap: 18px; padding: 28px; border: 1px solid var(--line); background: var(--panel); box-shadow: 0 28px 90px rgba(0, 0, 0, .62); }
+      .task-0566-card header { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding-right: 36px; }
+      .task-0566-card h1 { margin: 0; font: 600 18px/1.2 var(--font-ui); }
+      .task-0566-card header p { margin: 5px 0 0; color: var(--muted); font: 13px/1.4 var(--font-ui); }
+      .task-0566-content { display: grid; place-items: center; min-height: 190px; padding: 24px; border: 1px solid var(--line); background: var(--panel-2); text-align: center; }
+      .task-0566-content p { max-width: 360px; margin: 0; color: var(--text); font: 500 20px/1.55 var(--font-body); }
+      .task-0566-card footer { color: var(--muted); font: 12px/1.4 var(--font-ui); }
+      .task-0566-close { position: absolute; top: 16px; right: 16px; width: 38px; height: 38px; display: grid; place-items: center; border: 1px solid var(--line); background: var(--panel-2); color: var(--text); font: 28px/1 var(--font-ui); cursor: pointer; }
+      .task-0566-close:hover, .task-0566-close:focus-visible { background: var(--panel-3); outline: 2px solid var(--brand); outline-offset: 2px; }
+    </style>
+  </head>
+  <body>
+    <main id="app" aria-label="OSL Chat"></main>
+    <button class="task-0566-open" type="button" data-open-view-once aria-label="Open view-once message">Open view-once message</button>
+    <section class="task-0566-display" data-view-once-display hidden aria-hidden="true">
+      <div class="task-0566-backdrop" aria-hidden="true"></div>
+      <article class="task-0566-card" role="dialog" aria-modal="true" aria-label="View-once message" data-view-once-card>
+        <button class="task-0566-close" type="button" aria-label="Close view-once display" data-view-once-close>&times;</button>
+        <header><div><h1>View once</h1><p>Opened in OSL Chat</p></div></header>
+        <div class="task-0566-content" data-view-once-content><p>This protected note is shown only for this view.</p></div>
+        <footer>Closes automatically after 10 seconds</footer>
+      </article>
+    </section>
+    <script type="module">
+      import "@fontsource-variable/inter/wght.css";
+      import "@fontsource-variable/onest/wght.css";
+      import "@fontsource-variable/source-sans-3/wght.css";
+      import "/src/styles.css";
+      import { oslChatsViewMarkup } from "/src/osl-chats-view.ts";
+
+      const app = document.querySelector("#app");
+      app.innerHTML = oslChatsViewMarkup({
+        friends: [{ personId: "mina", nickname: "Mina", verified: true, ready: true, preview: "View-once message", previewVisible: true, unreadCount: 0, handshakeConfirmed: true }],
+        activePersonId: "mina",
+        messages: [
+          { messageId: "message-1", direction: "outgoing", body: "I sent a protected note.", state: "sent", timestampLabel: "10:14 AM" },
+          { messageId: "message-2", direction: "incoming", body: "Open the view-once message when ready.", state: "received", timestampLabel: "10:15 AM" },
+        ],
+        draft: "",
+        busy: false,
+        viewOnce: false,
+      });
+
+      const display = document.querySelector("[data-view-once-display]");
+      const open = document.querySelector("[data-open-view-once]");
+      const close = document.querySelector("[data-view-once-close]");
+      open.addEventListener("click", () => {
+        display.hidden = false;
+        display.setAttribute("aria-hidden", "false");
+        document.body.dataset.viewOnceOpened = "true";
+      });
+      close.addEventListener("click", () => {
+        display.hidden = true;
+        display.setAttribute("aria-hidden", "true");
+        document.body.dataset.viewOnceOpened = "false";
+      });
+      document.body.dataset.fixtureReady = "task-0566";
+    </script>
+  </body>
+</html>

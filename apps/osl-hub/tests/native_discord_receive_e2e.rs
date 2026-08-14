@@ -3555,6 +3555,111 @@ fn native_discord_chunk_group_survives_reversed_and_split_arrival() {
     drop(storage);
 }
 
+#[test]
+fn task3958_split_message_rows_open_newest_first_and_missing_piece_opens_nothing() {
+    let _serial = fixture_lock()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+
+    fn prepare_four_rows(
+        label: &str,
+    ) -> (RelayServer, TestStorage, Peer, Peer, String, Vec<InboxRow>) {
+        let relay = RelayServer::start();
+        let storage = TestStorage::new(label);
+        let relay_url = relay.base_url();
+        let alice = Peer::new(&storage, &format!("{label}-alice"), &relay_url, "ffff3958");
+        let bob = Peer::new(&storage, &format!("{label}-bob"), &relay_url, "00003958");
+        alice.open_native_context_to(&bob.friend_code);
+        bob.open_native_context_to(&alice.friend_code);
+
+        let whole = format!(
+            "TASK3958 exact split private text\n{}{}{}tail-3958",
+            "a".repeat(40_960),
+            "b".repeat(40_960),
+            "c".repeat(40_960),
+        );
+        alice.activate();
+        prepare_native_discord_overlay_text(
+            &alice.core,
+            &alice.security,
+            &alice.broker,
+            &ai_carrier_fixture(),
+            whole.clone(),
+            false,
+            None,
+        )
+        .expect("prepare exactly four native Discord chunks");
+
+        let rows = relay.take_inbox_for(&bob.identity_id);
+        assert_eq!(rows.len(), 4, "the task fixture must produce exactly 4 chunks");
+        (relay, storage, alice, bob, whole, rows)
+    }
+
+    let (relay, storage, alice, bob, whole, rows) = prepare_four_rows("task3958-newest-first");
+    let newest_first_order = (0..rows.len())
+        .rev()
+        .map(|index| index.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    for row in rows.iter().rev() {
+        relay.inject(
+            &row.sender_id,
+            &row.recipient_id,
+            &row.scope_id,
+            &row.bundle_b64,
+        );
+    }
+
+    bob.activate();
+    let opened = drain_native_discord_overlay_text(&bob.core, &bob.security, &bob.broker)
+        .expect("newest-first four-piece delivery opens");
+    assert_eq!(opened.messages.len(), 1);
+    assert!(
+        opened.messages[0].plaintext == whole,
+        "newest-first delivery must hold the exact whole private text"
+    );
+    assert_eq!(relay.pending_for(&bob.identity_id), 0);
+    println!(
+        "TASK3958_NEWEST_FIRST arrival_order={} opened_private_messages={} exact_text_match={} pending_after_open={}",
+        newest_first_order,
+        opened.messages.len(),
+        opened.messages[0].plaintext == whole,
+        relay.pending_for(&bob.identity_id)
+    );
+    drop(alice);
+    drop(bob);
+    drop(storage);
+    drop(relay);
+
+    let (relay, storage, alice, bob, _whole, rows) = prepare_four_rows("task3958-missing");
+    let delivered_order = [3usize, 2, 0];
+    for index in delivered_order {
+        let row = &rows[index];
+        relay.inject(
+            &row.sender_id,
+            &row.recipient_id,
+            &row.scope_id,
+            &row.bundle_b64,
+        );
+    }
+    bob.activate();
+    let missing = drain_native_discord_overlay_text(&bob.core, &bob.security, &bob.broker)
+        .expect("missing-piece delivery drains without opening");
+    assert_eq!(missing.messages.len(), 0);
+    assert_eq!(missing.fetched, 0);
+    let missing_sentence = "The split private message is incomplete.";
+    println!(
+        "TASK3958_MISSING arrival_order=3,2,0 opened_private_messages={} fetched={} fixed_sentence=\"{}\"",
+        missing.messages.len(),
+        missing.fetched,
+        missing_sentence
+    );
+    drop(alice);
+    drop(bob);
+    drop(storage);
+    drop(relay);
+}
+
 struct FixtureAttachment {
     attachment_id: String,
     original_filename: String,

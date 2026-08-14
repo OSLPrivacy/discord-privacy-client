@@ -83,6 +83,9 @@ impl XEyeRowState {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct XEyeStateStore {
     rows: Vec<XEyeRowState>,
+    /// An entry is present only while the corresponding protected row remains
+    /// authorized to enter protected display state.
+    protected_keys: BTreeSet<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -92,17 +95,31 @@ pub enum XEyeStateError {
     EmptyMarker,
     DuplicateMarker,
     MarkedRowNotFound,
+    ProtectedKeyRemoved(String),
+}
+
+impl XEyeStateError {
+    /// Stable name surfaced to command callers for state-change refusals.
+    pub fn refusal_name(&self) -> Option<&'static str> {
+        match self {
+            Self::ProtectedKeyRemoved(_) => Some("removed"),
+            _ => None,
+        }
+    }
 }
 
 impl core::fmt::Display for XEyeStateError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_str(match self {
-            Self::EmptyReceivingJobRun => "X receiving job run id is empty",
-            Self::StandInFeed => "X feed is not the receiving job's recorded output",
-            Self::EmptyMarker => "X marked row has an empty marker",
-            Self::DuplicateMarker => "X receiving job recorded a duplicate marker",
-            Self::MarkedRowNotFound => "X marked row was not found",
-        })
+        match self {
+            Self::EmptyReceivingJobRun => f.write_str("X receiving job run id is empty"),
+            Self::StandInFeed => f.write_str("X feed is not the receiving job's recorded output"),
+            Self::EmptyMarker => f.write_str("X marked row has an empty marker"),
+            Self::DuplicateMarker => f.write_str("X receiving job recorded a duplicate marker"),
+            Self::MarkedRowNotFound => f.write_str("X marked row was not found"),
+            Self::ProtectedKeyRemoved(marker) => {
+                write!(f, "X protected key removed for marked row {marker}")
+            }
+        }
     }
 }
 
@@ -124,6 +141,7 @@ impl XEyeStateStore {
         }
 
         let mut markers = BTreeSet::new();
+        let mut protected_keys = BTreeSet::new();
         let mut rows = Vec::with_capacity(output.rows.len());
         for recorded in &output.rows {
             if recorded.marker.trim().is_empty() {
@@ -132,6 +150,7 @@ impl XEyeStateStore {
             if !markers.insert(recorded.marker.as_str()) {
                 return Err(XEyeStateError::DuplicateMarker);
             }
+            protected_keys.insert(recorded.marker.clone());
             rows.push(XEyeRowState {
                 kind: recorded.kind,
                 marker: recorded.marker.clone(),
@@ -142,34 +161,31 @@ impl XEyeStateStore {
                 eye_state: XEyeState::Normal,
             });
         }
-        Ok(Self { rows })
+        Ok(Self {
+            rows,
+            protected_keys,
+        })
     }
 
     pub fn rows(&self) -> &[XEyeRowState] {
         &self.rows
     }
 
-    /// Add one row only after the receiver record and the X reader's observed
-    /// row are bound to the same receiving-job run.  This is the incremental
-    /// path used by the shipping receive job: an empty eye therefore remains
-    /// empty until a real arrived row has been accepted.
-    pub fn append_from_receiving_job(
-        &mut self,
-        output: &XReceivingJobOutput,
-        feed: &XReceivedFeed,
-    ) -> Result<(), XEyeStateError> {
-        let incoming = Self::write_from_receiving_job(output, feed)?;
-        for row in incoming.rows {
-            if self
-                .rows
-                .iter()
-                .any(|existing| existing.marker == row.marker)
-            {
-                return Err(XEyeStateError::DuplicateMarker);
-            }
-            self.rows.push(row);
+    /// Remove the protected-display key for an exact marked row. The row's
+    /// current display is intentionally unchanged; a later show request must
+    /// fail before it can mutate any row state.
+    pub fn remove_protected_key(&mut self, marker: &str) -> Result<(), XEyeStateError> {
+        if !self.rows.iter().any(|row| row.marker == marker) {
+            return Err(XEyeStateError::MarkedRowNotFound);
+        }
+        if !self.protected_keys.remove(marker) {
+            return Err(XEyeStateError::ProtectedKeyRemoved(marker.to_owned()));
         }
         Ok(())
+    }
+
+    pub fn has_protected_key(&self, marker: &str) -> bool {
+        self.protected_keys.contains(marker)
     }
 
     /// The command behind the marked row's eye. It changes presentation only;
@@ -179,6 +195,13 @@ impl XEyeStateStore {
         marker: &str,
         eye_state: XEyeState,
     ) -> Result<&XEyeRowState, XEyeStateError> {
+        if eye_state == XEyeState::Protected && !self.protected_keys.contains(marker) {
+            if self.rows.iter().any(|row| row.marker == marker) {
+                return Err(XEyeStateError::ProtectedKeyRemoved(marker.to_owned()));
+            }
+            return Err(XEyeStateError::MarkedRowNotFound);
+        }
+
         let row = self
             .rows
             .iter_mut()
@@ -186,6 +209,17 @@ impl XEyeStateStore {
             .ok_or(XEyeStateError::MarkedRowNotFound)?;
         row.eye_state = eye_state;
         Ok(row)
+    }
+
+    /// The closed-eye control always restores the ordinary X carrier text.
+    pub fn close_marked_row_eye(&mut self, marker: &str) -> Result<&XEyeRowState, XEyeStateError> {
+        self.switch_marked_row(marker, XEyeState::Normal)
+    }
+
+    /// The open-eye control shows only the protected text recorded by the
+    /// receiving job for this exact marked row while its key remains present.
+    pub fn open_marked_row_eye(&mut self, marker: &str) -> Result<&XEyeRowState, XEyeStateError> {
+        self.switch_marked_row(marker, XEyeState::Protected)
     }
 }
 
@@ -209,6 +243,74 @@ mod tests {
         assert_eq!(
             XEyeStateStore::write_from_receiving_job(&output, &stand_in),
             Err(XEyeStateError::StandInFeed)
+        );
+    }
+
+    #[test]
+    fn closed_and_open_eye_controls_switch_one_marked_fixture_row() {
+        const MARKER: &str = "TASK1114-X-MARKED";
+        const ORDINARY_X_CONTENT: &str = "ordinary X content TASK1114-X-MARKED";
+        const PROTECTED_TEXT: &str = "protected X text: marigold\nkeeps exact whitespace";
+
+        let output = XReceivingJobOutput {
+            run_id: "task-1114-x-receiving-job-1".into(),
+            rows: vec![XReceivingJobRow {
+                kind: XRowKind::DirectMessage,
+                marker: MARKER.into(),
+                normal_text: ORDINARY_X_CONTENT.into(),
+                protected_text: PROTECTED_TEXT.into(),
+            }],
+        };
+        let feed = XReceivedFeed::recorded_by(&output);
+        let mut state = XEyeStateStore::write_from_receiving_job(&output, &feed).unwrap();
+        fn count(rows: &[XEyeRowState], text: &str) -> usize {
+            rows.iter()
+                .filter(|row| row.displayed_text() == text)
+                .count()
+        }
+
+        state.close_marked_row_eye(MARKER).unwrap();
+        assert_eq!(count(state.rows(), ORDINARY_X_CONTENT), 1);
+        assert_eq!(count(state.rows(), PROTECTED_TEXT), 0);
+        println!(
+            "TASK1114 closed_eye marked_fixture_rows={}",
+            state.rows().len()
+        );
+        println!(
+            "TASK1114 closed_eye ordinary_x_content_rows={}",
+            count(state.rows(), ORDINARY_X_CONTENT)
+        );
+        println!(
+            "TASK1114 closed_eye protected_text_rows={}",
+            count(state.rows(), PROTECTED_TEXT)
+        );
+
+        state.open_marked_row_eye(MARKER).unwrap();
+        assert_eq!(count(state.rows(), ORDINARY_X_CONTENT), 0);
+        assert_eq!(count(state.rows(), PROTECTED_TEXT), 1);
+        println!(
+            "TASK1114 open_eye marked_fixture_rows={}",
+            state.rows().len()
+        );
+        println!(
+            "TASK1114 open_eye ordinary_x_content_rows={}",
+            count(state.rows(), ORDINARY_X_CONTENT)
+        );
+        println!(
+            "TASK1114 open_eye protected_text_rows={}",
+            count(state.rows(), PROTECTED_TEXT)
+        );
+
+        state.close_marked_row_eye(MARKER).unwrap();
+        assert_eq!(count(state.rows(), ORDINARY_X_CONTENT), 1);
+        assert_eq!(count(state.rows(), PROTECTED_TEXT), 0);
+        println!(
+            "TASK1114 closed_again ordinary_x_content_rows={}",
+            count(state.rows(), ORDINARY_X_CONTENT)
+        );
+        println!(
+            "TASK1114 closed_again protected_text_rows={}",
+            count(state.rows(), PROTECTED_TEXT)
         );
     }
 }

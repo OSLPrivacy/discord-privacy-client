@@ -1,3 +1,6 @@
+/* Colour values are the canonical OSL design tokens duplicated from
+   src/osl-tokens.ts (CSS cannot import TypeScript). osl-tokens.ts is the
+   authority; token names are noted beside each hex. */
 /*
  * The full friend invite, rendered as selectable text.
  *
@@ -48,6 +51,6 @@
 }
 
 .friend-invite-code:focus-visible {
-  outline: 2px solid var(--accent, #2ee66a);
+  outline: 2px solid var(--accent, #2ac0f0 /* colour.accent */);
   outline-offset: 2px;
 }

@@ -5,8 +5,14 @@ Status: **Draft (v2.3 plan). Highest research-grade risk in the roadmap.**
 ## Goal
 
 Replace `user_id`-based key-server authentication with unlinkable
-tokens. The server learns "an authorized user fetched content X at
-time Y," not "user U fetched content X at time Y." Defeats single-
+tokens.
+
+<!-- OSL-4700-GATE: server-learns-honesty START -->
+The server learns "an authorized user fetched content X at
+time Y," not "user U fetched content X at time Y."
+<!-- OSL-4700-GATE: server-learns-honesty END -->
+
+Defeats single-
 server-side correlation between Discord identity and fetch activity.
 
 ## Approach (v2.3 v1 of this feature)

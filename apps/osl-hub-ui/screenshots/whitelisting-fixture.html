@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>OSL Whitelisting fixture</title>
+    <script type="module">
+      import "../src/styles.css";
+      import { whitelistingScreenMarkup } from "../src/whitelisting-screen.ts";
+      import { settingsHomeMenuItems, settingsHomeMenuMarkup } from "../src/settings-home.ts";
+      import { whitelistingScenes } from "./whitelisting-scenes.mjs";
+
+      // Same function main.ts's whitelistingSettingsContent() calls, same
+      // stylesheet the app ships, inside the same Settings frame, so the
+      // captured pixels come from the shipped Whitelisting screen.
+      const name = new URLSearchParams(location.search).get("scene") ?? "mixed";
+      const scene = whitelistingScenes[name];
+      if (!scene) throw new Error(`no Whitelisting scene named "${name}"`);
+
+      document.querySelector("#app").innerHTML =
+        `<div class="app-frame"><main class="content-viewport settings-page">` +
+        `<nav class="settings-sidebar settings-home" aria-label="Settings">` +
+        `<h1 id="route-heading" tabindex="-1">Settings</h1>` +
+        `<p class="settings-home-intro">Choose what you want to change.</p>` +
+        `${settingsHomeMenuMarkup(settingsHomeMenuItems(), "whitelisting")}</nav>` +
+        `<section class="settings-detail">${whitelistingScreenMarkup(scene)}</section>` +
+        `</main></div>`;
+
+      // The ticks are rendered as `checked` attributes; reflect them onto the
+      // live properties so what the capture reads is what the browser painted.
+      for (const tick of document.querySelectorAll("[data-whitelisting-conversation]")) {
+        tick.checked = tick.hasAttribute("checked");
+      }
+      document.documentElement.dataset.fixtureScene = name;
+      document.documentElement.dataset.fixtureReady = "whitelisting";
+    </script>
+  </head>
+  <body>
+    <div id="app"></div>
+  </body>
+</html>

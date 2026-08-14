@@ -23,10 +23,11 @@
 
 use ipc::commands::{
     cmd_osl_burn_message, cmd_osl_decrypt_message_with_id, cmd_osl_load_channel_history,
-    encrypt_osl_phase4_to_pubkeys,
+    cmd_osl_persist_outbound, encrypt_osl_phase4_to_pubkeys,
 };
 use ipc::state::AppState;
 use keystore::{generate_identity, Identity};
+use rand::RngCore;
 use store::MessageStore;
 use tempfile::TempDir;
 
@@ -93,6 +94,13 @@ fn fresh_state_without_store(loaded: Identity, counterpart: &Identity) -> AppSta
 fn encrypt_one_to_one(sender: &Identity, recipient: &Identity, plaintext: &str) -> String {
     encrypt_osl_phase4_to_pubkeys(&sender.x25519_secret, &[recipient.x25519_public], plaintext)
         .expect("encrypt should succeed for valid inputs")
+}
+
+fn random_task_0506_mark(label: &str) -> String {
+    format!(
+        "TASK0506_MARK_{label}_{:016x}",
+        rand::thread_rng().next_u64()
+    )
 }
 
 // ---- decrypt-then-load-history ----
@@ -234,4 +242,114 @@ fn burn_removes_row_from_subsequent_history_reads() {
 
     // Burning an unknown id is also Ok (NotFound → Ok by spec).
     cmd_osl_burn_message(&state, "never-existed".to_string()).expect("unknown-id burn is Ok no-op");
+}
+
+#[test]
+fn task_0506_your_side_burn_is_narrow() {
+    let tmp = TempDir::new().unwrap();
+    let self_identity = generate_identity("task0506-self".to_string());
+    let peer = generate_identity("task0506-peer".to_string());
+    let state = fresh_state_with_store(tmp.path(), self_identity, &peer);
+
+    let chosen_chat = random_task_0506_mark("CHOSEN_CHAT");
+    let other_chat = random_task_0506_mark("OTHER_CHAT");
+    let chosen_message_id = random_task_0506_mark("CHOSEN_ID");
+    let chosen_mark = random_task_0506_mark("CHOSEN");
+    let other_marks = [
+        random_task_0506_mark("OTHER_A"),
+        random_task_0506_mark("OTHER_B"),
+        random_task_0506_mark("OTHER_C"),
+    ];
+
+    cmd_osl_persist_outbound(
+        &state,
+        chosen_chat.clone(),
+        chosen_message_id.clone(),
+        chosen_mark.clone(),
+    )
+    .expect("persist chosen outbound message");
+    for (index, mark) in other_marks.iter().enumerate() {
+        cmd_osl_persist_outbound(
+            &state,
+            other_chat.clone(),
+            format!("{}-{index}", random_task_0506_mark("OTHER_ID")),
+            mark.clone(),
+        )
+        .expect("persist other-chat outbound message");
+    }
+
+    let before_chosen = cmd_osl_load_channel_history(&state, chosen_chat.clone(), None)
+        .expect("read chosen before");
+    let before_other =
+        cmd_osl_load_channel_history(&state, other_chat.clone(), None).expect("read other before");
+    let before_chosen_marks: Vec<_> = before_chosen
+        .iter()
+        .map(|row| row.plaintext.clone())
+        .collect();
+    let before_other_marks: Vec<_> = before_other
+        .iter()
+        .map(|row| row.plaintext.clone())
+        .collect();
+
+    assert_eq!(before_chosen.len(), 1);
+    assert_eq!(before_other.len(), 3);
+    assert_eq!(before_chosen_marks, vec![chosen_mark.clone()]);
+    for mark in &other_marks {
+        assert!(
+            before_other_marks.contains(mark),
+            "other-chat mark must be readable before burn: {mark}"
+        );
+    }
+    println!(
+        "TASK0506_BEFORE chosen_count={} other_count={} chosen_mark={} other_marks={}",
+        before_chosen.len(),
+        before_other.len(),
+        chosen_mark,
+        other_marks.join("|")
+    );
+
+    let burn_calls = 1;
+    cmd_osl_burn_message(&state, chosen_message_id.clone()).expect("burn chosen message once");
+    println!(
+        "TASK0506_BURN calls={} burned_message_id={} chosen_chat={} other_chat={}",
+        burn_calls, chosen_message_id, chosen_chat, other_chat
+    );
+
+    let after_chosen =
+        cmd_osl_load_channel_history(&state, chosen_chat, None).expect("read chosen after");
+    let after_other =
+        cmd_osl_load_channel_history(&state, other_chat, None).expect("read other after");
+    let after_other_marks: Vec<_> = after_other
+        .iter()
+        .map(|row| row.plaintext.clone())
+        .collect();
+    let mut all_after_marks: Vec<_> = after_chosen
+        .iter()
+        .chain(after_other.iter())
+        .map(|row| row.plaintext.clone())
+        .collect();
+    all_after_marks.sort();
+    if all_after_marks.contains(&chosen_mark) {
+        println!("TASK0506B_STILL_PRESENT chosen_mark={chosen_mark}");
+    }
+
+    assert_eq!(after_chosen.len(), 0);
+    assert_eq!(after_other.len(), 3);
+    assert!(
+        !all_after_marks.contains(&chosen_mark),
+        "chosen mark must be absent after burn"
+    );
+    for mark in &other_marks {
+        assert!(
+            after_other_marks.contains(mark),
+            "other-chat mark must remain readable after burn: {mark}"
+        );
+    }
+    println!(
+        "TASK0506_AFTER chosen_count={} other_count={} chosen_mark_absent={} other_marks_readable={}",
+        after_chosen.len(),
+        after_other.len(),
+        !all_after_marks.contains(&chosen_mark),
+        other_marks.join("|")
+    );
 }

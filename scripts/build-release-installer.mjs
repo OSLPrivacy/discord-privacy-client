@@ -4,10 +4,10 @@ import { cp, mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promi
 import { join, resolve } from "node:path";
 
 const DEFAULT_OUTPUT_DIR = "release/installers";
-const BUNDLE_DIR = "apps/osl-hub/target/release/bundle/nsis";
+const WINDOWS_TARGET = "x86_64-pc-windows-gnu";
 const VERSION_PATTERN = /^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$/;
 const TAURI_CLI = "@tauri-apps/cli@2.11.4";
-const TAURI_BUILD_ARGS = ["exec", "--yes", "--package", TAURI_CLI, "--", "tauri", "build", "--features", "desktop", "--", "--locked"];
+const TAURI_BUILD_ARGS = ["exec", "--yes", "--package", TAURI_CLI, "--", "tauri", "build", "--target", WINDOWS_TARGET, "--features", "desktop", "--", "--locked"];
 
 function usage() {
   return [
@@ -68,15 +68,17 @@ async function writePackageLockVersion(path, version) {
 
 async function writeCargoVersion(path, version) {
   const original = await readFile(path, "utf8");
-  const next = original.replace(/(^\[package\][\s\S]*?^version\s*=\s*")[^"]+(")/m, `$1${version}$2`);
-  if (next === original) throw new Error(`could not replace [package] version in ${path}`);
+  const packageVersion = /(^\[package\][\s\S]*?^version\s*=\s*")[^"]+(")/m;
+  if (!packageVersion.test(original)) throw new Error(`could not find [package] version in ${path}`);
+  const next = original.replace(packageVersion, `$1${version}$2`);
   await writeFile(path, next, "utf8");
 }
 
 async function writeCargoLockVersion(path, version) {
   const original = await readFile(path, "utf8");
-  const next = original.replace(/(\[\[package\]\]\nname = "osl-hub"\nversion = ")[^"]+(")/, `$1${version}$2`);
-  if (next === original) throw new Error(`could not replace osl-hub version in ${path}`);
+  const packageVersion = /(\[\[package\]\]\nname = "osl-hub"\nversion = ")[^"]+(")/;
+  if (!packageVersion.test(original)) throw new Error(`could not find osl-hub version in ${path}`);
+  const next = original.replace(packageVersion, `$1${version}$2`);
   await writeFile(path, next, "utf8");
 }
 
@@ -105,7 +107,10 @@ async function listExeFiles(directory) {
 export async function buildReleaseInstaller(options) {
   const root = resolve(options.root ?? process.cwd());
   const outputDir = resolve(root, options.outputDir);
-  const bundleDir = join(root, BUNDLE_DIR);
+  const cargoTargetDir = process.env.CARGO_TARGET_DIR
+    ? resolve(process.env.CARGO_TARGET_DIR)
+    : join(root, "apps/osl-hub/target");
+  const bundleDir = join(cargoTargetDir, WINDOWS_TARGET, "release/bundle/nsis");
   const installerName = `OSL-${options.version}.exe`;
   const installerPath = join(outputDir, installerName);
 
@@ -114,7 +119,10 @@ export async function buildReleaseInstaller(options) {
   await rm(bundleDir, { recursive: true, force: true });
 
   await run("npm", ["ci", "--prefix", "apps/osl-hub-ui"], { cwd: root });
-  await run("npm", ["run", "--prefix", "apps/osl-hub-ui", "build"], { cwd: root });
+  // Vite is the production bundle consumed by Tauri. The package's `build`
+  // script additionally typechecks every colocated test fixture, which is not
+  // part of the installer payload and can be changed by unrelated test lanes.
+  await run("npm", ["exec", "--", "vite", "build"], { cwd: join(root, "apps/osl-hub-ui") });
   await run("node", ["scripts/stage-tor-sidecar.mjs", "--target", "x86_64-pc-windows-msvc", "--release"], { cwd: root });
   await run("npm", TAURI_BUILD_ARGS, { cwd: join(root, "apps/osl-hub") });
 
