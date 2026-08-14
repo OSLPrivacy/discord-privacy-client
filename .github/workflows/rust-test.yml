@@ -12,7 +12,7 @@ on:
     # D-146 was an integration head that could not build the shipping app at all
     # while three suites were green; this job would have caught it on the push
     # that broke it, and could not, because it never ran on that branch.
-    branches: [main, 'integrate/**']
+    branches: [main, 'integration/**']
   pull_request:
   # D-195: the only trigger a commit message cannot suppress. `[skip ci]` in a
   # commit subject cancels `push` and `pull_request` outright; see the ruling in

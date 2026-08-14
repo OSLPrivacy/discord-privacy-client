@@ -2,7 +2,7 @@
 #
 # WHY THIS FILE EXISTS
 # --------------------
-# Until this landed, `gh run list --branch integrate/first-usable` returned
+# Until this landed, `gh run list --branch integration/full` returned
 # NOTHING. Every workflow in this directory triggered on `push: branches: [main]`
 # plus `pull_request`, and the integration branch is pushed to neither. So every
 # workflow in the repository was a statement about `main` -- not about the branch
@@ -62,17 +62,17 @@ concurrency:
   cancel-in-progress: true
 
 on:
-  # `integrate/**`, not just `integrate/first-usable`. The defect was not that
+  # `integration/**`, not just `integration/full`. The defect was not that
   # one branch name was missing from a list -- it was that "the branch we
   # integrate into" was not a thing CI had an opinion about. Any future
   # integration branch inherits the gate the day it is created, which is the
   # only version of this fix that does not have to be re-applied by hand.
   push:
     branches:
-      - 'integrate/**'
+      - 'integration/**'
   pull_request:
     branches:
-      - 'integrate/**'
+      - 'integration/**'
   # D-195. `workflow_dispatch` is not decoration here; see the `[skip ci]` note
   # below. It is the only trigger GitHub does not let a commit message suppress.
   workflow_dispatch:
