@@ -72,6 +72,15 @@ export function readPng(buffer) {
   return { width, height, pixels };
 }
 
+/** Count the distinct RGB triples in pixels returned by readPng. */
+export function countDistinctRgb({ pixels }) {
+  const colors = new Set();
+  for (let offset = 0; offset < pixels.length; offset += 4) {
+    colors.add((pixels[offset] << 16) | (pixels[offset + 1] << 8) | pixels[offset + 2]);
+  }
+  return colors.size;
+}
+
 /**
  * Mean absolute RGB difference between `picture` and the region of `screenshot`
  * whose top-left corner is (`x`, `y`). 0 means the picture is present in the

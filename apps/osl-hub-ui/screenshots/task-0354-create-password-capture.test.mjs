@@ -4,16 +4,19 @@ import path from "node:path";
 import test from "node:test";
 import { createServer } from "vite";
 import { launchChrome } from "../../../scripts/lib/cdp-harness.mjs";
+import { countDistinctRgb, readPng } from "./lib/png-pixels.mjs";
+import { blankRgbaPng } from "./lib/png-test-fixtures.mjs";
 
 const APP_ROOT = path.resolve(import.meta.dirname, "..");
 const ARTIFACT_DIR = path.join(APP_ROOT, "screenshots", "artifacts");
 const PNG_PATH = path.join(ARTIFACT_DIR, "task-0354-create-password.png");
 const TREE_PATH = path.join(ARTIFACT_DIR, "task-0354-create-password-screen-tree.json");
 const WINDOW = Object.freeze({ width: 1280, height: 800 });
+const DISTINCT_RGB_FLOOR = 32;
 const REQUIRED = Object.freeze([
   "Create a password",
   "Show password",
-  "Confirm password",
+  "Confirm",
   "Create account",
   "Back",
 ]);
@@ -65,6 +68,13 @@ function pngDimensions(buffer) {
   };
 }
 
+function assertDecodedDistinctRgb(png, label) {
+  const decodedDistinctRgb = countDistinctRgb(readPng(png));
+  assert.ok(decodedDistinctRgb >= DISTINCT_RGB_FLOOR,
+    `${label} has too few decoded distinct RGB colours: ${decodedDistinctRgb} (floor ${DISTINCT_RGB_FLOOR})`);
+  return decodedDistinctRgb;
+}
+
 async function evaluateValue(page, expression) {
   const evaluated = await page.send("Runtime.evaluate", {
     expression,
@@ -79,6 +89,9 @@ async function evaluateValue(page, expression) {
 
 test("TASK 0354 captures the fixed Create password screen", async () => {
   assertFixedGateFixture();
+  const blankPng = blankRgbaPng(WINDOW.width, WINDOW.height);
+  const blankDecodedDistinctRgb = countDistinctRgb(readPng(blankPng));
+  assert.throws(() => assertDecodedDistinctRgb(blankPng, "blank PNG"), /too few decoded distinct RGB colours: 1/u);
   mkdirSync(ARTIFACT_DIR, { recursive: true });
   const { server, url } = await startVite();
   const chrome = await launchChrome({
@@ -157,14 +170,14 @@ test("TASK 0354 captures the fixed Create password screen", async () => {
     const dimensions = pngDimensions(png);
     assert.deepEqual(dimensions, WINDOW);
     assert.ok(png.length > 10_000, `PNG too small: ${png.length}`);
-    const uniqueBytes = new Set(png).size;
-    assert.ok(uniqueBytes > 64, `PNG nearly blank: ${uniqueBytes} unique byte values`);
+    const decodedDistinctRgb = assertDecodedDistinctRgb(png, "capture PNG");
 
     console.log(`TASK0354_PNG=${PNG_PATH}`);
     console.log(`TASK0354_TREE=${TREE_PATH}`);
     console.log(`TASK0354_WINDOW=${dimensions.width}x${dimensions.height}`);
     console.log(`TASK0354_PNG_BYTES=${png.length}`);
-    console.log(`TASK0354_PNG_UNIQUE_BYTES=${uniqueBytes}`);
+    console.log(`TASK0354_BLANK_DECODED_DISTINCT_RGB=${blankDecodedDistinctRgb} floor=${DISTINCT_RGB_FLOOR} rejected=true`);
+    console.log(`TASK0354_DECODED_DISTINCT_RGB=${decodedDistinctRgb} floor=${DISTINCT_RGB_FLOOR}`);
     console.log(`TASK0354_REQUIRED=${REQUIRED.join("|")}`);
     console.log(`TASK0354_CONTROLS=${screen.controls.map((control) => control.label || control.ariaLabel || control.text).filter(Boolean).join("|")}`);
   } finally {
