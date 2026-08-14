@@ -7,10 +7,10 @@ pub mod account_identity_authority;
 #[cfg(feature = "core")]
 #[cfg(not(task3982_focused))]
 pub mod account_recovery;
+pub mod allowed_place_commands;
 #[cfg(feature = "core")]
 #[cfg(not(task3982_focused))]
 pub mod aol_fake_page;
-pub mod allowed_place_commands;
 #[cfg(all(feature = "core", task3982_focused))]
 pub mod allowed_place_commands {
     use std::ffi::OsString;
@@ -123,14 +123,12 @@ pub mod execution_consent;
 pub mod external_overlay;
 #[cfg(not(task3982_focused))]
 pub(crate) mod firefox_migration_coordinator;
+pub mod follow_active_app_window;
 #[cfg(feature = "core")]
 #[cfg(not(task3982_focused))]
 pub mod friend_account_reach;
 pub mod front_window_grab;
-pub mod follow_active_app_window;
 pub mod gmail_mail_deleter;
-/// GMX Mail's fill-in of the shared mail deleter (TASK 3067).
-pub mod gmx_mail_deleter;
 pub mod hosted_audience;
 pub mod hosted_port;
 pub mod hosted_provider_recipe;
@@ -165,32 +163,27 @@ pub mod look_window;
 /// When the hidden main window may be shown. Pure, and deliberately not behind
 /// `desktop`: the reveal rule is what decides whether the app is visible at all,
 /// so it is testable in every build that can compile this crate.
-pub mod mail_com_mail_deleter;
 /// TASK 3044's mail owner check, in its own module so the shared mail deleter
 /// can reach it without dragging `service_connections`' mail-website plumbing
 /// in. Re-exported from `service_connections`, so every path there still reads.
 pub mod mail_owner_check;
 pub mod main_window_reveal;
+/// One-screen Messenger conversation adapter for the shared Scrub scroll.
+/// It accepts only the already-authorized, observed message rows.
+pub mod messenger_conversation_scroll;
 pub mod messenger_delivery;
 pub mod messenger_eye_state;
 pub mod messenger_message_controls;
-#[cfg(not(task3982_focused))]
-pub mod messenger_whitelist_kinds;
-/// WhatsApp's browser-observation adapter for the shared Scrub message reader.
-/// It is gated before it consumes any browser rows.
-pub mod whatsapp_message_deleter;
-pub mod whatsapp_message_reader;
+pub mod messenger_message_deleter;
+/// Messenger's browser-observation adapter for the shared Scrub message
+/// reader. It is gated before it consumes any browser rows.
+pub mod messenger_message_reader;
 /// Messenger's browser-observation adapter for the shared scrub-place reader.
 /// It remains independent of the browser driver so a caller can pass only the
 /// reviewed conversation rows it already observed.
 pub mod messenger_place_reader;
-/// Messenger's browser-observation adapter for the shared Scrub message
-/// reader. It is gated before it consumes any browser rows.
-pub mod messenger_message_reader;
-pub mod messenger_message_deleter;
-/// One-screen Messenger conversation adapter for the shared Scrub scroll.
-/// It accepts only the already-authorized, observed message rows.
-pub mod messenger_conversation_scroll;
+#[cfg(not(task3982_focused))]
+pub mod messenger_whitelist_kinds;
 pub mod model_pack_install;
 pub mod models;
 pub mod mullvad_window_host;
@@ -207,8 +200,13 @@ pub mod native_discord_adapter;
 #[cfg(not(task3982_focused))]
 pub mod native_outlook_adapter;
 pub mod outlook_web_mail_deleter;
+/// WhatsApp's browser-observation adapter for the shared Scrub message reader.
+/// It is gated before it consumes any browser rows.
+pub mod whatsapp_message_deleter;
+pub mod whatsapp_message_reader;
 // TASK 3055: the Outlook desktop app's fill-in of gate 3045's shared mail
 // deleter. Gated with the reader it bridges to.
+pub mod irreversible_actions;
 #[cfg(feature = "core")]
 pub mod native_outlook_desktop_mail_delete;
 pub mod native_signal_adapter;
@@ -217,11 +215,8 @@ pub mod native_telegram_adapter;
 pub mod native_whatsapp_adapter;
 #[cfg(not(task3982_focused))]
 pub mod native_window_host;
-/// Signal's read-only open-screen adapter for the shared Scrub message reader.
-/// The adapter has no typing or scrolling operation.
-pub mod signal_message_reader;
 #[cfg(feature = "core")]
-pub mod signal_marked_message_deleter;
+pub mod osl_chat_alert_words;
 #[cfg(feature = "core")]
 pub mod osl_chat_attachment_download_permission;
 #[cfg(feature = "core")]
@@ -229,15 +224,13 @@ pub mod osl_chat_attachment_filename;
 #[cfg(feature = "core")]
 pub mod osl_chat_content_name;
 #[cfg(feature = "core")]
-pub mod osl_chat_alert_words;
-#[cfg(feature = "core")]
 pub mod osl_chat_drag_drop;
-#[cfg(feature = "core")]
-pub mod osl_chat_pro_attachment_send;
 #[cfg(feature = "core")]
 pub mod osl_chat_file_limits;
 #[cfg(feature = "core")]
 pub mod osl_chat_local_state_key;
+#[cfg(feature = "core")]
+pub mod osl_chat_pro_attachment_send;
 pub mod osl_enclave_role_ability;
 pub mod osl_enclave_roles;
 #[cfg(feature = "core")]
@@ -246,22 +239,26 @@ pub mod osl_mail;
 #[cfg(feature = "core")]
 #[cfg(not(task3982_focused))]
 pub mod osl_profile;
-pub mod owner_presence;
 pub mod overlay_follow;
-pub mod placement_close;
+pub mod owner_presence;
 #[cfg(feature = "core")]
 #[cfg(not(task3982_focused))]
 pub mod peer_attachment_io;
 #[cfg(not(task3982_focused))]
+pub mod place_text;
+pub mod placement_close;
+#[cfg(not(task3982_focused))]
 pub mod preferences;
 #[cfg(not(task3982_focused))]
-pub mod place_text;
-#[cfg(not(task3982_focused))]
 pub mod privacy_scan;
-pub mod irreversible_actions;
 #[cfg(feature = "core")]
 #[cfg(not(task3982_focused))]
 pub mod pro_context_cover;
+#[cfg(feature = "core")]
+pub mod signal_marked_message_deleter;
+/// Signal's read-only open-screen adapter for the shared Scrub message reader.
+/// The adapter has no typing or scrolling operation.
+pub mod signal_message_reader;
 // Pure decision boundary: no store handle, no tauri, so it stays ungated and
 // is checkable without the desktop build.
 pub mod pro_marked_deletion;
@@ -278,14 +275,14 @@ pub mod scrub_erasure_tracker;
 pub mod scrub_evidence_manifest;
 #[cfg(not(task3982_focused))]
 pub mod shared_conversation_scroll;
-pub mod signal_place_reader;
 pub mod signal_direct_message_check;
+pub mod signal_place_reader;
 pub mod signal_surface_finder;
-#[cfg(not(task3982_focused))]
-pub mod tor_pref;
-pub mod telegram_send_choices;
 #[cfg(feature = "core")]
 pub mod telegram_marked_message_deleter;
+pub mod telegram_send_choices;
+#[cfg(not(task3982_focused))]
+pub mod tor_pref;
 pub mod whatsapp_place_reader;
 pub mod scrub_hosted {
     pub mod aol_mail_deleter;
@@ -420,25 +417,25 @@ pub mod web_surface_adapter;
 #[cfg(not(task3982_focused))]
 pub mod website_driver;
 pub mod whatsapp_accessibility;
-pub mod whatsapp_window_composer;
 pub mod whatsapp_qa_host;
 #[cfg(feature = "core")]
 #[cfg(not(task3982_focused))]
 pub mod whatsapp_qa_pairing;
 pub mod whatsapp_qa_transport;
-/// Private input box rendered only after X's composer has been recognised.
-pub mod x_private_composer;
-/// Preparation-only handlers for the five X protected send choices.
-pub mod x_send;
+pub mod whatsapp_window_composer;
 #[cfg(not(task3982_focused))]
 /// Receiver-backed protected/normal display state for marked X DM and post
 /// rows. Only receiving-job evidence can populate protected text.
 pub mod x_eye_state;
-pub mod x_whitelist;
 /// Expiring and burn-side commands for X content whose published authorship is
 /// the currently signed-in account.
 pub mod x_owned_content_commands;
+/// Private input box rendered only after X's composer has been recognised.
+pub mod x_private_composer;
 pub mod x_public_cover;
+/// Preparation-only handlers for the five X protected send choices.
+pub mod x_send;
+pub mod x_whitelist;
 /// Hermetic records for the direct X active-window discovery command.
 pub mod x_window_composer;
 
@@ -678,6 +675,9 @@ pub mod broker {
             .map_err(|_| "OSL protected conversation key is unavailable".to_owned())
     }
 }
+#[cfg(feature = "core")]
+#[cfg(not(task3982_focused))]
+pub mod burn_job_fence;
 pub mod chat_app_timer_policy;
 pub mod chat_capture_protection;
 /// **The claim state.** What OSL may publicly say about each ruled surface, and
@@ -690,9 +690,6 @@ pub mod claim_state;
 #[cfg(feature = "core")]
 #[cfg(not(task3982_focused))]
 pub mod cleanup;
-#[cfg(feature = "core")]
-#[cfg(not(task3982_focused))]
-pub mod burn_job_fence;
 #[cfg(feature = "core")]
 #[cfg(not(task3982_focused))]
 pub mod core_bridge;
@@ -1040,12 +1037,12 @@ pub mod shared_mail_reader_types;
 pub mod shared_mail_snapshot;
 pub mod shared_mailbox_reader;
 pub mod shared_marked_message_deleter;
+#[path = "../examples/task_3406_place_text.rs"]
+pub mod shared_place_text;
 pub mod signal_destination_binding;
 #[cfg(feature = "core")]
 pub mod signal_extra_device_sender;
 pub mod signal_send_action;
-#[path = "../examples/task_3406_place_text.rs"]
-pub mod shared_place_text;
 #[cfg(feature = "core")]
 pub mod spaces;
 #[cfg(feature = "core")]

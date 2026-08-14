@@ -5,10 +5,7 @@ pub enum SubjectProvider {
     Proton,
     Yahoo,
     Aol,
-    Gmx,
-    Maildotcom,
     Icloud,
-    Tuta,
     OslMail,
 }
 
@@ -20,37 +17,28 @@ impl SubjectProvider {
             Self::Proton => "proton",
             Self::Yahoo => "yahoo",
             Self::Aol => "aol",
-            Self::Gmx => "gmx",
-            Self::Maildotcom => "maildotcom",
             Self::Icloud => "icloud",
-            Self::Tuta => "tuta",
             Self::OslMail => "osl-mail",
         }
     }
 }
 
-pub const EMAIL_SUBJECT_PROVIDERS: [SubjectProvider; 9] = [
+pub const EMAIL_SUBJECT_PROVIDERS: [SubjectProvider; 6] = [
     SubjectProvider::Gmail,
     SubjectProvider::Outlook,
     SubjectProvider::Proton,
     SubjectProvider::Yahoo,
     SubjectProvider::Aol,
-    SubjectProvider::Gmx,
-    SubjectProvider::Maildotcom,
     SubjectProvider::Icloud,
-    SubjectProvider::Tuta,
 ];
 
-pub const PRIVATE_SUBJECT_PROVIDERS: [SubjectProvider; 10] = [
+pub const PRIVATE_SUBJECT_PROVIDERS: [SubjectProvider; 7] = [
     SubjectProvider::Gmail,
     SubjectProvider::Outlook,
     SubjectProvider::Proton,
     SubjectProvider::Yahoo,
     SubjectProvider::Aol,
-    SubjectProvider::Gmx,
-    SubjectProvider::Maildotcom,
     SubjectProvider::Icloud,
-    SubjectProvider::Tuta,
     SubjectProvider::OslMail,
 ];
 

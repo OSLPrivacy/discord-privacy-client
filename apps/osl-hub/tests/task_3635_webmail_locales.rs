@@ -31,15 +31,12 @@ const SUPPORTED_LOCALES: [Locale; 5] = [
     },
 ];
 
-const SERVICES: [Service; 9] = [
+const SERVICES: [Service; 6] = [
     Service { id: "gmail" },
     Service { id: "outlook-web" },
     Service { id: "proton-mail" },
-    Service { id: "tuta" },
     Service { id: "yahoo-mail" },
     Service { id: "aol-mail" },
-    Service { id: "gmx-mail" },
-    Service { id: "mail-com" },
     Service { id: "icloud-mail" },
 ];
 

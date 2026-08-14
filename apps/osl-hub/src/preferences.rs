@@ -268,10 +268,7 @@ fn capability_facts_for_home_tile(tile: &str) -> Option<HomeTileCapabilityFacts>
         "proton" => Surface::Proton,
         "yahoo" => Surface::Yahoo,
         "aol" => Surface::Aol,
-        "gmx" => Surface::Gmx,
-        "maildotcom" => Surface::MailDotCom,
         "icloud" => Surface::ICloud,
-        "tuta" => Surface::Tuta,
         "osl-chats" => Surface::OslChats,
         "osl-mail" => Surface::OslMail,
         _ => return None,
@@ -518,10 +515,7 @@ mod tests {
                 "proton",
                 "yahoo",
                 "aol",
-                "gmx",
-                "maildotcom",
                 "icloud",
-                "tuta",
                 "osl-chats",
                 "osl-notes"
             ]

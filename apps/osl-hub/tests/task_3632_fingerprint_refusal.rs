@@ -31,7 +31,7 @@ impl BrokenCheck {
     }
 }
 
-const PROVIDERS: [&str; 17] = [
+const PROVIDERS: [&str; 14] = [
     "discord",
     "signal",
     "telegram",
@@ -43,11 +43,8 @@ const PROVIDERS: [&str; 17] = [
     "gmail",
     "outlook",
     "proton",
-    "tuta",
     "yahoo",
     "aol",
-    "gmx",
-    "maildotcom",
     "icloud",
 ];
 

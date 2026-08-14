@@ -9,11 +9,11 @@ param(
 
     [ValidateSet(
         "discord", "telegram", "signal", "instagram", "snapchat", "x", "messenger", "whatsapp",
-        "gmail", "outlook", "proton", "yahoo", "aol", "gmx", "maildotcom"
+        "gmail", "outlook", "proton", "yahoo", "aol", "maildotcom"
     )]
     [string[]]$Services = @(
         "discord", "telegram", "signal", "instagram", "snapchat", "x", "messenger", "whatsapp",
-        "gmail", "outlook", "proton", "yahoo", "aol", "gmx", "maildotcom"
+        "gmail", "outlook", "proton", "yahoo", "aol", "maildotcom"
     ),
 
     [switch]$IncludeTotpSeed

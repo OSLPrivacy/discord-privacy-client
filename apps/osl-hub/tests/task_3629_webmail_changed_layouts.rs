@@ -15,7 +15,7 @@ struct Service {
     compose_name: &'static str,
 }
 
-const SERVICES: [Service; 9] = [
+const SERVICES: [Service; 6] = [
     Service {
         id: "gmail",
         compose_name: "Message body",
@@ -29,24 +29,12 @@ const SERVICES: [Service; 9] = [
         compose_name: "Message body",
     },
     Service {
-        id: "tuta",
-        compose_name: "Message body",
-    },
-    Service {
         id: "yahoo-mail",
         compose_name: "Message body",
     },
     Service {
         id: "aol-mail",
         compose_name: "Body",
-    },
-    Service {
-        id: "gmx-mail",
-        compose_name: "Message body",
-    },
-    Service {
-        id: "mail-com",
-        compose_name: "Message body",
     },
     Service {
         id: "icloud-mail",

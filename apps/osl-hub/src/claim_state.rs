@@ -121,16 +121,13 @@ pub enum Surface {
     Messenger,
     // Native email carrier — Outlook desktop, which has a `NativeAppId` variant.
     OutlookDesktop,
-    // Email carriers on the web — the eight with legal analysis, plus Tuta.
+    // Email carriers on the web with reviewed legal analysis.
     Gmail,
     OutlookWeb,
     Proton,
     Yahoo,
     Aol,
-    Gmx,
-    MailDotCom,
     ICloud,
-    Tuta,
     // First-party — 2. Not carriers; no composer to bind.
     OslChats,
     OslMail,
@@ -469,7 +466,7 @@ pub const SURFACE_CLAIMS: &[SurfaceClaim] = &[
         reason: "No Outlook desktop carrier is wired. There is no carry adapter to prove and nothing is sent through Outlook today.",
     },
     // ---- Email carriers on the web ----------------------------------------
-    // Nine rows, one shape: a browser companion opens the provider and no
+    // Seven rows, one shape: a browser companion opens the provider and no
     // carrier is bound to any of them. They are kept as separate rows rather
     // than a group because r5-3b A is explicit -- "never infer one provider's
     // from another's" -- and a group would be the same collapse in a new place.
@@ -478,10 +475,7 @@ pub const SURFACE_CLAIMS: &[SurfaceClaim] = &[
     email_web(Surface::Proton, "Proton Mail"),
     email_web(Surface::Yahoo, "Yahoo Mail"),
     email_web(Surface::Aol, "AOL Mail"),
-    email_web(Surface::Gmx, "GMX Mail"),
-    email_web(Surface::MailDotCom, "Mail.com"),
     email_web(Surface::ICloud, "iCloud Mail"),
-    email_web(Surface::Tuta, "Tuta"),
     // ---- First-party — not carriers ---------------------------------------
     SurfaceClaim {
         surface: Surface::OslChats,
@@ -704,10 +698,7 @@ impl Surface {
             Self::Proton => "proton",
             Self::Yahoo => "yahoo",
             Self::Aol => "aol",
-            Self::Gmx => "gmx",
-            Self::MailDotCom => "maildotcom",
             Self::ICloud => "icloud",
-            Self::Tuta => "tuta",
             Self::OslChats => "osl-chats",
             Self::OslMail => "osl-mail",
         }

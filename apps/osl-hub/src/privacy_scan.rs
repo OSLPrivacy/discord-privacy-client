@@ -32,12 +32,8 @@ pub const GMAIL_ORDINARY_ATTACHMENT_LIMIT_BYTES: u64 =
 pub const PROTON_ORDINARY_ATTACHMENT_LIMIT_MB: u64 = 18;
 pub const PROTON_ORDINARY_ATTACHMENT_LIMIT_BYTES: u64 =
     PROTON_ORDINARY_ATTACHMENT_LIMIT_MB * 1024 * 1024;
-pub const MAIL_DOT_COM_FREE_ORDINARY_ATTACHMENT_LIMIT_MB: u64 = 30;
-pub const MAIL_DOT_COM_PREMIUM_ORDINARY_ATTACHMENT_LIMIT_MB: u64 = 100;
 pub const EXCHANGE_ORDINARY_ATTACHMENT_LIMIT_MB: u64 = 150;
 const MAIL_ATTACHMENT_MIB: u64 = 1024 * 1024;
-const MAILCOM_FREE_ORDINARY_ATTACHMENT_LIMIT_MB: u32 = 30;
-const MAILCOM_PREMIUM_ORDINARY_ATTACHMENT_LIMIT_MB: u32 = 100;
 const EXCHANGE_DEFAULT_ORDINARY_ATTACHMENT_LIMIT_MB: u32 = 10;
 const BLOCKED_JUMP_REFERENCE: &str = "blocked-local-reference";
 
@@ -155,8 +151,6 @@ pub struct OrdinaryAttachmentSetItem {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum OrdinaryAttachmentLimitProfile {
-    MailcomFree,
-    MailcomPremium,
     Exchange { company_limit_mb: Option<u32> },
 }
 
@@ -173,8 +167,6 @@ pub struct OrdinaryAttachmentSetDecision {
 impl OrdinaryAttachmentLimitProfile {
     fn provider_label(self) -> String {
         match self {
-            Self::MailcomFree => "Mail.com Free".to_owned(),
-            Self::MailcomPremium => "Mail.com Premium".to_owned(),
             Self::Exchange {
                 company_limit_mb: None,
             } => "Exchange default".to_owned(),
@@ -186,8 +178,6 @@ impl OrdinaryAttachmentLimitProfile {
 
     fn limit_mb(self) -> u32 {
         match self {
-            Self::MailcomFree => MAILCOM_FREE_ORDINARY_ATTACHMENT_LIMIT_MB,
-            Self::MailcomPremium => MAILCOM_PREMIUM_ORDINARY_ATTACHMENT_LIMIT_MB,
             Self::Exchange { company_limit_mb } => {
                 company_limit_mb.unwrap_or(EXCHANGE_DEFAULT_ORDINARY_ATTACHMENT_LIMIT_MB)
             }
@@ -344,8 +334,6 @@ pub struct EmailDraftAttachment {
 pub enum EmailDraftMailLimitProfile {
     Gmail,
     Proton,
-    MailDotComFree,
-    MailDotComPremium,
     Exchange,
 }
 
@@ -354,8 +342,6 @@ impl EmailDraftMailLimitProfile {
         match self {
             Self::Gmail => "Gmail",
             Self::Proton => "Proton Mail",
-            Self::MailDotComFree => "Mail.com free",
-            Self::MailDotComPremium => "Mail.com premium",
             Self::Exchange => "Exchange",
         }
     }
@@ -364,8 +350,6 @@ impl EmailDraftMailLimitProfile {
         match self {
             Self::Gmail => GMAIL_ORDINARY_ATTACHMENT_LIMIT_MB,
             Self::Proton => PROTON_ORDINARY_ATTACHMENT_LIMIT_MB,
-            Self::MailDotComFree => MAIL_DOT_COM_FREE_ORDINARY_ATTACHMENT_LIMIT_MB,
-            Self::MailDotComPremium => MAIL_DOT_COM_PREMIUM_ORDINARY_ATTACHMENT_LIMIT_MB,
             Self::Exchange => EXCHANGE_ORDINARY_ATTACHMENT_LIMIT_MB,
         }
     }
@@ -1809,20 +1793,8 @@ mod tests {
     }
 
     #[test]
-    fn task3761_mailcom_and_exchange_attachment_limits_refuse_sets_by_name() {
+    fn task3761_exchange_attachment_limits_refuse_sets_by_name() {
         let lines = vec![
-            set_limit_verdict(
-                "mailcom_free",
-                OrdinaryAttachmentLimitProfile::MailcomFree,
-                29,
-                31,
-            ),
-            set_limit_verdict(
-                "mailcom_premium",
-                OrdinaryAttachmentLimitProfile::MailcomPremium,
-                99,
-                101,
-            ),
             set_limit_verdict(
                 "exchange_default",
                 OrdinaryAttachmentLimitProfile::Exchange {
@@ -1848,8 +1820,6 @@ mod tests {
         assert_eq!(
             lines,
             vec![
-                "TASK3761 mailcom_free accepted_set_status=accepted accepted_set_mb=29 refused_set_status=refused refused_set_mb=31 refused_by_name=task3761-mailcom_free-over-b.bin limit_mb=30 refusal=\"Mail.com Free refuses ordinary attachments over 30 MB: task3761-mailcom_free-over-b.bin makes the ordinary attachment set 31 MB\"",
-                "TASK3761 mailcom_premium accepted_set_status=accepted accepted_set_mb=99 refused_set_status=refused refused_set_mb=101 refused_by_name=task3761-mailcom_premium-over-b.bin limit_mb=100 refusal=\"Mail.com Premium refuses ordinary attachments over 100 MB: task3761-mailcom_premium-over-b.bin makes the ordinary attachment set 101 MB\"",
                 "TASK3761 exchange_default accepted_set_status=accepted accepted_set_mb=9 refused_set_status=refused refused_set_mb=11 refused_by_name=task3761-exchange_default-over-b.bin limit_mb=10 refusal=\"Exchange default refuses ordinary attachments over 10 MB: task3761-exchange_default-over-b.bin makes the ordinary attachment set 11 MB\"",
                 "TASK3761 exchange_company_50 accepted_set_status=accepted accepted_set_mb=49 refused_set_status=refused refused_set_mb=51 refused_by_name=task3761-exchange_company_50-over-b.bin limit_mb=50 refusal=\"Exchange company 50 MB refuses ordinary attachments over 50 MB: task3761-exchange_company_50-over-b.bin makes the ordinary attachment set 51 MB\"",
             ]
@@ -2195,16 +2165,6 @@ mod tests {
                 GMAIL_ORDINARY_ATTACHMENT_LIMIT_MB,
             ),
             (
-                "maildotcom-free",
-                EmailDraftMailLimitProfile::MailDotComFree,
-                MAIL_DOT_COM_FREE_ORDINARY_ATTACHMENT_LIMIT_MB,
-            ),
-            (
-                "maildotcom-premium",
-                EmailDraftMailLimitProfile::MailDotComPremium,
-                MAIL_DOT_COM_PREMIUM_ORDINARY_ATTACHMENT_LIMIT_MB,
-            ),
-            (
                 "exchange",
                 EmailDraftMailLimitProfile::Exchange,
                 EXCHANGE_ORDINARY_ATTACHMENT_LIMIT_MB,
@@ -2265,12 +2225,9 @@ mod tests {
             limit_numbers.join("|"),
         );
 
-        assert_eq!(
-            accepted_profiles,
-            vec!["Gmail", "Mail.com free", "Mail.com premium", "Exchange"]
-        );
-        assert_eq!(accepted_profiles.len(), 4);
-        assert_eq!(refused_by_name.len(), 4);
+        assert_eq!(accepted_profiles, vec!["Gmail", "Exchange"]);
+        assert_eq!(accepted_profiles.len(), 2);
+        assert_eq!(refused_by_name.len(), 2);
     }
 
     #[test]

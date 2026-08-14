@@ -13,7 +13,6 @@ const sources = {
   yahooHosted: read("apps/osl-hub/src/scrub_hosted/yahoo_mail.rs"),
   protonHosted: read("apps/osl-hub/src/scrub_hosted/proton_mail.rs"),
   nativeOutlook: read("apps/osl-hub/src/native_outlook_adapter.rs"),
-  gmxWeb: read("apps/osl-hub/src/web_surface_adapter/gmx.rs"),
   outlookWeb: read("apps/osl-hub/src/web_surface_adapter/outlook.rs"),
   browserShell: read("apps/osl-hub-ui/src/browser-service-qa-shell.ts"),
 };
@@ -24,10 +23,7 @@ const services = [
   "proton",
   "yahoo",
   "aol",
-  "gmx",
-  "maildotcom",
   "icloud",
-  "tuta",
 ];
 
 function assertMeasured(condition, label) {
@@ -192,7 +188,6 @@ const routeLocations = {
   protonSummaryOnly: lineOf("hubCommandSurface", "pub struct ProtonMailboxForScrubMessage"),
   yahooOpenWrapper: lineOf("yahooHosted", "open_yahoo_mailbox_message_for_scrub"),
   outlookDesktopOpen: lineOf("nativeOutlook", "pub fn open_message("),
-  gmxReadingPaneOnly: lineOf("gmxWeb", "name: \"reading pane\""),
   outlookReadingPaneOnly: lineOf("outlookWeb", "name: \"reading pane\""),
 };
 
@@ -202,10 +197,7 @@ const serviceRoutes = {
   proton: "imap=direct imap.protonmail.com DNS failed; api_or_helper=Proton Mail Bridge local IMAP/SMTP is official but not installed/listening here; web=Proton mailbox command returns summaries without body; osl_source=generic selected-page email can return the open page body; winner=Proton Mail Bridge local IMAP when installed",
   yahoo: "imap=advertised IMAP4rev1 on imap.mail.yahoo.com:993; api_or_helper=Yahoo commercial/developer mail access not present in repo; web=Yahoo hosted scrub can list folders/messages; osl_source=open_yahoo_mailbox_message_for_scrub delegates to open_shared_mailbox_message; winner=IMAP UID FETCH BODY.PEEK[]/BODY.PEEK[part]",
   aol: "imap=advertised IMAP4rev1 on imap.aol.com:993; api_or_helper=no AOL-specific API/helper route found in repo; web=no AOL-specific body command found; osl_source=open_shared_mailbox_message accepts aol and returns body; winner=IMAP UID FETCH BODY.PEEK[]/BODY.PEEK[part]",
-  gmx: "imap=advertised IMAP4rev1 on imap.gmx.com:993; api_or_helper=no GMX-specific API/helper route found in repo; web=GMX web adapter has reading pane targets only; osl_source=open_shared_mailbox_message accepts gmx and returns body; winner=IMAP UID FETCH BODY.PEEK[]/BODY.PEEK[part]",
-  maildotcom: "imap=advertised IMAP4rev1 on imap.mail.com:993 with official Premium/enablement limits; api_or_helper=no mail.com-specific API/helper route found in repo; web=no mail.com-specific body command found; osl_source=open_shared_mailbox_message accepts maildotcom and returns body; winner=IMAP UID FETCH BODY.PEEK[]/BODY.PEEK[part]",
   icloud: "imap=advertised IMAP4rev1 on imap.mail.me.com:993; api_or_helper=Apple app-specific password route, no repo helper; web=iCloud web commands read summaries/pages only; osl_source=open_shared_mailbox_message accepts icloud and returns body; winner=IMAP UID FETCH BODY.PEEK[]/BODY.PEEK[part]",
-  tuta: "imap=official Tuta says no IMAP/POP and guessed imap.tuta.com DNS failed; api_or_helper=own Tuta clients/offline cache only, no repo helper; web=browser shell lists tuta but no body command found; osl_source=open_shared_mailbox_message accepts tuta fixture bodies only; winner=none in OSL production routes",
 };
 
 const routeFields = ["imap=", "api_or_helper=", "web=", "osl_source=", "winner="];

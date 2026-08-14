@@ -18,7 +18,7 @@ pub mod telegram;
 pub mod whatsapp;
 
 pub const ADAPTER_ABI_VERSION: u32 = 1;
-pub const SUPPORTED_MESSAGE_BOX_PROVIDER_COUNT: usize = 17;
+pub const SUPPORTED_MESSAGE_BOX_PROVIDER_COUNT: usize = 14;
 pub const SUPPORTED_MESSAGE_BOX_PROVIDERS: [&str; SUPPORTED_MESSAGE_BOX_PROVIDER_COUNT] = [
     "discord",
     "signal",
@@ -31,11 +31,8 @@ pub const SUPPORTED_MESSAGE_BOX_PROVIDERS: [&str; SUPPORTED_MESSAGE_BOX_PROVIDER
     "gmail",
     "outlook",
     "proton",
-    "tuta",
     "yahoo",
     "aol",
-    "gmx",
-    "maildotcom",
     "icloud",
 ];
 
@@ -212,18 +209,14 @@ fn message_box_fingerprint_for_app(app: AdapterAppId) -> Option<MessageBoxFinger
         AdapterAppId::Gmail => "gmail",
         AdapterAppId::Outlook => "outlook",
         AdapterAppId::Proton => "proton",
-        AdapterAppId::Tuta => "tuta",
         AdapterAppId::Yahoo => "yahoo",
         AdapterAppId::Aol => "aol",
-        AdapterAppId::Gmx => "gmx",
-        AdapterAppId::MailCom => "maildotcom",
     })
 }
 
 fn canonical_message_box_provider_id(provider_id: &str) -> Option<&'static str> {
     let normalized = provider_id.trim().to_ascii_lowercase();
     let canonical = match normalized.as_str() {
-        "mail.com" | "mail-com" | "mail_com" | "maildotcom" => "maildotcom",
         value => value,
     };
     SUPPORTED_MESSAGE_BOX_PROVIDERS

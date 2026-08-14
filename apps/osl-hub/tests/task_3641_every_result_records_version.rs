@@ -10,7 +10,7 @@ use osl_privacy_hub::qa_selftest_request::{
     REFUSAL_PROVIDER_NAME_MISSING, REFUSAL_PROVIDER_VERSION_MISSING,
 };
 
-const SUPPORTED_PROVIDERS: [(&str, &str); 17] = [
+const SUPPORTED_PROVIDERS: [(&str, &str); 14] = [
     ("Discord", "1.0.9168"),
     ("Telegram", "5.14.3"),
     ("Signal", "7.60.0"),
@@ -18,11 +18,8 @@ const SUPPORTED_PROVIDERS: [(&str, &str); 17] = [
     ("Outlook", "1.2026.707.300"),
     ("Gmail", "Firefox 141.0.3"),
     ("Proton Mail", "Firefox 141.0.3"),
-    ("Tuta Mail", "Firefox 141.0.3"),
     ("Yahoo Mail", "Firefox 141.0.3"),
     ("AOL Mail", "Firefox 141.0.3"),
-    ("GMX Mail", "Firefox 141.0.3"),
-    ("mail.com", "Firefox 141.0.3"),
     ("iCloud Mail", "Firefox 141.0.3"),
     ("Chrome", "127.0.6533.120"),
     ("Edge", "127.0.2651.105"),
@@ -114,10 +111,10 @@ fn task_3641_every_saved_automated_and_live_result_has_an_exact_provider_version
         );
     }
 
-    assert_eq!(SUPPORTED_PROVIDERS.len(), 17);
+    assert_eq!(SUPPORTED_PROVIDERS.len(), 14);
     assert_eq!(saved_paths.len(), 34);
     assert_eq!(inspected_provider_modes.len(), 34);
-    assert_eq!(versions_by_provider.len(), 17);
+    assert_eq!(versions_by_provider.len(), 14);
     assert!(versions_by_provider
         .values()
         .all(|versions| versions.len() == 1));

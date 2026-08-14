@@ -98,10 +98,10 @@ impl ConversationPlaceKind {
         match self {
             Self::DirectMessage => "direct_message",
             Self::Group => "group",
-      Self::GroupChat => "group_chat",
+            Self::GroupChat => "group_chat",
             Self::NoteToSelf => "note_to_self",
-      Self::Community => "community",
-      Self::BroadcastList => "broadcast_list",
+            Self::Community => "community",
+            Self::BroadcastList => "broadcast_list",
             Self::Channel => "channel",
             Self::Thread => "thread",
             Self::PublicPost => "public_post",
@@ -159,20 +159,20 @@ impl ConversationPlaceCandidate {
         }
     }
 
-  pub fn group_chat(id: impl Into<String>, label: impl Into<String>) -> Self {
+    pub fn group_chat(id: impl Into<String>, label: impl Into<String>) -> Self {
         Self {
             place_id: id.into(),
             label: label.into(),
             place_kind: ConversationPlaceKind::GroupChat,
             server: None,
             channel: None,
-      }
-  }
+        }
+    }
 
-  /// Messenger communities are a first-class conversation surface, not a
+    /// Messenger communities are a first-class conversation surface, not a
     /// channel with an invented server parent.  Keeping the kind distinct
-  /// lets the scrub picker faithfully tell users what the browser showed.
-  pub fn community(id: impl Into<String>, label: impl Into<String>) -> Self {
+    /// lets the scrub picker faithfully tell users what the browser showed.
+    pub fn community(id: impl Into<String>, label: impl Into<String>) -> Self {
         Self {
             place_id: id.into(),
             label: label.into(),
@@ -182,7 +182,7 @@ impl ConversationPlaceCandidate {
         }
     }
 
-  pub fn broadcast_list(id: impl Into<String>, label: impl Into<String>) -> Self {
+    pub fn broadcast_list(id: impl Into<String>, label: impl Into<String>) -> Self {
         Self {
             place_id: id.into(),
             label: label.into(),
@@ -209,10 +209,10 @@ impl ConversationPlaceCandidate {
             place_kind: ConversationPlaceKind::Comment,
             server: None,
             channel: None,
-      }
-  }
+        }
+    }
 
-  pub fn channel(
+    pub fn channel(
         id: impl Into<String>,
         label: impl Into<String>,
         server: ConversationPlaceParent,
@@ -1852,7 +1852,7 @@ pub fn read_instagram_shared_messages(
             .cmp(&right.time)
             .then_with(|| left.message_id.cmp(&right.message_id))
     });
-  Ok(messages)
+    Ok(messages)
 }
 
 /// Fill the shared conversation reader with the reviewed rows observed on a
@@ -1879,7 +1879,7 @@ pub fn read_messenger_conversation_places(
                 ConversationPlaceCandidate::community(row.conversation_id, row.label)
             }
         }),
-  )
+    )
 }
 
 pub fn read_shared_mailbox_folders(
@@ -2175,15 +2175,15 @@ fn validate_conversation_place(place: &ConversationPlaceCandidate) -> Result<(),
     match place.place_kind {
         ConversationPlaceKind::DirectMessage
         | ConversationPlaceKind::Group
-      | ConversationPlaceKind::GroupChat
+        | ConversationPlaceKind::GroupChat
         | ConversationPlaceKind::NoteToSelf
         | ConversationPlaceKind::Community
         | ConversationPlaceKind::BroadcastList
         | ConversationPlaceKind::PublicPost
         | ConversationPlaceKind::Comment => Ok(()),
         // A server parent is present for Discord-like channels, but Telegram
-      // broadcast channels are first-class places without that hierarchy.
-      ConversationPlaceKind::Channel => Ok(()),
+        // broadcast channels are first-class places without that hierarchy.
+        ConversationPlaceKind::Channel => Ok(()),
         ConversationPlaceKind::Thread => {
             if place.channel.is_some() {
                 Ok(())
@@ -2275,8 +2275,7 @@ fn validate_mailbox_reader_binding(
 
 fn validate_mail_service_id(service_id: &str) -> Result<(), String> {
     match service_id {
-        "email" | "gmail" | "outlook" | "proton" | "tuta" | "yahoo" | "aol" | "gmx"
-        | "maildotcom" | "icloud" => Ok(()),
+        "email" | "gmail" | "outlook" | "proton" | "yahoo" | "aol" | "icloud" => Ok(()),
         _ => Err("unknown mail service".to_owned()),
     }
 }
@@ -2554,11 +2553,8 @@ fn scrub_app_or_browser_label(account: &AccountRecord) -> &'static str {
         (ServiceKind::Email, Some(EmailProvider::Gmail)) => "Gmail",
         (ServiceKind::Email, Some(EmailProvider::Outlook)) => "Outlook",
         (ServiceKind::Email, Some(EmailProvider::Proton)) => "Proton Mail",
-        (ServiceKind::Email, Some(EmailProvider::Tuta)) => "Tuta Mail",
         (ServiceKind::Email, Some(EmailProvider::Yahoo)) => "Yahoo Mail",
         (ServiceKind::Email, Some(EmailProvider::Aol)) => "AOL Mail",
-        (ServiceKind::Email, Some(EmailProvider::Gmx)) => "GMX Mail",
-        (ServiceKind::Email, Some(EmailProvider::Maildotcom)) => "mail.com",
         (ServiceKind::Email, Some(EmailProvider::Icloud)) => "iCloud Mail",
         _ => service_descriptor(account.service_id).display_name,
     }
@@ -3165,7 +3161,7 @@ mod tests {
                 OWNER_A,
                 ServiceKind::Discord,
                 "Bad binding".to_owned(),
-                Some(EmailProvider::Tuta),
+                Some(EmailProvider::Icloud),
             )
             .is_err());
         let signal = state

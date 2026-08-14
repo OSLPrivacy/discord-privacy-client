@@ -19,7 +19,7 @@ Set-AzContext -Subscription "<subscription name or ID>"
 cd "<path-to-discord-privacy-client>"
 ./scripts/set-osl-test-account-secrets.ps1 `
   -VaultName "<vault-name>" `
-  -Services discord,telegram,signal,instagram,snapchat,x,messenger,whatsapp,gmail,outlook,proton,yahoo,aol,gmx,maildotcom `
+  -Services discord,telegram,signal,instagram,snapchat,x,messenger,whatsapp,gmail,outlook,proton,yahoo,aol,maildotcom `
   -ExpiresInDays 30
 ```
 

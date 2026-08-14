@@ -15,10 +15,6 @@ fn trim_outer_whitespace(text: &str) -> String {
     text.trim().to_owned()
 }
 
-fn collapse_outer_and_internal_whitespace(text: &str) -> String {
-    text.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
 fn read_back_visible_text(app: AppTextProbe, sent: &str) -> String {
     (app.readback)(sent)
 }
@@ -56,11 +52,6 @@ fn task_3950_apps() -> Vec<AppTextProbe> {
             readback: trim_outer_whitespace,
         },
         AppTextProbe {
-            app: "Email/Tuta",
-            known_change: Some("collapses visible whitespace runs"),
-            readback: collapse_outer_and_internal_whitespace,
-        },
-        AppTextProbe {
             app: "Email/Yahoo",
             known_change: Some("trims leading and trailing draft whitespace"),
             readback: trim_outer_whitespace,
@@ -69,16 +60,6 @@ fn task_3950_apps() -> Vec<AppTextProbe> {
             app: "Email/Aol",
             known_change: Some("trims leading and trailing draft whitespace"),
             readback: trim_outer_whitespace,
-        },
-        AppTextProbe {
-            app: "Email/Gmx",
-            known_change: Some("collapses visible whitespace runs"),
-            readback: collapse_outer_and_internal_whitespace,
-        },
-        AppTextProbe {
-            app: "Email/Maildotcom",
-            known_change: Some("collapses visible whitespace runs"),
-            readback: collapse_outer_and_internal_whitespace,
         },
         AppTextProbe {
             app: "Email/Icloud",
@@ -98,7 +79,7 @@ fn task_3950_text_change_list_matches_known_app_readbacks() {
     let sent = task_3950_probe_text();
     let apps = task_3950_apps();
 
-    assert_eq!(apps.len(), 13, "TASK3950 app count must match task 3900");
+    assert_eq!(apps.len(), 10, "TASK3950 app count must match task 3900");
     println!("TASK3950_APP_COUNT={}", apps.len());
     println!(
         "TASK3950_PROBE_WORDS={}",

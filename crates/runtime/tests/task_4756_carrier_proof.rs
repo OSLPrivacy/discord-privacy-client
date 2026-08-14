@@ -18,10 +18,7 @@ const SURFACES: &[&str] = &[
     "proton",
     "yahoo",
     "aol",
-    "gmx",
-    "maildotcom",
     "icloud",
-    "tuta",
 ];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -182,10 +179,7 @@ fn assert_claim_state_source_still_names_the_carrier_denominator() {
         "Proton",
         "Yahoo",
         "Aol",
-        "Gmx",
-        "MailDotCom",
         "ICloud",
-        "Tuta",
     ] {
         assert!(
             CLAIM_STATE_SOURCE.contains(&format!("Surface::{surface}")),
@@ -367,10 +361,7 @@ fn is_carrier_address(url: &str) -> bool {
         "proton.me",
         "mail.yahoo.com",
         "aol.com",
-        "gmx.com",
-        "mail.com",
         "icloud.com",
-        "tuta.com",
     ];
     CARRIER_HOSTS.iter().any(|host| url.contains(host))
 }

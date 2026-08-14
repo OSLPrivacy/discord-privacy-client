@@ -21,7 +21,6 @@ pub const GMAIL_SERVICE_ID: &str = "gmail";
 pub const AOL_SERVICE_ID: &str = "aol";
 pub const ICLOUD_SERVICE_ID: &str = "icloud";
 pub const OUTLOOK_WEB_SERVICE_ID: &str = "outlook-web";
-pub const GMX_SERVICE_ID: &str = "gmx";
 
 pub const SHARED_MAILBOX_MAX_PAGE_SIZE: usize = 80;
 
@@ -210,7 +209,6 @@ impl SharedMailboxPagingStop for SharedMailboxNeverStop {
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum SharedMailboxReaderError {
     InvalidGmailMailbox,
-    InvalidGmxMailbox,
     InvalidIcloudMailbox,
     InvalidOutlookWebMailbox,
     InvalidPagingConfig,
@@ -225,7 +223,6 @@ impl SharedMailboxReaderError {
     pub const fn reason(&self) -> &'static str {
         match self {
             Self::InvalidGmailMailbox => "OSL: Gmail mailbox reader data is invalid",
-            Self::InvalidGmxMailbox => "OSL: GMX mailbox reader data is invalid",
             Self::InvalidIcloudMailbox => "OSL: iCloud mailbox reader data is invalid",
             Self::InvalidOutlookWebMailbox => "OSL: Outlook web mailbox reader data is invalid",
             Self::InvalidPagingConfig => "OSL: shared mailbox paging config is invalid",
@@ -319,20 +316,6 @@ pub fn read_outlook_web_shared_mailbox_messages_paged(
 ) -> Result<SharedMailboxPagedRead, SharedMailboxReaderError> {
     validate_outlook_web_mailbox(mailbox)?;
     ensure_outlook_web_folder_exists(mailbox, folder_id)?;
-    validate_shared_mailbox_paging_config(config)?;
-
-    read_shared_mailbox_messages_paged(mailbox, folder_id, config, pause, stop)
-}
-
-pub fn read_gmx_shared_mailbox_messages_paged(
-    mailbox: &SharedMailboxSnapshot,
-    folder_id: &str,
-    config: SharedMailboxPagingConfig,
-    pause: &mut impl SharedMailboxPagingPause,
-    stop: &mut impl SharedMailboxPagingStop,
-) -> Result<SharedMailboxPagedRead, SharedMailboxReaderError> {
-    validate_gmx_mailbox(mailbox)?;
-    ensure_gmx_folder_exists(mailbox, folder_id)?;
     validate_shared_mailbox_paging_config(config)?;
 
     read_shared_mailbox_messages_paged(mailbox, folder_id, config, pause, stop)
@@ -565,25 +548,6 @@ fn validate_icloud_mailbox(
     Ok(())
 }
 
-fn validate_gmx_mailbox(mailbox: &SharedMailboxSnapshot) -> Result<(), SharedMailboxReaderError> {
-    validate_gmx_reader_text(&mailbox.signed_in_address, 254)?;
-    let mut folder_ids = BTreeSet::new();
-    for folder in &mailbox.labels {
-        validate_gmx_reader_text(&folder.label_id, 128)?;
-        validate_gmx_reader_text(&folder.name, 128)?;
-        if !folder_ids.insert(folder.label_id.as_str()) {
-            return Err(SharedMailboxReaderError::InvalidGmxMailbox);
-        }
-    }
-    for message in &mailbox.messages {
-        validate_gmx_message(message)?;
-        if !folder_ids.contains(message.label_id.as_str()) {
-            return Err(SharedMailboxReaderError::UnknownFolder);
-        }
-    }
-    Ok(())
-}
-
 fn validate_outlook_web_mailbox(
     mailbox: &SharedMailboxSnapshot,
 ) -> Result<(), SharedMailboxReaderError> {
@@ -633,18 +597,6 @@ fn validate_icloud_message(
     Ok(())
 }
 
-fn validate_gmx_message(message: &SharedMailMessageRecord) -> Result<(), SharedMailboxReaderError> {
-    validate_gmx_reader_text(&message.label_id, 128)?;
-    validate_gmx_reader_text(&message.message_id, 180)?;
-    validate_gmx_reader_text(&message.subject, 512)?;
-    validate_gmx_reader_body(&message.body)?;
-    if message.time <= 0 {
-        return Err(SharedMailboxReaderError::InvalidGmxMailbox);
-    }
-    readable_sender(message)?;
-    Ok(())
-}
-
 fn validate_outlook_web_message(
     message: &SharedMailMessageRecord,
 ) -> Result<(), SharedMailboxReaderError> {
@@ -680,22 +632,6 @@ fn ensure_icloud_folder_exists(
     folder_id: &str,
 ) -> Result<(), SharedMailboxReaderError> {
     validate_icloud_reader_text(folder_id, 128)?;
-    if mailbox
-        .labels
-        .iter()
-        .any(|folder| folder.label_id == folder_id)
-    {
-        Ok(())
-    } else {
-        Err(SharedMailboxReaderError::UnknownFolder)
-    }
-}
-
-fn ensure_gmx_folder_exists(
-    mailbox: &SharedMailboxSnapshot,
-    folder_id: &str,
-) -> Result<(), SharedMailboxReaderError> {
-    validate_gmx_reader_text(folder_id, 128)?;
     if mailbox
         .labels
         .iter()
@@ -750,18 +686,6 @@ fn validate_icloud_reader_text(
     }
 }
 
-fn validate_gmx_reader_text(value: &str, max_bytes: usize) -> Result<(), SharedMailboxReaderError> {
-    if value.trim() == value
-        && !value.is_empty()
-        && value.len() <= max_bytes
-        && !value.chars().any(|character| character.is_control())
-    {
-        Ok(())
-    } else {
-        Err(SharedMailboxReaderError::InvalidGmxMailbox)
-    }
-}
-
 fn validate_outlook_web_reader_text(
     value: &str,
     max_bytes: usize,
@@ -798,18 +722,6 @@ fn validate_icloud_reader_body(value: &str) -> Result<(), SharedMailboxReaderErr
         Ok(())
     } else {
         Err(SharedMailboxReaderError::InvalidIcloudMailbox)
-    }
-}
-
-fn validate_gmx_reader_body(value: &str) -> Result<(), SharedMailboxReaderError> {
-    if value.len() <= 256 * 1024
-        && value
-            .chars()
-            .all(|character| !character.is_control() || matches!(character, '\n' | '\r' | '\t'))
-    {
-        Ok(())
-    } else {
-        Err(SharedMailboxReaderError::InvalidGmxMailbox)
     }
 }
 

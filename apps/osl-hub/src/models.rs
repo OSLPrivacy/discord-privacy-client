@@ -11,10 +11,7 @@ pub const DEFAULT_HOME_TILE_ORDER: &[&str] = &[
     "proton",
     "yahoo",
     "aol",
-    "gmx",
-    "maildotcom",
     "icloud",
-    "tuta",
     "osl-chats",
     "osl-mail",
     "osl-notes",
@@ -734,11 +731,8 @@ pub enum EmailProvider {
     Gmail,
     Outlook,
     Proton,
-    Tuta,
     Yahoo,
     Aol,
-    Gmx,
-    Maildotcom,
     Icloud,
 }
 

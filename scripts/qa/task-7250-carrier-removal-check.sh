@@ -47,20 +47,38 @@ fi
 # THE PLUMBING STAYS. Yahoo and AOL reach their mailboxes over the same shared
 # IMAP path the 1&1 carriers used. If removing GMX and mail.com took them with
 # it, the removal went too far and this check must go red.
-for control in yahoo aol; do
-  if ! rg -q -i "$control" \
-    apps/osl-hub/src/service_host.rs \
-    apps/osl-hub/src/native_apps.rs \
-    crates/adapter-profile/src/defaults_web.rs \
-    apps/osl-hub-ui/src/services.ts; then
-    echo "TASK7250_FAIL shipping-carrier-missing:$control" >&2
-    exit 1
-  fi
+control_paths=(
+  apps/osl-hub/src/service_host.rs
+  apps/osl-hub/src/native_apps.rs
+  apps/osl-hub/src/claim_state.rs
+  apps/osl-hub/src/models.rs
+  apps/osl-hub-ui/src/services.ts
+  apps/osl-hub-ui/src/desktop-service-policy.ts
+  data/surface-ruling-2026-08-05.json
+)
+for control in yahoo aol icloud; do
+  for control_path in "${control_paths[@]}"; do
+    if ! rg -q -i "$control" "$control_path"; then
+      echo "TASK7250_FAIL shipping-carrier-missing:$control in $control_path" >&2
+      exit 1
+    fi
+  done
 done
 
-if matches="$(rg -n -i 'gmx|tuta|maildotcom|mail\.com|mail_com' "${registration_paths[@]}" 2>/dev/null)"; then
+# Two passes: the unambiguous carrier tokens case-insensitively, and the
+# CamelCase/SCREAMING identifiers with a trailing word boundary so that shared
+# mail plumbing -- EmailComposeControls, MAIL_COMPOSE, oslMailComposeDraft --
+# is not mistaken for a mail.com registration.
+removed=""
+if hit="$(rg -n -i 'gmx|maildotcom|tuta' "${registration_paths[@]}" 2>/dev/null)"; then
+  removed="$hit"
+fi
+if hit="$(rg -n '\bmail\.com|MailCom\b|MailDotCom|MAIL_COM\b|EMAIL_MAIL_COM' "${registration_paths[@]}" 2>/dev/null)"; then
+  removed="$removed$hit"
+fi
+if [[ -n "$removed" ]]; then
   echo 'TASK7250_FAIL removed-carrier-registration:' >&2
-  printf '%s\n' "$matches" >&2
+  printf '%s\n' "$removed" >&2
   exit 1
 fi
 

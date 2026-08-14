@@ -92,7 +92,7 @@ OSL should not try to clone every mature privacy product at once. Its advantage 
 | Category | Strong current products | What users already get | OSL's opening |
 |---|---|---|---|
 | Privacy suite | Proton | Mail, VPN, drive, aliases, passwords and one account | Cross-social protection, overlays, retention and native private social in one policy |
-| Private email | Proton Mail, Tuta | Mature delivery, encrypted mailboxes and aliases | A simpler social-plus-mail identity and consistent contacts/policies |
+| Private email | Proton Mail | Mature delivery, encrypted mailboxes and aliases | A simpler social-plus-mail identity and consistent contacts/policies |
 | Private messenger | Signal, SimpleX, Session | Strong E2EE and mature chat behavior | OSL contacts spanning both native chat and connected platforms |
 | Social cleanup | Redact | Bulk deletion across many services | Ongoing retention rules, before-send protection and verified receipts |
 | Data removal | Incogni, DeleteMe, Optery, Privacy Bee | Broker discovery and recurring removal requests | Combine external exposure cleanup with the user's real account privacy state |
@@ -296,7 +296,7 @@ The preview must state:
 
 OSL Mail should be a staged product, not part of the first OSL Privacy release. Its stage labels are product boundaries, not marketing milestones; the UI must not display a later stage as available until its release gate has passed.
 
-**Stage A - private email client:** connect existing Gmail, Outlook, Proton, Tuta or standard mailboxes; block trackers, sanitize links and attachments, support retention rules and label encryption honestly.
+**Stage A - private email client:** connect existing Gmail, Outlook, Proton or standard mailboxes; block trackers, sanitize links and attachments, support retention rules and label encryption honestly.
 
 **Stage B - OSL aliases and relay:** disposable aliases, reply relay and breach isolation without requiring OSL to operate a complete mailbox.
 
@@ -610,7 +610,7 @@ The initial native-client companion matrix is:
 | Outlook | Installed signed Outlook for Windows | Current native account; separate native profile only when independently verified |
 | Slack / Teams | Installed desktop clients, later launch | Coming soon; no hidden browser fallback |
 | Instagram / Snapchat / X / Messenger | Fixed official origin in the user's selected trusted browser | Browser account or new OSL-owned browser profile |
-| Gmail / Yahoo / AOL / GMX / Mail.com / Proton | Fixed official webmail origin in the user's selected trusted browser | Browser account or new OSL-owned browser profile |
+| Gmail / Yahoo / AOL / Mail.com / Proton | Fixed official webmail origin in the user's selected trusted browser | Browser account or new OSL-owned browser profile |
 
 The launch does not depend on official APIs. OSL companion capabilities are not promised to match every native feature. Native Discord, Telegram, Signal, WhatsApp and installed Outlook remain native-only and never fall back to a browser. Settings selects one installed, signed, allowlisted major browser for all genuinely web-backed apps. If that browser has a completed import-source receipt, a web app shows only `Browser account` and `New account`; without one, the tile opens the fixed official sign-in origin directly. `New account` uses a fixed owner-scoped OSL browser profile. OSL never accepts a renderer-provided executable, URL, profile path or browser argument, and does not inject into, inspect or intercept the remote page.
 

@@ -628,13 +628,13 @@ fn task_1209_check_placement_does_not_submit() {
 }
 
 #[test]
-fn task_1263_gmx_body_editable_no_refuses_second_placement() {
+fn task_1263_body_editable_no_refuses_second_placement() {
     let adapter = adapter(Task1206Fixture::new());
     let binding = adapter.locate(&current_target()).unwrap();
     let carrier = Carrier("MAPLE-4172".into());
 
     println!(
-        "TASK1263_GMX_PLACEMENT_COUNT_BEFORE={}",
+        "TASK1263_PLACEMENT_COUNT_BEFORE={}",
         adapter.backend().placement_count()
     );
     assert_eq!(adapter.backend().placement_count(), 0);
@@ -648,11 +648,11 @@ fn task_1263_gmx_body_editable_no_refuses_second_placement() {
     assert_eq!(adapter.backend().placement_count(), 1);
     assert_eq!(adapter.backend().body_text(), "MAPLE-4172");
     println!(
-        "TASK1263_GMX_BODY_AFTER_EDITABLE_YES={}",
+        "TASK1263_BODY_AFTER_EDITABLE_YES={}",
         adapter.backend().body_text()
     );
     println!(
-        "TASK1263_GMX_PLACEMENT_COUNT_AFTER_EDITABLE_YES={}",
+        "TASK1263_PLACEMENT_COUNT_AFTER_EDITABLE_YES={}",
         adapter.backend().placement_count()
     );
 
@@ -668,16 +668,16 @@ fn task_1263_gmx_body_editable_no_refuses_second_placement() {
         .last_control_refusal()
         .expect("non-editable Body must be the named page-control refusal");
     assert_eq!(refusal, WebPageControlRefusal::BodyNotEditable);
-    assert_eq!(refusal.to_string(), "GMX Body not editable");
+    assert_eq!(refusal.to_string(), "Body not editable");
     assert_eq!(adapter.backend().body_text(), "MAPLE-4172");
     assert_eq!(adapter.backend().placement_count(), 1);
-    println!("TASK1263_GMX_EDITABLE_NO_REFUSAL={refusal}");
+    println!("TASK1263_EDITABLE_NO_REFUSAL={refusal}");
     println!(
-        "TASK1263_GMX_BODY_AFTER_EDITABLE_NO={}",
+        "TASK1263_BODY_AFTER_EDITABLE_NO={}",
         adapter.backend().body_text()
     );
     println!(
-        "TASK1263_GMX_PLACEMENT_COUNT_AFTER_EDITABLE_NO={}",
+        "TASK1263_PLACEMENT_COUNT_AFTER_EDITABLE_NO={}",
         adapter.backend().placement_count()
     );
 }

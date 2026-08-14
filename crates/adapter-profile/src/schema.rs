@@ -149,11 +149,8 @@ pub enum AdapterService {
     Gmail,
     Outlook,
     Proton,
-    Tuta,
     Yahoo,
     Aol,
-    Gmx,
-    MailCom,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]

@@ -35,7 +35,6 @@ evidence for each row.
 | Proton Mail | `https://mail.proton.me/` | unmeasured | — |
 | Yahoo Mail | `https://mail.yahoo.com/` | unmeasured | — |
 | AOL Mail | `https://mail.aol.com/` | unmeasured | — |
-| GMX | `https://www.gmx.com/` | unmeasured | — |
 | Mail.com | `https://www.mail.com/` | unmeasured | — |
 | iCloud Mail | `https://www.icloud.com/mail/` | unmeasured | — |
 

@@ -3,8 +3,7 @@
 //! Each fixture has mail-specific label noise and at least one editable decoy.
 //! Discovery is intentionally limited to the role/state/geometry contract used
 //! by the 3406 placement command; it does not inspect labels or choose among
-//! multiple candidates.  A beta Tuta layout deliberately has two plausible
-//! lower editors, which must be refused before either typing or sending.
+//! multiple candidates.
 
 const PLACE_TEXT: &str = include_str!("../examples/task_3406_place_text.rs");
 
@@ -14,10 +13,7 @@ const SERVICES: &[&str] = &[
     "Yahoo Mail",
     "AOL Mail",
     "iCloud Mail",
-    "GMX Mail",
-    "Mail.com",
     "Proton Mail",
-    "Tuta Mail",
 ];
 
 const BASE_LAYOUTS: &[&str] = &["dark theme", "compact mode", "beta layout"];
@@ -84,7 +80,7 @@ fn fixture(service: &'static str, layout: &'static str) -> ([i32; 4], Vec<Node>)
     let compose_bottom = if compact { 676 } else { 764 };
     let compose_left = if compact { 280 } else { 348 };
     let compose_right = if compact { 1218 } else { 1184 };
-    let mut nodes = vec![
+    let nodes = vec![
         Node {
             accessible_name: "Search mail",
             editable_role: true,
@@ -119,24 +115,7 @@ fn fixture(service: &'static str, layout: &'static str) -> ([i32; 4], Vec<Node>)
         },
     ];
 
-    // This reviewed beta surface exposes a second editable lower document.
-    // Since neither candidate has a stronger role/state/geometry signal, 3406
-    // must fail closed rather than guess and risk placing mail text.
-    if service == "Tuta Mail" && beta {
-        nodes.push(Node {
-            accessible_name: "Experimental signature editor",
-            editable_role: true,
-            writable: true,
-            focusable: true,
-            bounds: [
-                compose_left,
-                compose_top + 6,
-                compose_right,
-                compose_bottom + 12,
-            ],
-            compose_box: false,
-        });
-    }
+    let _ = (service, beta);
     (window, nodes)
 }
 
@@ -149,7 +128,7 @@ fn exercise_case(service: &'static str, layout: &'static str) -> (Discovery, Act
 }
 
 #[test]
-fn task_3638_all_thirty_webmail_layout_cases_find_one_compose_box_or_refuse_safely() {
+fn task_3638_all_supported_webmail_layout_cases_find_one_compose_box() {
     let mut cases = 0usize;
     let mut found = 0usize;
     let mut refused = 0usize;
@@ -199,9 +178,9 @@ fn task_3638_all_thirty_webmail_layout_cases_find_one_compose_box_or_refuse_safe
         println!("TASK3638 service={service} layout={layout} result=found compose_boxes=1 typed_characters_before=0 typed_characters_after=0 sent_messages_before=0 sent_messages_after=0");
     }
 
-    assert_eq!(cases, 30, "9 services × 3 layouts plus 3 extra theme cases");
-    assert_eq!(found, 29);
-    assert_eq!(refused, 1);
+    assert_eq!(cases, 24, "7 services × 3 layouts plus 3 extra theme cases");
+    assert_eq!(found, 24);
+    assert_eq!(refused, 0);
     println!("TASK3638 service_layout_cases={cases} found_exactly_one={found} refused_before_typing={refused} refusal_typed_characters_before_after=0 refusal_sent_messages_before_after=0");
 }
 

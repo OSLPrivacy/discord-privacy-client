@@ -228,13 +228,6 @@ const EMAIL_PROTON: ServiceManifest = ServiceManifest {
     allowed_hosts: &["mail.proton.me", "account.proton.me"],
     launch_active: true,
 };
-const EMAIL_TUTA: ServiceManifest = ServiceManifest {
-    id: "email",
-    display_name: "Tuta Mail",
-    initial_url: "https://app.tuta.com/",
-    allowed_hosts: &["app.tuta.com"],
-    launch_active: true,
-};
 const EMAIL_YAHOO: ServiceManifest = ServiceManifest {
     id: "email",
     display_name: "Yahoo Mail",
@@ -247,20 +240,6 @@ const EMAIL_AOL: ServiceManifest = ServiceManifest {
     display_name: "AOL Mail",
     initial_url: "https://mail.aol.com/",
     allowed_hosts: &["mail.aol.com", "login.aol.com", "login.yahoo.com"],
-    launch_active: true,
-};
-const EMAIL_GMX: ServiceManifest = ServiceManifest {
-    id: "email",
-    display_name: "GMX",
-    initial_url: "https://www.gmx.com/",
-    allowed_hosts: &["www.gmx.com", "login.gmx.com", "navigator.gmx.com"],
-    launch_active: true,
-};
-const EMAIL_MAIL_COM: ServiceManifest = ServiceManifest {
-    id: "email",
-    display_name: "Mail.com",
-    initial_url: "https://www.mail.com/",
-    allowed_hosts: &["www.mail.com", "login.mail.com", "navigator-lxa.mail.com"],
     launch_active: true,
 };
 const EMAIL_ICLOUD: ServiceManifest = ServiceManifest {
@@ -321,11 +300,8 @@ pub fn service_manifest_for_provider(
         EmailProvider::Gmail => &EMAIL_GMAIL,
         EmailProvider::Outlook => &EMAIL_OUTLOOK,
         EmailProvider::Proton => &EMAIL_PROTON,
-        EmailProvider::Tuta => &EMAIL_TUTA,
         EmailProvider::Yahoo => &EMAIL_YAHOO,
         EmailProvider::Aol => &EMAIL_AOL,
-        EmailProvider::Gmx => &EMAIL_GMX,
-        EmailProvider::Maildotcom => &EMAIL_MAIL_COM,
         EmailProvider::Icloud => &EMAIL_ICLOUD,
     })
 }
@@ -2067,11 +2043,8 @@ mod tests {
             (EmailProvider::Gmail, "mail.google.com"),
             (EmailProvider::Outlook, "outlook.live.com"),
             (EmailProvider::Proton, "mail.proton.me"),
-            (EmailProvider::Tuta, "app.tuta.com"),
             (EmailProvider::Yahoo, "mail.yahoo.com"),
             (EmailProvider::Aol, "mail.aol.com"),
-            (EmailProvider::Gmx, "www.gmx.com"),
-            (EmailProvider::Maildotcom, "www.mail.com"),
             (EmailProvider::Icloud, "www.icloud.com"),
         ];
         for (provider, expected_host) in cases {
@@ -2093,11 +2066,8 @@ mod tests {
             service_manifest_for_provider("email", Some(EmailProvider::Gmail)).unwrap(),
             service_manifest_for_provider("email", Some(EmailProvider::Outlook)).unwrap(),
             service_manifest_for_provider("email", Some(EmailProvider::Proton)).unwrap(),
-            service_manifest_for_provider("email", Some(EmailProvider::Tuta)).unwrap(),
             service_manifest_for_provider("email", Some(EmailProvider::Yahoo)).unwrap(),
             service_manifest_for_provider("email", Some(EmailProvider::Aol)).unwrap(),
-            service_manifest_for_provider("email", Some(EmailProvider::Gmx)).unwrap(),
-            service_manifest_for_provider("email", Some(EmailProvider::Maildotcom)).unwrap(),
             service_manifest_for_provider("email", Some(EmailProvider::Icloud)).unwrap(),
         ];
         let outlook = provider_manifests[1];

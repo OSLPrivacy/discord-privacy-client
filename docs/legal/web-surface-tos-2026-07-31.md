@@ -11,7 +11,7 @@ mean the proposed use is permitted.
 - Archived sources were retrieved from the `main` branch of
   [`OpenTermsArchive/contrib-versions`](https://github.com/OpenTermsArchive/contrib-versions)
   through its GitHub contents API.  The blob SHA pins the exact archived text used.
-- Messenger, Outlook, AOL, GMX, and Mail.com have no matching service directory in that
+- Messenger, Outlook, AOL, and Mail.com have no matching service directory in that
   archive’s recursive tree.  Those entries cite the publisher’s current terms page instead.
 - “No directly relevant clause located” is a search result for the named terms page, not a
   statement that automation is allowed.  Re-check terms, incorporated policies, and the
@@ -72,12 +72,6 @@ Evidence: Open Terms Archive, [`Yahoo/Terms of Service.md`](https://github.com/O
 Evidence: publisher, [AOL Terms of Service](https://legal.aol.com/terms/index.html?locale=en-gb); no AOL directory exists in Open Terms Archive’s tree.
 
 > access or collect data, or attempt to access or collect data, from our Services using any automated means, devices, programs, algorithms or methodologies, including but not limited to robots, spiders, scrapers, data mining tools, or data gathering or extraction tools, for any purpose without our express, prior permission.
-
-## GMX Mail
-
-Evidence: publisher, [GMX General Terms & Conditions](https://www.gmx.com/company/terms/); no GMX directory exists in Open Terms Archive’s tree.
-
-No directly relevant automated-access, bot, script, or service-modification clause was located on this terms page during this retrieval. This is not a permission finding; linked product terms and the applicable locale may differ.
 
 ## Mail.com
 

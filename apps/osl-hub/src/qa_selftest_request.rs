@@ -2172,7 +2172,7 @@ mod tests {
             }
         }
 
-        assert_eq!(PROVIDER_VERSION_TARGETS.len(), 17);
+        assert_eq!(PROVIDER_VERSION_TARGETS.len(), 14);
         assert_eq!(accepted_results + refused_results, 34);
         println!(
             "TASK3633_PROVIDER_TARGET_COUNT={}",

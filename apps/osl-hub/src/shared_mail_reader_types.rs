@@ -165,7 +165,6 @@ impl SharedMailboxPagingStop for SharedMailboxNeverStop {
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum SharedMailboxReaderError {
     InvalidGmailMailbox,
-    InvalidGmxMailbox,
     InvalidIcloudMailbox,
     InvalidOutlookWebMailbox,
     InvalidPagingConfig,
@@ -180,7 +179,6 @@ impl SharedMailboxReaderError {
     pub const fn reason(&self) -> &'static str {
         match self {
             Self::InvalidGmailMailbox => "OSL: Gmail mailbox reader data is invalid",
-            Self::InvalidGmxMailbox => "OSL: GMX mailbox reader data is invalid",
             Self::InvalidIcloudMailbox => "OSL: iCloud mailbox reader data is invalid",
             Self::InvalidOutlookWebMailbox => "OSL: Outlook web mailbox reader data is invalid",
             Self::InvalidPagingConfig => "OSL: shared mailbox paging config is invalid",

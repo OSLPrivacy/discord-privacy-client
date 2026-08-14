@@ -294,11 +294,8 @@ pub enum FirefoxServiceId {
     Gmail,
     Outlook,
     Proton,
-    Tuta,
     Yahoo,
     Aol,
-    Gmx,
-    Maildotcom,
     Icloud,
 }
 
@@ -310,7 +307,7 @@ pub enum ProviderVersionTarget {
     FirefoxService(FirefoxServiceId),
 }
 
-pub const PROVIDER_VERSION_TARGETS: [ProviderVersionTarget; 17] = [
+pub const PROVIDER_VERSION_TARGETS: [ProviderVersionTarget; 14] = [
     ProviderVersionTarget::Native(NativeAppId::Discord),
     ProviderVersionTarget::Native(NativeAppId::Telegram),
     ProviderVersionTarget::Native(NativeAppId::Signal),
@@ -322,11 +319,8 @@ pub const PROVIDER_VERSION_TARGETS: [ProviderVersionTarget; 17] = [
     ProviderVersionTarget::Browser(BrowserImportId::Brave),
     ProviderVersionTarget::FirefoxService(FirefoxServiceId::Gmail),
     ProviderVersionTarget::FirefoxService(FirefoxServiceId::Proton),
-    ProviderVersionTarget::FirefoxService(FirefoxServiceId::Tuta),
     ProviderVersionTarget::FirefoxService(FirefoxServiceId::Yahoo),
     ProviderVersionTarget::FirefoxService(FirefoxServiceId::Aol),
-    ProviderVersionTarget::FirefoxService(FirefoxServiceId::Gmx),
-    ProviderVersionTarget::FirefoxService(FirefoxServiceId::Maildotcom),
     ProviderVersionTarget::FirefoxService(FirefoxServiceId::Icloud),
 ];
 
@@ -875,11 +869,8 @@ const FIREFOX_SERVICES: &[(FirefoxServiceId, &str)] = &[
     (FirefoxServiceId::Gmail, "https://mail.google.com/"),
     (FirefoxServiceId::Outlook, "https://outlook.live.com/mail/"),
     (FirefoxServiceId::Proton, "https://mail.proton.me/"),
-    (FirefoxServiceId::Tuta, "https://app.tuta.com/"),
     (FirefoxServiceId::Yahoo, "https://mail.yahoo.com/"),
     (FirefoxServiceId::Aol, "https://mail.aol.com/"),
-    (FirefoxServiceId::Gmx, "https://www.gmx.com/"),
-    (FirefoxServiceId::Maildotcom, "https://www.mail.com/"),
     (FirefoxServiceId::Icloud, "https://www.icloud.com/mail/"),
 ];
 
@@ -1803,11 +1794,8 @@ pub(crate) fn firefox_service_url(service_id: FirefoxServiceId) -> &'static str 
         FirefoxServiceId::Gmail => "https://mail.google.com/",
         FirefoxServiceId::Outlook => "https://outlook.live.com/mail/",
         FirefoxServiceId::Proton => "https://mail.proton.me/",
-        FirefoxServiceId::Tuta => "https://app.tuta.com/",
         FirefoxServiceId::Yahoo => "https://mail.yahoo.com/",
         FirefoxServiceId::Aol => "https://mail.aol.com/",
-        FirefoxServiceId::Gmx => "https://www.gmx.com/",
-        FirefoxServiceId::Maildotcom => "https://www.mail.com/",
         FirefoxServiceId::Icloud => "https://www.icloud.com/mail/",
     }
 }
@@ -1851,11 +1839,8 @@ pub fn firefox_service_display_name(id: FirefoxServiceId) -> &'static str {
         FirefoxServiceId::Gmail => "Gmail",
         FirefoxServiceId::Outlook => "Outlook",
         FirefoxServiceId::Proton => "Proton Mail",
-        FirefoxServiceId::Tuta => "Tuta Mail",
         FirefoxServiceId::Yahoo => "Yahoo Mail",
         FirefoxServiceId::Aol => "AOL Mail",
-        FirefoxServiceId::Gmx => "GMX Mail",
-        FirefoxServiceId::Maildotcom => "mail.com",
         FirefoxServiceId::Icloud => "iCloud Mail",
     }
 }
@@ -5752,11 +5737,11 @@ pub(crate) mod tests {
         assert_eq!(json["packageId"], "OpenWhisperSystems.Signal");
 
         let firefox = FirefoxLaunchResult {
-            service_id: FirefoxServiceId::Maildotcom,
+            service_id: FirefoxServiceId::Icloud,
             started: true,
         };
         let json = serde_json::to_value(firefox).unwrap();
-        assert_eq!(json["serviceId"], "maildotcom");
+        assert_eq!(json["serviceId"], "icloud");
         assert_eq!(json["started"], true);
     }
 

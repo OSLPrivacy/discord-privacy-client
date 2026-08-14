@@ -26,9 +26,9 @@ struct MessageBoxObservation {
 
 // These are the concrete message-box observations, rather than a hash of a
 // provider label.  The inventory is intentionally closed and mirrors the
-// 17-provider 3631 gate.  Adding a provider therefore requires a reviewed
+// 14-provider 3631 gate.  Adding a provider therefore requires a reviewed
 // message-box observation and creates another result row below.
-const OBSERVATIONS: [MessageBoxObservation; 17] = [
+const OBSERVATIONS: [MessageBoxObservation; 14] = [
     MessageBoxObservation {
         provider: "discord",
         process: "Discord",
@@ -129,15 +129,6 @@ const OBSERVATIONS: [MessageBoxObservation; 17] = [
         bounds: (402, 426, 798, 296),
     },
     MessageBoxObservation {
-        provider: "tuta",
-        process: "firefox",
-        automation_id: "mail-editor",
-        role: "textbox",
-        accessible_name: "Message",
-        document_channel: "web-ax",
-        bounds: (405, 430, 792, 292),
-    },
-    MessageBoxObservation {
         provider: "yahoo",
         process: "firefox",
         automation_id: "message-body",
@@ -154,24 +145,6 @@ const OBSERVATIONS: [MessageBoxObservation; 17] = [
         accessible_name: "Message Body",
         document_channel: "web-ax",
         bounds: (398, 425, 802, 297),
-    },
-    MessageBoxObservation {
-        provider: "gmx",
-        process: "firefox",
-        automation_id: "mail-compose-editor",
-        role: "textbox",
-        accessible_name: "Message",
-        document_channel: "web-ax",
-        bounds: (396, 427, 806, 294),
-    },
-    MessageBoxObservation {
-        provider: "maildotcom",
-        process: "firefox",
-        automation_id: "mail-compose-editor",
-        role: "textbox",
-        accessible_name: "Message",
-        document_channel: "web-ax",
-        bounds: (397, 428, 805, 293),
     },
     MessageBoxObservation {
         provider: "icloud",
@@ -365,7 +338,7 @@ fn task_3640_records_every_real_message_box_and_rechecks_before_placement() {
     assert!(result_records
         .iter()
         .all(|record| record.placement_count == 1));
-    assert_eq!(changed_fingerprint_refusals, 17);
+    assert_eq!(changed_fingerprint_refusals, 14);
     println!(
         "TASK3640_SUMMARY result_records={} non_empty_fingerprints={} matching_placement_count_per_record=1 changed_fingerprint_refusals={} changed_fingerprint_placement_count=0",
         result_records.len(),
