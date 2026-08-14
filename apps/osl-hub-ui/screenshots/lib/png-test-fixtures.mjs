@@ -16,8 +16,8 @@ function pngChunk(type, body) {
   return chunk;
 }
 
-/** A valid, opaque, one-colour RGBA PNG with exactly the requested dimensions. */
-export function blankRgbaPng(width, height, [red, green, blue] = [255, 255, 255]) {
+/** A valid, opaque RGBA PNG with exactly the requested dimensions. */
+export function rgbaPng(width, height, pixelAt, { compressionLevel = 6 } = {}) {
   const ihdr = Buffer.alloc(13);
   ihdr.writeUInt32BE(width, 0);
   ihdr.writeUInt32BE(height, 4);
@@ -29,16 +29,28 @@ export function blankRgbaPng(width, height, [red, green, blue] = [255, 255, 255]
     const row = y * (1 + width * 4);
     for (let x = 0; x < width; x += 1) {
       const pixel = row + 1 + x * 4;
-      rows[pixel] = red;
-      rows[pixel + 1] = green;
-      rows[pixel + 2] = blue;
+      const colour = pixelAt(x, y);
+      if (typeof colour === "number") {
+        rows[pixel] = colour >>> 16;
+        rows[pixel + 1] = (colour >>> 8) & 0xff;
+        rows[pixel + 2] = colour & 0xff;
+      } else {
+        rows[pixel] = colour[0];
+        rows[pixel + 1] = colour[1];
+        rows[pixel + 2] = colour[2];
+      }
       rows[pixel + 3] = 255;
     }
   }
   return Buffer.concat([
     Buffer.from("89504e470d0a1a0a", "hex"),
     pngChunk("IHDR", ihdr),
-    pngChunk("IDAT", deflateSync(rows)),
+    pngChunk("IDAT", deflateSync(rows, { level: compressionLevel })),
     pngChunk("IEND", Buffer.alloc(0)),
   ]);
+}
+
+/** A valid, opaque, one-colour RGBA PNG with exactly the requested dimensions. */
+export function blankRgbaPng(width, height, colour = [255, 255, 255], options) {
+  return rgbaPng(width, height, () => colour, options);
 }

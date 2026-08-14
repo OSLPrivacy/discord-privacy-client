@@ -4,7 +4,7 @@ import path from "node:path";
 import test from "node:test";
 import { createServer } from "vite";
 import { launchChrome } from "../../../scripts/lib/cdp-harness.mjs";
-import { countDistinctRgb, readPng } from "./lib/png-pixels.mjs";
+import { assertComparablePngDimensions, countDistinctRgb, readPng } from "./lib/png-pixels.mjs";
 import { blankRgbaPng } from "./lib/png-test-fixtures.mjs";
 
 const APP_ROOT = path.resolve(import.meta.dirname, "..");
@@ -61,8 +61,7 @@ test("TASK 0357 captures the fixed Restore your account screen", async () => {
     const png = await page.screenshot({ fromSurface: true });
     writeFileSync(PNG_PATH, png);
     writeFileSync(TREE_PATH, JSON.stringify({ url: `${url}screenshots/task-0357-restore-account-fixture.html`, window: WINDOW, required: REQUIRED, screen, axNodes: ax.nodes }, null, 2));
-    assert.equal(png.subarray(0, 8).toString("hex"), "89504e470d0a1a0a");
-    assert.deepEqual({ width: png.readUInt32BE(16), height: png.readUInt32BE(20) }, WINDOW);
+    assertComparablePngDimensions(png, WINDOW, "capture PNG");
     assert.ok(png.length > 10_000, `PNG too small: ${png.length}`);
     const decodedDistinctRgb = assertDecodedDistinctRgb(png, "capture PNG");
     console.log(`TASK0357_PNG=${PNG_PATH}`); console.log(`TASK0357_TREE=${TREE_PATH}`); console.log(`TASK0357_WINDOW=${WINDOW.width}x${WINDOW.height}`); console.log(`TASK0357_PNG_BYTES=${png.length}`); console.log(`TASK0357_BLANK_DECODED_DISTINCT_RGB=${blankDecodedDistinctRgb} floor=${DISTINCT_RGB_FLOOR} rejected=true`); console.log(`TASK0357_DECODED_DISTINCT_RGB=${decodedDistinctRgb} floor=${DISTINCT_RGB_FLOOR}`); console.log(`TASK0357_REQUIRED=${REQUIRED.join("|")}`);

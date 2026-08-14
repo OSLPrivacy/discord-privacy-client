@@ -4,7 +4,7 @@ import path from "node:path";
 import test from "node:test";
 import { createServer } from "vite";
 import { launchChrome } from "../../../scripts/lib/cdp-harness.mjs";
-import { countDistinctRgb, readPng } from "./lib/png-pixels.mjs";
+import { assertComparablePngDimensions, countDistinctRgb, readPng } from "./lib/png-pixels.mjs";
 import { blankRgbaPng } from "./lib/png-test-fixtures.mjs";
 
 const APP_ROOT = path.resolve(import.meta.dirname, "..");
@@ -167,8 +167,7 @@ test("TASK 0354 captures the fixed Create password screen", async () => {
     writeFileSync(PNG_PATH, png);
     writeFileSync(TREE_PATH, JSON.stringify({ url: `${url}screenshots/task-0354-create-password-fixture.html`, window: WINDOW, required: REQUIRED, screen, axNodes: ax.nodes }, null, 2));
 
-    const dimensions = pngDimensions(png);
-    assert.deepEqual(dimensions, WINDOW);
+    const dimensions = assertComparablePngDimensions(png, WINDOW, "capture PNG");
     assert.ok(png.length > 10_000, `PNG too small: ${png.length}`);
     const decodedDistinctRgb = assertDecodedDistinctRgb(png, "capture PNG");
 

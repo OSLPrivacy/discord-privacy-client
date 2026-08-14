@@ -82,6 +82,23 @@ export function countDistinctRgb({ pixels }) {
 }
 
 /**
+ * Refuse a PNG that no longer represents the fixed capture viewport.
+ *
+ * D27(c) makes this a comparability check, not an image-quality check: a
+ * downscaled or cropped picture can have plenty of colours while comparing a
+ * different subject from the reference capture.
+ */
+export function assertComparablePngDimensions(png, expected, label = "PNG") {
+  const decoded = readPng(png);
+  if (decoded.width !== expected.width || decoded.height !== expected.height) {
+    throw new Error(
+      `D27(c) refuses ${label}: decoded PNG is ${decoded.width}x${decoded.height}, expected ${expected.width}x${expected.height}; downscaled or cropped images change what is compared`,
+    );
+  }
+  return { width: decoded.width, height: decoded.height };
+}
+
+/**
  * Mean absolute RGB difference between `picture` and the region of `screenshot`
  * whose top-left corner is (`x`, `y`). 0 means the picture is present in the
  * screenshot sample for sample.

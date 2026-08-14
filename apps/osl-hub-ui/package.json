@@ -20,6 +20,7 @@
     "check:retained-redesign": "vite-node scripts/check-retained-redesign-6872.ts",
     "check:task-6854": "vite-node scripts/check-task-6854.ts",
     "prove:task-6855": "node scripts/prove-task-6855.mjs",
+    "prove:task-7215": "node scripts/prove-task-7215-colour-floor.mjs",
     "prove:retained-redesign": "node scripts/prove-retained-redesign-6872.mjs",
     "prove:non-chat-redesign": "node scripts/prove-non-chat-redesign-6873.mjs",
     "screenshot:pro-code": "node screenshots/capture-pro-code.mjs",
