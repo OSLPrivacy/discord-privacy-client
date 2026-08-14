@@ -1,0 +1,82 @@
+{
+  "schema": "osl-reverification-control-set/v1",
+  "minimum_rows": 13,
+  "required_task_ids": [
+    "0159", "4256", "0037", "5182", "4336b", "0011", "6840", "5099",
+    "0412", "4403", "6875", "3126b", "6812"
+  ],
+  "required_verdicts": ["FAILS", "CANNOT-DECIDE", "HOLDS"],
+  "provisional_holds": ["0412", "4403", "6875", "3126b", "6812"],
+  "rows": [
+    {
+      "task_id": "0159",
+      "verdict": "FAILS",
+      "audit_clause": "the Instagram kinds command returns exactly these 5 non-empty named kinds",
+      "audit_reason": "contradictory required count: required 5; evidence shows 3"
+    },
+    {
+      "task_id": "4256",
+      "verdict": "FAILS",
+      "audit_clause": "an independently discovered nonempty inventory of release-consumed catalogue, Home, service-selection, Ready and capability sources contains 0 Instagram entries",
+      "audit_reason": "inverted inventory count: required 0 Instagram entries; evidence shows 20"
+    },
+    {
+      "task_id": "0037",
+      "verdict": "FAILS",
+      "audit_clause": "a live `az vm list --show-details` prints exactly two running machines",
+      "audit_reason": "evidence explicitly records the required result as not met"
+    },
+    {
+      "task_id": "5182",
+      "verdict": "FAILS",
+      "audit_clause": "one authorized low-value real Card charge",
+      "audit_reason": "evidence explicitly records the required result as not met"
+    },
+    {
+      "task_id": "4336b",
+      "verdict": "FAILS",
+      "audit_clause": "the shipping Gmail reader is changed to return only Sent while the real inbox still holds the 10 fresh externally arrived messages",
+      "audit_reason": "evidence explicitly records the required result as not met"
+    },
+    {
+      "task_id": "0011",
+      "verdict": "CANNOT-DECIDE",
+      "missing_surface": "unnamed-build negative-test execution"
+    },
+    {
+      "task_id": "6840",
+      "verdict": "CANNOT-DECIDE",
+      "missing_surface": "locale, tooltip, accessibility, help, compatibility, and encryption-guidance starvation run"
+    },
+    {
+      "task_id": "5099",
+      "verdict": "CANNOT-DECIDE",
+      "missing_surface": "runnable Rust delivery-state surface after the host loader abort"
+    },
+    {
+      "task_id": "0412",
+      "verdict": "HOLDS",
+      "provisional": true
+    },
+    {
+      "task_id": "4403",
+      "verdict": "HOLDS",
+      "provisional": true
+    },
+    {
+      "task_id": "6875",
+      "verdict": "HOLDS",
+      "provisional": true
+    },
+    {
+      "task_id": "3126b",
+      "verdict": "HOLDS",
+      "provisional": true
+    },
+    {
+      "task_id": "6812",
+      "verdict": "HOLDS",
+      "provisional": true
+    }
+  ]
+}
