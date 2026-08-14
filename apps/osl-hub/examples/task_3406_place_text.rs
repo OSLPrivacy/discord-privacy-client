@@ -374,16 +374,16 @@ mod windows_place_text {
     };
     use windows_sys::Win32::Foundation::{CloseHandle, BOOL, HWND, LPARAM, POINT, RECT, TRUE};
     use windows_sys::Win32::System::DataExchange::{
-        CloseClipboard, EmptyClipboard, EnumClipboardFormats, GetClipboardData, OpenClipboard,
-        SetClipboardData,
+        CloseClipboard, EmptyClipboard, EnumClipboardFormats, GetClipboardData,
+        IsClipboardFormatAvailable, OpenClipboard, SetClipboardData,
     };
     use windows_sys::Win32::System::Memory::{
         GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock, GMEM_MOVEABLE,
     };
     use windows_sys::Win32::System::Ole::CF_UNICODETEXT;
     use windows_sys::Win32::System::Threading::{
-        AttachThreadInput, GetCurrentThreadId, OpenProcess, QueryFullProcessImageNameW,
-        PROCESS_QUERY_LIMITED_INFORMATION,
+        AttachThreadInput, GetCurrentProcessId, GetCurrentThreadId, OpenProcess,
+        QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
     };
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
         SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYEVENTF_KEYUP,
@@ -1572,6 +1572,36 @@ mod windows_place_text {
         })
     }
 
+    fn read_clipboard_unicode_text() -> Result<Option<String>, String> {
+        with_clipboard(|| {
+            if unsafe { IsClipboardFormatAvailable(CF_UNICODETEXT as u32) } == 0 {
+                return Ok(None);
+            }
+            let handle = unsafe { GetClipboardData(CF_UNICODETEXT as u32) };
+            if handle.is_null() {
+                return Ok(None);
+            }
+            let size = unsafe { GlobalSize(handle as _) };
+            if size < size_of::<u16>() {
+                return Ok(None);
+            }
+            let source = unsafe { GlobalLock(handle as _) };
+            if source.is_null() {
+                return Err("clipboard text could not be locked".to_owned());
+            }
+            let units = unsafe {
+                std::slice::from_raw_parts(source.cast::<u16>(), size / size_of::<u16>())
+            };
+            let nul = units
+                .iter()
+                .position(|unit| *unit == 0)
+                .unwrap_or(units.len());
+            let text = String::from_utf16_lossy(&units[..nul]);
+            unsafe { GlobalUnlock(handle as _) };
+            Ok(Some(text))
+        })
+    }
+
     fn set_clipboard_bytes(format: u32, bytes: &[u8]) -> Result<(), String> {
         if bytes.is_empty() {
             return Ok(());
@@ -1688,13 +1718,6 @@ mod windows_place_text {
         needle: String,
         timeout: Duration,
     }
-    struct ClipboardObserver {
-        child: Child,
-    }
-    struct ClipboardObserverReport {
-        pid: Option<u32>,
-        saw: String,
-    }
     fn run_clipboard_observer(args: ObserverArgs) -> Result<(), CommandError> {
         println!("observer_pid={}", unsafe { GetCurrentProcessId() });
         let started = Instant::now();
@@ -1744,41 +1767,6 @@ fn main() {
     println!("clipboard_exposure_ms=0");
     eprintln!("task_3406_place_text requires Windows");
     std::process::exit(2);
-}
-
-enum ReadbackComparison {
-    Matched,
-    DidNotMatch {
-        position: usize,
-        expected: Option<char>,
-        actual: Option<char>,
-    },
-}
-
-fn compare_readback(expected: &str, actual: &str) -> ReadbackComparison {
-    let mut expected_chars = expected.chars();
-    let mut actual_chars = actual.chars();
-    for position in 1.. {
-        match (expected_chars.next(), actual_chars.next()) {
-            (Some(left), Some(right)) if left == right => {}
-            (None, None) => return ReadbackComparison::Matched,
-            (expected, actual) => {
-                return ReadbackComparison::DidNotMatch {
-                    position,
-                    expected,
-                    actual,
-                }
-            }
-        }
-    }
-    unreachable!("unbounded loop returns on match or first differing character")
-}
-
-fn printable_char(value: Option<char>) -> String {
-    match value {
-        Some(ch) => format!("{ch:?}"),
-        None => "<end>".to_owned(),
-    }
 }
 
 fn verify_marked_placement(before: &str, after: &str, mark: &str) -> Result<(), String> {

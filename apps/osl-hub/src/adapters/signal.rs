@@ -269,12 +269,12 @@ pub(crate) fn snapshot_claimed_signal_nodes(
 #[cfg(target_os = "windows")]
 mod windows {
     use super::*;
-    use windows::Win32::Foundation::HWND;
-    use windows::Win32::System::Com::{
+    use ::windows::Win32::Foundation::HWND;
+    use ::windows::Win32::System::Com::{
         CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER,
         COINIT_MULTITHREADED,
     };
-    use windows::Win32::UI::Accessibility::{
+    use ::windows::Win32::UI::Accessibility::{
         CUIAutomation, IUIAutomation, IUIAutomationElement, IUIAutomationTreeWalker,
         IUIAutomationValuePattern, UIA_ButtonControlTypeId, UIA_EditControlTypeId,
         UIA_ListControlTypeId, UIA_PaneControlTypeId, UIA_TextControlTypeId, UIA_ValuePatternId,

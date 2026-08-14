@@ -307,6 +307,7 @@ fn native_service_account_id(id: NativeAppId, owner_namespace: &str) -> Option<S
         NativeAppId::Signal => "signal",
         NativeAppId::Whatsapp => "whatsapp",
         NativeAppId::Outlook => "outlook",
+        NativeAppId::X => "x",
     };
     Some(format!("native-{service_id}-{digest}"))
 }
@@ -986,7 +987,7 @@ fn borrowed_presentation_attempt_limit(id: NativeAppId) -> usize {
     // restoring; they never discover or adopt a new one.
     match id {
         NativeAppId::Signal | NativeAppId::Whatsapp | NativeAppId::Outlook => 7,
-        NativeAppId::Instagram => 3,
+        NativeAppId::Instagram | NativeAppId::X => 3,
         NativeAppId::Discord | NativeAppId::Telegram => 3,
     }
 }
@@ -1284,7 +1285,7 @@ fn existing_window_identity_allowed(
                     OUTLOOK_CLASSIC_PRIMARY_WINDOW_CLASS | OUTLOOK_NEW_PRIMARY_WINDOW_CLASS
                 )
         }
-        NativeAppId::Instagram => false,
+        NativeAppId::Instagram | NativeAppId::X => false,
         NativeAppId::Discord => visible && class_name == DISCORD_PRIMARY_WINDOW_CLASS,
         NativeAppId::Telegram => visible,
     }
@@ -2758,6 +2759,7 @@ fn profile_component(id: NativeAppId) -> &'static str {
         NativeAppId::Signal => "signal",
         NativeAppId::Whatsapp => "whatsapp",
         NativeAppId::Outlook => "outlook",
+        NativeAppId::X => "x",
     }
 }
 
@@ -2793,6 +2795,7 @@ fn fixed_secondary_launch(id: NativeAppId) -> FixedSecondaryLaunch {
         NativeAppId::Instagram => FixedSecondaryLaunch::Unsupported,
         NativeAppId::Whatsapp => FixedSecondaryLaunch::Unsupported,
         NativeAppId::Outlook => FixedSecondaryLaunch::Unsupported,
+        NativeAppId::X => FixedSecondaryLaunch::Unsupported,
     }
 }
 
@@ -2944,6 +2947,7 @@ fn native_accessibility_process_name(id: NativeAppId, trusted_path: &Path) -> Op
             Some(crate::native_whatsapp_adapter::WHATSAPP_DESKTOP_PROCESS_NAME)
         }
         NativeAppId::Outlook => None,
+        NativeAppId::X => None,
     }
 }
 
@@ -3870,6 +3874,7 @@ mod windows {
             NativeAppId::Signal => "signal",
             NativeAppId::Whatsapp => "whatsapp",
             NativeAppId::Outlook => "outlook",
+            NativeAppId::X => "x",
         }
     }
 
@@ -3881,6 +3886,7 @@ mod windows {
             "signal" => Some(NativeAppId::Signal),
             "whatsapp" => Some(NativeAppId::Whatsapp),
             "outlook" => Some(NativeAppId::Outlook),
+            "x" => Some(NativeAppId::X),
             _ => None,
         }
     }
@@ -6027,6 +6033,9 @@ mod windows {
                 NativeAppId::Instagram => {
                     return Err(NativeWindowHostReason::ExistingSessionUnavailable);
                 }
+                NativeAppId::X => {
+                    return Err(NativeWindowHostReason::ExistingSessionUnavailable);
+                }
                 NativeAppId::Outlook => {
                     let paths = crate::native_apps::outlook_native_executable_paths();
                     if paths.is_empty() {
@@ -6145,6 +6154,9 @@ mod windows {
             NativeAppId::Telegram => (telegram_executable(), ExecutablePublisher::Telegram),
             NativeAppId::Signal => (signal_executable(), ExecutablePublisher::Signal),
             NativeAppId::Instagram => {
+                return Err(NativeWindowHostReason::ExistingSessionUnavailable);
+            }
+            NativeAppId::X => {
                 return Err(NativeWindowHostReason::ExistingSessionUnavailable);
             }
             NativeAppId::Whatsapp => {
@@ -8736,6 +8748,7 @@ mod windows {
                 NativeAppId::Signal => "signal",
                 NativeAppId::Whatsapp => "whatsapp",
                 NativeAppId::Outlook => "outlook",
+                NativeAppId::X => "x",
             }
             .to_owned(),
             account_id,

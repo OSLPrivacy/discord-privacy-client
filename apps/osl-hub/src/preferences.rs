@@ -39,6 +39,18 @@ pub struct PreviewState {
     home_tiles_by_user: Mutex<BTreeMap<String, StoredHomeTileArrangement>>,
 }
 
+/// Restore the persisted message-wire choice into the in-memory core before
+/// any send path can observe it.
+pub fn apply_saved_message_runtime_preferences(
+    core: &crate::core_bridge::HubCoreState,
+    state: &PreviewState,
+) -> Result<bool, String> {
+    let preferences = state.get()?;
+    core.osl
+        .set_rn_wire_in_enabled(preferences.rn_wire_policy_requested);
+    Ok(core.osl.rn_wire_in_enabled())
+}
+
 #[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct StoredHomeTileArrangement {

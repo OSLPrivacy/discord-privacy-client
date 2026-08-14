@@ -4,3 +4,9 @@
 #
 # Do not add /Brepro as a general build flag. It disables incremental linking;
 # the release-only reproducibility work owns that flag.
+
+# llama.cpp contributes C++ and OpenMP archives to the Windows GNU binary.
+# The C driver does not search the MinGW C++ runtime installed by the shipping
+# cross-toolchain, so the final link must go through the C++ driver.
+[target.x86_64-pc-windows-gnu]
+linker = "x86_64-w64-mingw32-g++"

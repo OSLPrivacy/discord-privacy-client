@@ -25,6 +25,10 @@ use osl_privacy_hub::browser_profile_scan::{
     BrowserProfileScanReceipt, BrowserProfileScanState,
 };
 use osl_privacy_hub::build_integrity::{check_current, BuildIntegrity};
+use osl_privacy_hub::burn_review_state::{
+    BurnReviewBackResult, BurnReviewSelection, BurnReviewState, BurnReviewStateCommand,
+    BurnReviewStateSummary,
+};
 use osl_privacy_hub::chat_capture_protection::{
     ChatCaptureProtectionState, ConsentTransition, EffectiveCaptureProtection,
 };
@@ -193,6 +197,8 @@ mod native_attachment_transport;
 mod native_discord_overlay;
 mod native_image_viewer;
 mod native_whatsapp_overlay;
+#[cfg(windows)]
+mod overlay_follow;
 
 use native_discord_overlay::OverlaySessionState;
 use osl_privacy_hub::hub_command_surface::{
@@ -667,6 +673,32 @@ fn save_onboarding_preferences(
     preferences: OnboardingPreferences,
 ) -> Result<OnboardingPreferences, String> {
     account_recovery::save_normal_setup_completion(&state, preferences)
+}
+
+#[tauri::command]
+fn save_burn_review_state(
+    state: State<'_, BurnReviewState>,
+    selected_scope: String,
+    selected_chat: String,
+    hide_other_people: bool,
+) -> Result<BurnReviewStateSummary, String> {
+    state.save_state_command(BurnReviewStateCommand {
+        selected_scope,
+        selected_chat,
+        hide_other_people,
+    })
+}
+
+#[tauri::command]
+fn get_burn_review_state(
+    state: State<'_, BurnReviewState>,
+) -> Result<Option<BurnReviewSelection>, String> {
+    state.get_command()
+}
+
+#[tauri::command]
+fn back_burn_review(state: State<'_, BurnReviewState>) -> Result<BurnReviewBackResult, String> {
+    state.back_command()
 }
 
 /// Persist the explicit connection route selected during onboarding.
@@ -1247,7 +1279,12 @@ fn spawn_follow_active_app_window_watcher(app: tauri::AppHandle) {
                 continue;
             }
 
-            let mut front_bounds = RECT::default();
+            let mut front_bounds = RECT {
+                left: 0,
+                top: 0,
+                right: 0,
+                bottom: 0,
+            };
             if unsafe { GetWindowRect(front_window, &mut front_bounds) } == 0 {
                 continue;
             }
@@ -4039,7 +4076,7 @@ fn select_native_discord_covertext_writer(
     if caller.label() != "main" {
         return Err("Only the trusted OSL header may choose Covertext".to_owned());
     }
-    let state = app.state::<ai_carrier::AiCarrierState>();
+    let state = app.state::<AiCarrierState>();
     state.set_wordbank_writer_selected(true);
     Ok(state.wordbank_writer_selected())
 }

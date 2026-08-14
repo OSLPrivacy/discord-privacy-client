@@ -326,6 +326,12 @@ pub struct ChatApprovalSuggestionChoiceDto {
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ChatApprovalSuggestionAnswer {
+    pub suggestion: String,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ResetEverySettingRecord {
     pub action: String,
     pub settings_defaulted: bool,
@@ -2202,6 +2208,32 @@ pub fn save_chat_approval_suggestion_choice(
     write_encrypted_json(&path, &prefs)?;
     Ok(ChatApprovalSuggestionChoiceDto {
         choice: choice.as_str().to_owned(),
+    })
+}
+
+pub fn chat_approval_suggestion_for_manual_peer_scope(
+    core: &HubCoreState,
+    service_id: &str,
+    account_id: &str,
+    person_id: String,
+    scope_input: ScopeInput,
+) -> Result<ChatApprovalSuggestionAnswer, String> {
+    let already_approved = manual_peer_scope_approved(
+        core,
+        service_id,
+        account_id,
+        person_id,
+        scope_input,
+    )?;
+    let suggestions_enabled =
+        load_security_preferences()?.chat_approval_suggestion == ChatApprovalSuggestionChoice::On;
+    Ok(ChatApprovalSuggestionAnswer {
+        suggestion: if suggestions_enabled && !already_approved {
+            "offer_approval"
+        } else {
+            "no_suggestion"
+        }
+        .to_owned(),
     })
 }
 
