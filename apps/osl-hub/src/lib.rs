@@ -178,6 +178,10 @@ pub mod pro_marked_deletion_outcomes;
 pub mod proprietary_module_boundary;
 pub mod proprietary_module_lifecycle;
 pub mod scrub_erasure;
+/// Target/version precondition immediately before each external protected-send
+/// side effect.  The route inventory is deliberately compiled with every hub
+/// build, including builds where a native provider is unavailable.
+pub mod send_commit_binding;
 pub mod scrub_erasure_queue;
 pub mod scrub_erasure_tracker;
 pub mod scrub_evidence_manifest;
