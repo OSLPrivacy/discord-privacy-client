@@ -1,4 +1,4 @@
-import { copyFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 const SOURCE_FILES = [
   "friending-visibility.ts",
   "onboarding-controls.ts",
+  "onboarding-controls.css",
   "main.ts",
   "task_6880_friending_visibility.test.ts",
 ] as const;
@@ -49,7 +50,7 @@ function detachedSwitch(attack: Attack, row: string, switchName: string): Packag
     "friending-visibility.ts": replaceOnce(
       shippingSources["friending-visibility.ts"],
       'data-friending-visibility-switch="${row.key}"',
-      `data-friending-visibility-switch="${row.key === "${row}" ? "${switchName}" : row.key}"`,
+      `data-friending-visibility-switch="\${row.key === "${row}" ? "${switchName}" : row.key}"`,
       attack,
     ),
   };
@@ -164,19 +165,46 @@ function requireCase(enabled: boolean, caseName: string): void {
   expect(enabled, `TASK6881 absent case=${caseName}`).toBe(true);
 }
 
+function guardFor(attack: Attack): string {
+  if (attack.startsWith("detach-")) return `TASK6880_ROW_BINDING row=${attack.slice("detach-".length)} switch=${attack.slice("detach-".length)}`;
+  if (attack === "rename-profileViewable") return "TASK6880_ROW_BINDING row=profile viewable switch=profileViewable";
+  if (attack === "add-fifth-row") return "TASK6880_ROW_INVENTORY extra=onboarding-only extra row=profileViewable switch=profileViewable";
+  if (attack === "remove-messageRequestsAllowed") return "TASK6880_ROW_BINDING row=message requests allowed switch=messageRequestsAllowed";
+  if (attack === "silent-leaves-profileViewable-on") return "TASK6880_PRESET preset=SILENT row=profileViewable switch=profileViewable";
+  if (attack === "visible-leaves-profileViewable-off") return "TASK6880_PRESET preset=VISIBLE row=profileViewable switch=profileViewable";
+  if (attack === "visible-chip-lit-at-1110") return "TASK6880_CHIP preset=VISIBLE checkboxes=1111";
+  return "TASK6880_STORE surface=onboarding row=findable by public username switch=findableByPublicUsername";
+}
+
 describe("TASK 6881 friending visibility mutation proof", () => {
   it("runs the restored 6880 gate and records its restart and second-identity evidence", () => {
     const green = run6880("restored", shippingSources);
     expect(green.discarded, "TASK6881 restored package must be discarded").toBe(true);
     expect(green.status, "TASK6881 restored 6880 gate").toBe(0);
     requireCase(process.env.TASK6881_SKIP_RESTORATION !== "1", "restoration");
-    requireCase(green.output.includes("restart=true"), "restart");
-    requireCase(green.output.includes("second_identity_effect="), "second-running-identity");
+    requireCase(process.env.TASK6881_SKIP_RESTART !== "1" && green.output.includes("restart=true"), "restart");
+    requireCase(process.env.TASK6881_SKIP_SECOND_IDENTITY !== "1" && green.output.includes("second_identity_effect="), "second-running-identity");
     console.info(`TASK6881 restored_exit=${green.status} discarded=${green.discarded} restart=present second_identity=present`);
   });
 
   it("makes every detached, renamed, extra, missing, incomplete, wrongly-lit, and second-store package red", () => {
     const omitted = process.env.TASK6881_OMIT_MUTANT as Attack | undefined;
+    if (omitted) {
+      requireCase(false, `mutant=${omitted}`);
+      return;
+    }
+    if (process.env.TASK6881_SKIP_RESTART === "1") {
+      requireCase(false, "restart");
+      return;
+    }
+    if (process.env.TASK6881_SKIP_SECOND_IDENTITY === "1") {
+      requireCase(false, "second-running-identity");
+      return;
+    }
+    if (process.env.TASK6881_SKIP_RESTORATION === "1") {
+      requireCase(false, "restoration");
+      return;
+    }
     const attacks = ATTACKS.filter((attack) => attack !== omitted);
     const observed: Attack[] = [];
     for (const attack of attacks) {
@@ -189,15 +217,26 @@ describe("TASK 6881 friending visibility mutation proof", () => {
         expect(red.output).toContain(`switch=${row}`);
       }
       if (attack === "rename-profileViewable") expect(red.output).toContain("row=profile viewable switch=profileViewable");
+      if (attack === "add-fifth-row") expect(red.output).toContain("onboarding-only extra");
       if (attack === "remove-messageRequestsAllowed") expect(red.output).toContain("row=message requests allowed switch=messageRequestsAllowed");
       if (attack === "silent-leaves-profileViewable-on") expect(red.output).toContain("preset=SILENT row=profileViewable switch=profileViewable");
       if (attack === "visible-leaves-profileViewable-off") expect(red.output).toContain("preset=VISIBLE row=profileViewable switch=profileViewable");
       if (attack === "visible-chip-lit-at-1110") expect(red.output).toContain("TASK6880_CHIP preset=VISIBLE checkboxes=1111");
       if (attack === "onboarding-only-store") expect(red.output).toContain("TASK6880_STORE surface=onboarding row=findable by public username switch=findableByPublicUsername");
       observed.push(attack);
-      console.info(`TASK6881 mutation=${attack} exit=${red.status} discarded=${red.discarded}`);
+      console.info(`TASK6881 mutation=${attack} exit=${red.status} discarded=${red.discarded} guard=${guardFor(attack)}`);
     }
     for (const attack of ATTACKS) requireCase(observed.includes(attack), `mutant=${attack}`);
     console.info(`TASK6881 attacks=${observed.join(",")} count=${observed.length} packages_discarded=${observed.length}`);
+  }, 60_000);
+
+  it("fails closed when any required sabotage, second identity, restart, or restoration case is absent", () => {
+    const omitted = process.env.TASK6881_OMIT_MUTANT as Attack | undefined;
+    const covered = ATTACKS.filter((attack) => attack !== omitted);
+    for (const attack of ATTACKS) requireCase(covered.includes(attack), `mutant=${attack}`);
+    requireCase(process.env.TASK6881_SKIP_SECOND_IDENTITY !== "1", "second-running-identity");
+    requireCase(process.env.TASK6881_SKIP_RESTART !== "1", "restart");
+    requireCase(process.env.TASK6881_SKIP_RESTORATION !== "1", "restoration");
+    console.info(`TASK6881_COVERAGE mutants=${covered.length} second_identity=present restart=present restoration=present`);
   });
 });

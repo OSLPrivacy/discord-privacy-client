@@ -75,10 +75,10 @@ describe("TASK 6880 onboarding social visibility", () => {
         ).toEqual({ row: expectedRow.key, label: expectedRow.label, switch: expectedRow.key });
       }
     }
+    expect(renderedRowNames(onboarding), "TASK6880_ROW_INVENTORY surface=onboarding expected=4").toEqual(ROWS.map((row) => row.label));
+    expect(renderedRowNames(settings), "TASK6880_ROW_INVENTORY surface=settings expected=4").toEqual(ROWS.map((row) => row.label));
     expect(renderedRows(onboarding), "TASK6880_ROW_INVENTORY surface=onboarding expected=4").toEqual(expected);
     expect(renderedRows(settings), "TASK6880_ROW_INVENTORY surface=settings expected=4").toEqual(expected);
-    expect(renderedRowNames(onboarding)).toEqual(ROWS.map((row) => row.label));
-    expect(renderedRowNames(settings)).toEqual(ROWS.map((row) => row.label));
     expect(onboarding).toContain("Strangers see nothing about how you use OSL either way.");
     expect(onboarding).toContain("Settings, Privacy");
     expect(onboarding).toContain('id="continue-friending-visibility"');
