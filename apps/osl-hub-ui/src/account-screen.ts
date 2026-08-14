@@ -19,7 +19,7 @@
  * or why there is no Reset, `resetAccountControl` throws rather than reset an
  * unsafe one, and the screen draws the reason where the button would have been.
  * Four are safe -- identity, lock, stealth, burn password -- because a handle,
- * a lock delay, an empty stealth workspace and an unset burn trigger can all be
+ * a lock delay, a separate clean session and an unset burn trigger can all be
  * had back by typing them again. Three are not: OSL cannot re-derive a
  * password, a fresh recovery kit makes the words already written down useless,
  * and a Pro code it cannot show cannot be put back.
@@ -202,7 +202,7 @@ export const ACCOUNT_RESET_RULES: Readonly<Record<AccountControlId, AccountReset
   stealth: {
     safe: true,
     to: "off",
-    explanation: "Clears the stealth password. The stealth workspace holds no messages, so nothing is lost.",
+    explanation: "Clears the stealth password. Its separate clean session is retained, so no account data is destroyed.",
   },
   "burn-password": {
     safe: true,

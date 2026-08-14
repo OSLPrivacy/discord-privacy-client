@@ -77,8 +77,7 @@ describe("B0-07b main.ts prohibitions", () => {
   });
 
   it("P-28 and P-48 offer only supported app tiles as available", () => {
-    const selectedNative = functionSource("selectedNativeApps", "hasSelectedNativeAppChoice");
-    const detected = functionSource("detectedAppsContent", "installMissingAppsContent");
+    const detected = functionSource("serviceAccountsSettingsContent", "scanPrivacyExport");
     const guide = functionSource("serviceGuideContent", "settingsContent");
     const binding = functionSource("bindSavedAccountControls", "bindBrowserImportControls");
     const topStrip = functionSource("appLauncherStrip", "simpleDeviceStatusMarkup");
@@ -95,12 +94,15 @@ describe("B0-07b main.ts prohibitions", () => {
     expect(launchApps.filter((app) => app.launchState === "available").map((app) => app.id)).toEqual(["discord"]);
     expect(launchApps.filter((app) => app.launchState === "comingSoon").map((app) => app.id)).toEqual([...unsupportedOriginalApps]);
     expect(launchApps.filter((app) => app.setupEligible).map((app) => app.id)).toEqual(["discord"]);
-    expect(selectedNative).toContain("supportedNativeAppIds.has(app.id)");
-    expect(detected).toContain('nativeSessionModeSettingChoices("discord", "Discord")');
-    expect(detected).not.toContain('nativeSessionModeSettingChoices("telegram", "Telegram")');
-    expect(detected).not.toContain('nativeSessionModeSettingChoices("signal", "Signal")');
-    expect(detected).not.toContain('nativeSessionModeSettingChoices("whatsapp", "WhatsApp")');
-    expect(detected).not.toContain('nativeSessionModeSettingChoices("outlook", "Outlook")');
+    // TASK 6802: the Account opening rows moved to Settings with the rest of
+    // account claiming. They are still built only from apps this PC actually
+    // has, and the per-app separate-account offer is still gated on the
+    // supported set rather than on the name of an app.
+    expect(detected).toContain('.filter((app) => app.availability === "installed")');
+    expect(detected).toContain("nativeSessionModeSettingChoices(app.id, app.displayName)");
+    expect(functionSource("separateNativeAccountAvailable", "nativeSessionModeSettingChoices"))
+      .toContain('app.availability === "installed" && app.isolatedProfileAvailable');
+    expect(source).toContain('const supportedNativeAppIds = new Set<NativeAppId>(["discord"])');
     expect(guide).toContain("supportedNativeAppIds.has(activeHomeAppId as NativeAppId)");
     expect(binding).not.toContain('finishNativeAccountChoice("telegram")');
     expect(countOccurrences(source, "data-home-app=")).toBe(5);

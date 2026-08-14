@@ -610,10 +610,10 @@ export async function openNativeDiscordOverlayAttachment(attachmentId: string): 
   } catch (error) { recordBackendFailure("open_native_discord_overlay_attachment", error); return null; }
 }
 
-export async function selectOslChatAttachment(viewOnce: boolean): Promise<NativeOverlayPreparedAttachment | "cancelled" | null> {
-  if (typeof viewOnce !== "boolean") return null;
+export async function selectOslChatAttachment(viewOnce: boolean, spoiler = false): Promise<NativeOverlayPreparedAttachment | "cancelled" | null> {
+  if (typeof viewOnce !== "boolean" || typeof spoiler !== "boolean") return null;
   try {
-    const value = await invoke<unknown>("select_osl_chat_attachment", { viewOnce });
+    const value = await invoke<unknown>("select_osl_chat_attachment", { viewOnce, spoiler });
     if (value === null) return "cancelled";
     return parseNativeOverlayPreparedAttachment(value);
   } catch (error) { recordBackendFailure("select_osl_chat_attachment", error); return null; }

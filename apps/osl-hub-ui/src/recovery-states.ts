@@ -22,7 +22,7 @@ export const RECOVERY_STATE_ROWS: readonly RecoveryStateRow[] = [
     id: "stealth-credential",
     state: "Stealth credential used",
     recoverable: "The normal account, by relaunching and entering the main password.",
-    lost: "Nothing; stealth opens a decoy and does not destroy data.",
+    lost: "Nothing; stealth opens a separate clean OSL session and does not destroy data.",
   },
   {
     id: "password-recovery-capable",

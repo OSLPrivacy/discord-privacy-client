@@ -473,6 +473,80 @@ export async function openMullvad(): Promise<MullvadAction> {
   return parseMullvadAction(await invoke<unknown>("open_mullvad"));
 }
 
+/**
+ * TASK 6810 — the pinned, signed Windows install path.
+ *
+ * The backend resolves the official installer through a signed release
+ * manifest, verifies the publisher and the pinned digest, asks for consent and
+ * elevation, installs through Windows, and re-detects the exact product. The
+ * renderer supplies only a product id from this fixed list; it never supplies a
+ * URL, a path, a package id or an argument.
+ */
+export const WINDOWS_INSTALL_PRODUCTS = ["signal", "discord", "telegram", "whatsapp", "mullvad"] as const;
+
+export type WindowsInstallProduct = (typeof WINDOWS_INSTALL_PRODUCTS)[number];
+
+export type WindowsInstallRowState = "notDetected" | "installing" | "detected";
+
+export interface WindowsAppRow {
+  product: WindowsInstallProduct;
+  displayName: string;
+  state: WindowsInstallRowState;
+  label: string;
+  reason: string;
+  installOffered: boolean;
+  openOffered: boolean;
+  executable: string | null;
+}
+
+export function isWindowsInstallProduct(candidate: string): candidate is WindowsInstallProduct {
+  return (WINDOWS_INSTALL_PRODUCTS as readonly string[]).includes(candidate);
+}
+
+function parseWindowsAppRow(raw: unknown): WindowsAppRow {
+  if (typeof raw !== "object" || raw === null) throw new Error("invalid Windows app row");
+  const row = raw as Record<string, unknown>;
+  const product = String(row.product ?? "");
+  const state = String(row.state ?? "");
+  if (!isWindowsInstallProduct(product)) throw new Error("invalid Windows app row product");
+  if (!["notDetected", "installing", "detected"].includes(state)) {
+    throw new Error("invalid Windows app row state");
+  }
+  return {
+    product,
+    displayName: String(row.displayName ?? ""),
+    state: state as WindowsInstallRowState,
+    label: String(row.label ?? ""),
+    reason: String(row.reason ?? ""),
+    installOffered: row.installOffered === true,
+    openOffered: row.openOffered === true,
+    executable: typeof row.executable === "string" ? row.executable : null,
+  };
+}
+
+export async function loadWindowsAppRows(): Promise<WindowsAppRow[]> {
+  if (!isTauriRuntime()) throw new Error("Windows app rows are unavailable");
+  const raw = await invoke<unknown>("list_windows_app_rows");
+  if (!Array.isArray(raw)) throw new Error("invalid Windows app rows");
+  return raw.map(parseWindowsAppRow);
+}
+
+/** Resolves only when the whole install has finished, one way or the other. */
+export async function installWindowsApp(product: WindowsInstallProduct): Promise<WindowsAppRow> {
+  if (!isTauriRuntime() || !isWindowsInstallProduct(product)) {
+    throw new Error("Windows install unavailable");
+  }
+  return parseWindowsAppRow(await invoke<unknown>("install_windows_app", { product }));
+}
+
+/** Only ever called from an Open press on a detected row. */
+export async function openWindowsApp(product: WindowsInstallProduct): Promise<string> {
+  if (!isTauriRuntime() || !isWindowsInstallProduct(product)) {
+    throw new Error("Windows app launch unavailable");
+  }
+  return String(await invoke<unknown>("open_windows_app", { product }));
+}
+
 export function parseMullvadStatus(raw: unknown): MullvadStatus {
   if (!isExactRecord(raw, ["availability"])
     || !["installed", "installable", "unavailable"].includes(String(raw.availability))) {

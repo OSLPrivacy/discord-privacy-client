@@ -1,0 +1,64 @@
+/* TASK 6802 — "Set up your apps". Two row states and nothing between them:
+   a detected row is live, a not-detected row is grey and says why. */
+.setup-apps .setup-app-list {
+  list-style: none;
+  margin: 0 0 12px;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.setup-app-row {
+  display: grid;
+  grid-template-columns: 32px 1fr auto;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line, rgba(255, 255, 255, 0.12));
+  border-radius: 10px;
+}
+
+.setup-app-copy {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.setup-app-state {
+  letter-spacing: 0.08em;
+  font-variant: all-small-caps;
+}
+
+.setup-app-row.not-detected {
+  opacity: 0.55;
+  filter: grayscale(1);
+}
+
+.setup-app-row.not-detected .setup-app-install {
+  opacity: 1;
+  filter: none;
+}
+
+/* TASK 6810 — the state a row passes through while Windows installs. It is not
+   greyed out like a not-detected row: something is happening to it. */
+.setup-app-row.installing {
+  opacity: 0.9;
+  border-color: var(--accent, rgba(255, 255, 255, 0.4));
+}
+
+.setup-app-row.detected .setup-app-open {
+  margin-left: 8px;
+}
+
+.setup-app-enable {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+}
+
+.setup-app-logo svg,
+.setup-app-logo img {
+  width: 28px;
+  height: 28px;
+}

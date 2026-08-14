@@ -51,7 +51,7 @@ describe("getting-started page text", () => {
     const text = [
       ui.__oslHubUiTest.renderOnboardingRoute("pro"),
       ui.__oslHubUiTest.renderOnboardingRoute("browser"),
-      ui.__oslHubUiTest.renderChooseAppsForTest(),
+      ui.__oslHubUiTest.renderSetupAppsForTest(),
       renderScrubRoute({
         accounts: [{ id: "local-export", label: "Local message export", detail: "TXT, CSV, or JSON on this device" }],
         selectedAccountIds: [],

@@ -27,10 +27,13 @@ const workspaceRoutes = [
   "mullvad", "osl-chat", "osl-mail", "osl-servers", "signal-qa",
 ] as const satisfies readonly Exclude<Route, "onboarding">[];
 const settingsSections = ["account", "apps", "friends", "scrub", "cleanup", "notifications", "appearance", "about"] as const;
+// TASK 6802: `tutorial`, `detected`, `install` and `apps` were deleted by owner
+// rulings D4/D5; `setup-apps` replaced all four. The union itself now lives in
+// `onboarding-route-contract.ts`, which is what `unionValues` reads.
 const onboardingRoutes = [
   "pro", "welcome", "create", "import", "unlock", "keylost", "account-recovery", "recovery",
   "recovery-check", "mullvad", "sending", "defaults", "tor", "cover", "passwords", "burnpass",
-  "privacy", "forward-secrecy", "visibility", "tutorial", "detected", "install", "apps", "browser", "decoy",
+  "privacy", "forward-secrecy", "visibility", "setup-apps", "browser",
 ] as const;
 
 type Gap = { id?: unknown; feature?: unknown; status?: unknown; productPromise?: unknown; reason?: unknown; uiDisposition?: unknown };
@@ -139,6 +142,19 @@ function controlTree(markup: string, location: string): Finding[] {
 }
 
 function unionValues(typeName: string): string[] {
+  // TASK 6802: the onboarding union moved out of main.ts into the route
+  // contract both the static inventory and the physical crawl read, so this
+  // looks there for it and keeps reading main.ts for the other two.
+  if (typeName === "OnboardingRoute") {
+    const contract = readFileSync(new URL("./onboarding-route-contract.ts", import.meta.url), "utf8");
+    const values: string[] = [];
+    for (const name of ["RETAINED_SETUP_ROUTES", "RETAINED_ENTRY_ROUTES"]) {
+      const block = new RegExp(`${name}\\s*=\\s*\\[([^\\]]+)\\]`, "u").exec(contract);
+      if (!block) throw new Error(`TASK5017 unregistered-surface: could not read ${name} from onboarding-route-contract.ts`);
+      values.push(...[...block[1].matchAll(/["']([^"']+)["']/gu)].map((value) => value[1]));
+    }
+    return values;
+  }
   const source = readFileSync(mainSourcePath, "utf8");
   const match = new RegExp(`(?:export\\s+)?type\\s+${typeName}\\s*=\\s*([^;]+);`, "u").exec(source);
   if (!match) throw new Error(`TASK5017 unregistered-surface: could not read ${typeName} route registry from main.ts`);

@@ -1,3 +1,5 @@
+import { MIGRATED_DELETED_ROUTE_DESTINATION, migrateOnboardingRoute } from "./onboarding-route-contract";
+
 /**
  * T15-A8 — the recovery step must survive a restart.
  *
@@ -20,6 +22,12 @@
 
 export const RECOVERY_KIT_UNSAVED_STORAGE_KEY = "osl-recovery-kit-unsaved-v1";
 
+/**
+ * TASK 6802: `silent-visible` and `tutorial` are deleted routes, and a resume
+ * record is exactly where a deleted page survives a release. They are gone
+ * from the accepted set and `setup-apps` has joined it; a stored value naming
+ * a deleted route is migrated by `resumeOnboardingRoute` rather than honoured.
+ */
 export const RESUMABLE_ONBOARDING_ROUTES = [
   "pro",
   "privacy",
@@ -27,13 +35,12 @@ export const RESUMABLE_ONBOARDING_ROUTES = [
   "tor",
   "sending",
   "cover",
-  "silent-visible",
   "visibility",
   "passwords",
   "burnpass",
   "mullvad",
   "browser",
-  "tutorial",
+  "setup-apps",
 ] as const;
 
 export type ResumableOnboardingRoute = (typeof RESUMABLE_ONBOARDING_ROUTES)[number];
@@ -76,6 +83,14 @@ export function resumeOnboardingRoute(
   if (recoveryKitUnsaved(storage)) return "recovery";
   const pending = storage.getItem(resumeKey);
   if (isResumableOnboardingRoute(pending)) return pending;
+  // An install interrupted on a page the owner deleted comes back on the page
+  // that replaced it. Dropping the record instead would restart setup from the
+  // top, and honouring it would resurrect the deleted page.
+  const migrated = migrateOnboardingRoute(pending);
+  if (migrated === MIGRATED_DELETED_ROUTE_DESTINATION) {
+    storage.setItem(resumeKey, MIGRATED_DELETED_ROUTE_DESTINATION);
+    return MIGRATED_DELETED_ROUTE_DESTINATION;
+  }
   if (pending !== null) storage.removeItem(resumeKey);
   return null;
 }

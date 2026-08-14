@@ -22,6 +22,7 @@
 import type { NativeDiscordOverlayOpenedBatch } from "./overlay-state";
 import type { OslChatHistoryRow } from "./adapters";
 import type { OslChatMessage } from "./osl-chats-view";
+import { parseOslChatText } from "./osl-chat-spoilers";
 
 /**
  * Friends drained per tick when no conversation is open.
@@ -160,10 +161,12 @@ export function oslChatHistoryMessages(
 ): OslChatMessage[] {
   return rows.slice().reverse().map((row) => {
     const incoming = row.senderOslUserId === context.peerOslUserId;
+    const parsed = parseOslChatText(row.plaintext);
     return {
       messageId: row.messageId,
       direction: incoming ? "incoming" as const : "outgoing" as const,
-      body: row.plaintext,
+      body: parsed.body,
+      format: parsed.format,
       state: incoming ? "received" as const : "sent" as const,
       timestampLabel: formatTimestamp(row.createdAt),
       reactions: row.reactions ?? [],
@@ -176,10 +179,12 @@ export function receivedOslChatBatchMessage(
   incoming: NativeDiscordOverlayOpenedBatch["messages"][number],
   formatTimestamp: (epochSeconds: number) => string,
 ): OslChatMessage {
+  const parsed = parseOslChatText(incoming.plaintext);
   return {
     messageId: localMessageId,
     direction: "incoming",
-    body: incoming.plaintext,
+    body: parsed.body,
+    format: parsed.format,
     state: incoming.viewOnceConsumed ? "opened" : "received",
     timestampLabel: formatTimestamp(incoming.createdAt),
   };

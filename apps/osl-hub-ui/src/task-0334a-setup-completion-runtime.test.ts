@@ -128,16 +128,15 @@ describe("TASK0334A shipping setup completion runtime crawl", () => {
     });
   });
 
-  it("independent source inventory and real listeners agree on all six reachable routes", async () => {
+  it("independent source inventory and real listeners agree on all five reachable routes", async () => {
     const source = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
     const staticInventory = new Set<string>();
     const patterns: Array<[string, RegExp]> = [
-      ["app-choice", /id="continue-app-choice"[\s\S]*?#continue-app-choice[\s\S]*?completeOnboarding\(\)/u],
-      ["app-choice-refusal", /id="continue-without-apps"[\s\S]*?#continue-without-apps[\s\S]*?continueWithoutNativeApps\(\)/u],
+      ["setup-apps", /#continue-setup-apps[\s\S]*?persistCombinedHomeChoices\(\)[\s\S]*?completeOnboarding\(\)/u],
+      ["app-choice-refusal", /#continue-without-apps[\s\S]*?continueWithoutNativeApps\(\)/u],
       ["onboarding-service-home", /\[data-route\][\s\S]*?requestedRoute === "home"[\s\S]*?advanceOnboardingConnection/u],
       ["onboarding-service-continue", /id="onboarding-service-continue"[\s\S]*?#onboarding-service-continue[\s\S]*?continueOnboardingFromService/u],
       ["service-guide-skip", /id="service-guide-skip"[\s\S]*?#service-guide-skip[\s\S]*?advanceOnboardingConnection/u],
-      ["skip-connect-app", /id="skip-connect-app"[\s\S]*?#skip-connect-app[\s\S]*?completeOnboarding\(\)/u],
     ];
     for (const [name, pattern] of patterns) {
       expect(source, `starved static route ${name}`).toMatch(pattern);
@@ -158,7 +157,7 @@ describe("TASK0334A shipping setup completion runtime crawl", () => {
       selectors = { [selector]: [control], ...(selector === "[data-route]" ? { "[data-route]": [control] } : {}) };
       ui.__oslHubUiTest.reset({
         route: binding === "onboarding" ? "onboarding" : "service",
-        onboardingRoute: "apps",
+        onboardingRoute: "setup-apps",
         coreReady: true,
         services: [service],
         ...patch,
@@ -171,9 +170,8 @@ describe("TASK0334A shipping setup completion runtime crawl", () => {
       runtime.add(name);
     };
 
-    await crawl("app-choice", "#continue-app-choice", "onboarding", {});
+    await crawl("setup-apps", "#continue-setup-apps", "onboarding", {});
     await crawl("app-choice-refusal", "#continue-without-apps", "onboarding", {});
-    await crawl("skip-connect-app", "#skip-connect-app", "onboarding", { onboardingConnectAppId: "discord" });
     await crawl("onboarding-service-home", "[data-route]", "workspace", {
       onboardingServiceSetup: true,
       activeHomeAppId: "discord",

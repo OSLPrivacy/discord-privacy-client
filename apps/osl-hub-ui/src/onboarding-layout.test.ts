@@ -9,6 +9,8 @@ import { nextOnboardingRoute, ONBOARDING_SEQUENCE, previousOnboardingRoute } fro
 import { onboardingPaintDecision } from "./ui-behavior";
 import { onboardingPasswordRoleContent } from "./password-roles";
 import { onboardingSendingMarkup } from "./onboarding-sending";
+import { SETUP_APP_IDS, SETUP_APPS_TITLE } from "./setup-apps";
+import { RETAINED_SETUP_ROUTES } from "./onboarding-route-contract";
 
 const source = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
 const styles = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
@@ -285,7 +287,7 @@ describe("clean onboarding sign in", () => {
     expect(source).not.toContain("browser-import-actions-primary");
 
     // Steps that used to render their primary outside a shared action row.
-    const pro = functionSource("proSetupContent", "tutorialContent");
+    const pro = functionSource("proSetupContent", "setupAppsContent");
     // 2026-08-06 redesign: the Pro step lost its action-row wrapper and its
     // solid button. Continue is the shared entry-screen button, Skip is the
     // shared quiet link, and Skip still follows Continue. The ORDER is what
@@ -340,7 +342,8 @@ describe("clean onboarding sign in", () => {
     expect(functionSource("bindOnboardingPasswordRole", "bindPasswordVisibility"))
       .toContain('document.querySelector<HTMLButtonElement>("[data-onboarding-role-submit]")');
     // Every step in the spine renders Back, `forward-secrecy` included.
-    expect(functionSource("renderOnboarding", "onboardingContent")).toContain('"forward-secrecy"');
+    expect(functionSource("onboardingSetupNavigationMarkup", "renderOnboarding")).toContain("RETAINED_SETUP_ROUTES");
+    expect(RETAINED_SETUP_ROUTES).toContain("forward-secrecy");
   });
 
   it("centres the stealth/burn 'Not now' escape hatch under its centred card", () => {
@@ -380,24 +383,29 @@ describe("clean onboarding sign in", () => {
 
 describe("fresh-account continuation", () => {
   it("persists and resumes every current post-account setup step without accepting legacy app routes", () => {
-    const pending = functionSource("pendingOnboardingRoute", "beginServiceOnboarding");
+    const pending = functionSource("pendingOnboardingRoute", "persistRecoveryKitUnsaved");
     const renderOnboarding = functionSource("renderOnboarding", "onboardingContent");
     const bootstrap = source.slice(source.indexOf("async function bootstrap"));
     // T15-A8: the allow-list moved into ./onboarding-resume so `recovery` could
     // join it as a first-class resumable step. Assert the policy itself, not
     // the inlined comparisons it replaced.
     expect(pending).toContain("resumeOnboardingRoute(localStorage, onboardingResumeStorageKey)");
-    for (const route of ["pro", "privacy", "defaults", "tor", "sending", "cover", "passwords", "burnpass", "mullvad", "browser", "tutorial"] as const) {
+    for (const route of ["pro", "privacy", "defaults", "tor", "sending", "cover", "passwords", "burnpass", "mullvad", "browser", "setup-apps"] as const) {
       expect(RESUMABLE_ONBOARDING_ROUTES).toContain(route);
       expect(resumeOnboardingRoute(fakeResumeStorage({ [RESUME_STORAGE_KEY]: route }), RESUME_STORAGE_KEY)).toBe(route);
     }
-    for (const rejected of ["apps", "detected", "install"]) {
-      expect(RESUMABLE_ONBOARDING_ROUTES as readonly string[]).not.toContain(rejected);
-      expect(resumeOnboardingRoute(fakeResumeStorage({ [RESUME_STORAGE_KEY]: rejected }), RESUME_STORAGE_KEY)).toBeNull();
+    // TASK 6802: a resume record naming a page owner rulings D4/D5 deleted is
+    // MIGRATED to the page that replaced it, not honoured and not silently
+    // dropped -- dropping it restarted setup from the top.
+    for (const deleted of ["apps", "detected", "install", "tutorial", "silent-visible"]) {
+      expect(RESUMABLE_ONBOARDING_ROUTES as readonly string[]).not.toContain(deleted);
+      const migrating = fakeResumeStorage({ [RESUME_STORAGE_KEY]: deleted });
+      expect(resumeOnboardingRoute(migrating, RESUME_STORAGE_KEY)).toBe("setup-apps");
+      expect(migrating.getItem(RESUME_STORAGE_KEY)).toBe("setup-apps");
     }
     // A stale/unknown stored step is still cleared rather than carried around;
     // that now happens inside the resume policy module.
-    const stale = fakeResumeStorage({ [RESUME_STORAGE_KEY]: "apps" });
+    const stale = fakeResumeStorage({ [RESUME_STORAGE_KEY]: "not-a-route" });
     expect(resumeOnboardingRoute(stale, RESUME_STORAGE_KEY)).toBeNull();
     expect(stale.getItem(RESUME_STORAGE_KEY)).toBeNull();
     expect(renderOnboarding).toContain("persistCurrentOnboardingRoute()");
@@ -407,16 +415,17 @@ describe("fresh-account continuation", () => {
     expect(bootstrap).toContain('pendingOnboardingRoute() ?? onboardingRouteForBuild("pro")');
   });
 
-  it("combines connected, browser-history, and remaining apps in one chooser", () => {
-    const choice = functionSource("tutorialContent", "selectedNativeApps");
-    expect(choice).toContain("Choose apps");
-    expect(choice).toContain("Connected");
-    expect(choice).toContain("Seen in your browser history");
-    expect(choice).toContain("Other apps");
-    expect(choice).toContain("groupOnboardingApps");
-    expect(choice).toContain('data-onboarding-app-choice="${app.id}"');
-    expect(choice).toContain("Nothing opens during setup");
-    expect(choice).toContain('nativeCatalogBusy ? "Checking Windows…" : "Continue"');
+  // TASK 6802: the grouped Choose apps picker is deleted. One page, four rows,
+  // each independently discovered and exactly DETECTED or NOT DETECTED.
+  it("shows four independently discovered app rows in one binary page", () => {
+    const choice = functionSource("setupAppsContent", "setupAppLogo");
+    expect(choice).toContain("setupAppRows(nativeApps, enabledSetupAppIds)");
+    expect(choice).toContain("setupAppsMarkup");
+    expect(SETUP_APP_IDS).toEqual(["signal", "discord", "telegram", "whatsapp"]);
+    expect(SETUP_APPS_TITLE).toBe("Set up your apps");
+    expect(source).not.toContain("Seen in your browser history");
+    expect(source).not.toContain("groupOnboardingApps");
+    expect(source).not.toContain("data-onboarding-app-choice");
   });
 
   // Protects: browser import reaches the combined chooser and then Home with
@@ -424,28 +433,28 @@ describe("fresh-account continuation", () => {
   // sit in that gap; since 2026-08-06 it does not, so the gap is asserted to
   // be empty rather than to contain it.
   it("routes browser import directly through the combined chooser to Home", () => {
-    const branches = { detected: false, install: false };
+    const branches = {};
 
-    expect(nextOnboardingRoute("browser", branches)).toBe("apps");
-    expect(previousOnboardingRoute("apps", branches)).toBe("browser");
-    expect(nextOnboardingRoute("apps", branches)).toBeNull();
+    expect(nextOnboardingRoute("browser", branches)).toBe("setup-apps");
+    expect(previousOnboardingRoute("setup-apps", branches)).toBe("browser");
+    expect(nextOnboardingRoute("setup-apps", branches)).toBeNull();
     expect(nextOnboardingRoute("browser", branches)).not.toBe("tutorial");
   });
 
   it("persists Home choices without installing, opening, or adopting native sessions", () => {
     const binding = functionSource("bindOnboarding", "completeOnboarding");
-    const intent = functionSource("persistCombinedHomeChoices", "selectedNativeApps");
+    const intent = functionSource("persistCombinedHomeChoices", "hasSelectedNativeAppChoice");
     expect(intent).toContain("selectedOnboardingAppsStorageKey");
     expect(intent).toContain("selectedOnboardingApps");
     expect(intent).not.toContain("savedNativeApps");
     expect(intent).not.toContain("persistSavedAccountPreferences");
     expect(intent).not.toContain("installNativeApp");
     expect(intent).not.toContain("openNativeHostedApp");
-    expect(binding).toMatch(/#continue-app-choice[\s\S]*?persistCombinedHomeChoices\(\)[\s\S]*?completeOnboarding\(\)/);
+    expect(binding).toMatch(/#continue-setup-apps[\s\S]*?persistCombinedHomeChoices\(\)[\s\S]*?completeOnboarding\(\)/);
   });
 
   it("never infers native-app routing from an unknown catalog", () => {
-    const completeness = functionSource("isCompleteNativeCatalog", "hasSelectedInstalledNativeApps");
+    const completeness = functionSource("isCompleteNativeCatalog", "onboardingConnectionApps");
     const chooser = functionSource("ensureNativeCatalogForAppChoice", "selectedNativeAppIntent");
     const binding = functionSource("bindOnboarding", "completeOnboarding");
     // D-190. This used to pin `catalog.length === supportedNativeAppIds.size` and
@@ -467,15 +476,12 @@ describe("fresh-account continuation", () => {
     expect(chooser).toContain('withNativeDeadline(loadNativeApps(), "Check Windows apps", nativeCatalogDecisionDeadlineMs)');
     expect(chooser).toContain("if (!isCompleteNativeCatalog(catalog))");
     expect(chooser).toContain("Couldn’t check Windows apps. Try again.");
-    expect(binding).toMatch(/#continue-app-choice[\s\S]*?await ensureNativeCatalogForAppChoice\(\)[\s\S]*?persistCombinedHomeChoices\(\)/);
+    expect(binding).toMatch(/#continue-setup-apps[\s\S]*?await ensureNativeCatalogForAppChoice\(\)[\s\S]*?persistCombinedHomeChoices\(\)/);
   });
 
   it("offers only supported native app choices while keeping unsupported helpers unreachable", () => {
-    const installedChoice = functionSource("hasSelectedInstalledNativeApps", "hasSelectedMissingNativeApps");
-    const nativeSelection = functionSource("selectedNativeAppIntent", "detectedAppsContent");
-    const detected = functionSource("detectedAppsContent", "installMissingAppsContent");
-    const discordChoices = functionSource("discordSessionModeChoices", "detectedAppsContent");
-    expect(installedChoice).toContain('app.availability === "installed" && app.isolatedProfileAvailable');
+    const nativeSelection = functionSource("selectedNativeAppIntent", "browserImportContent");
+    const discordChoices = functionSource("discordSessionModeChoices", "discordQaHostStatusMarkup");
     expect(nativeSelection).toContain('if (!nativeSessionModeConfirmed(nativeId)) return undefined;');
     expect(nativeSelection).toContain('if (existingNativeSessionRequested(appId)) return nativeId;');
     expect(nativeSelection).toContain('savedAccountMode === "use" && savedNativeApps.has(nativeId) && catalogApp?.availability === "installed" && catalogApp.isolatedProfileAvailable');
@@ -483,19 +489,15 @@ describe("fresh-account continuation", () => {
     expect(nativeSelection).toContain("selectedOnboardingApps.has(appId)");
     expect(nativeSelection).toContain('savedAccountMode !== "clean"');
     expect(nativeSelection).toContain('nativeSessionModeForApp(nativeId) === "dedicated"');
-    expect(detected).toContain('selectedNativeApps().filter((app) => app.availability === "installed")');
     expect(discordChoices).toContain('data-discord-session-mode="dedicated"');
     expect(discordChoices).toContain('data-discord-session-mode="existingSession"');
     expect(discordChoices).toContain('"Use existing account"');
     expect(discordChoices).toContain(">Use separate account</button>");
     expect(discordChoices).toContain('role="group"');
     expect(discordChoices).not.toContain('role="radio"');
-    expect(detected).toContain('nativeSessionModeSettingChoices("discord", "Discord")');
-    expect(detected).not.toContain('nativeSessionModeSettingChoices("telegram", "Telegram")');
-    expect(detected).not.toContain('nativeSessionModeSettingChoices("signal", "Signal")');
-    expect(detected).not.toContain('nativeSessionModeSettingChoices("whatsapp", "WhatsApp")');
-    expect(detected).not.toContain('nativeSessionModeSettingChoices("outlook", "Outlook")');
-    expect(functionSource("selectedNativeApps", "hasSelectedNativeAppChoice")).toContain("supportedNativeAppIds.has(app.id)");
+    // TASK 6802: the per-account Desktop/Web choice left onboarding entirely.
+    // It is reachable from Settings and nowhere else.
+    expect(functionSource("setupAppsContent", "setupAppLogo")).not.toContain("nativeSessionModeSettingChoices");
     expect(source).toContain('if (supportedNativeAppIds.has(app.id as NativeAppId))');
     expect(source).toContain("A separate ${app.displayName} app account is unavailable");
     expect(functionSource("serviceGuideContent", "settingsContent")).toContain("supportedNativeAppIds.has(activeHomeAppId as NativeAppId)");
@@ -506,17 +508,17 @@ describe("fresh-account continuation", () => {
   });
 
   it("turns one app choice into a persisted Home tile without opening it", () => {
-    const defaultIntent = functionSource("persistCombinedHomeChoices", "selectedNativeApps");
+    const defaultIntent = functionSource("persistCombinedHomeChoices", "hasSelectedNativeAppChoice");
     const binding = functionSource("bindOnboarding", "completeOnboarding");
-    expect(binding).toMatch(/data-onboarding-app-choice[\s\S]*?selectedOnboardingApps\.add\(appId\)/);
-    expect(binding).toMatch(/#continue-app-choice[\s\S]*?ensureNativeCatalogForAppChoice\(\)[\s\S]*?persistCombinedHomeChoices\(\)/);
+    expect(binding).toMatch(/data-setup-app-enable[\s\S]*?enabledSetupAppIds\.add\(appId\)/);
+    expect(binding).toMatch(/#continue-setup-apps[\s\S]*?ensureNativeCatalogForAppChoice\(\)[\s\S]*?persistCombinedHomeChoices\(\)/);
     expect(defaultIntent).toContain("selectedOnboardingAppsStorageKey");
     expect(defaultIntent).not.toContain("savedNativeApps");
-    expect(binding).not.toMatch(/#continue-app-choice[\s\S]*?openNativeHostedApp/);
+    expect(binding).not.toMatch(/#continue-setup-apps[\s\S]*?openNativeHostedApp/);
   });
 
   it("records an explicit empty app choice instead of treating it as legacy no-preference state", () => {
-    const persistence = functionSource("persistCombinedHomeChoices", "selectedNativeApps");
+    const persistence = functionSource("persistCombinedHomeChoices", "hasSelectedNativeAppChoice");
     const workspace = functionSource("workspaceContent", "peopleListMarkup");
     expect(persistence).toContain("hasExplicitOnboardingAppSelection = true");
     expect(workspace).toContain("hasExplicitOnboardingAppSelection || rememberedHomeApps.size");
@@ -524,16 +526,16 @@ describe("fresh-account continuation", () => {
   });
 
   it("does not open each selected service during fresh setup", () => {
-    const apps = functionSource("tutorialContent", "selectedNativeApps");
+    const apps = functionSource("setupAppsContent", "setupAppLogo");
     const binding = functionSource("bindOnboarding", "completeOnboarding");
     expect(apps).not.toContain("Connect your apps");
     expect(apps).not.toContain("Open selected app");
-    expect(apps).not.toContain("data-connect-app-choice");
-    expect(binding).toMatch(/#continue-app-choice[\s\S]*?await completeOnboarding\(\)/);
+    expect(source).not.toContain("data-connect-app-choice");
+    expect(binding).toMatch(/#continue-setup-apps[\s\S]*?await completeOnboarding\(\)/);
   });
 
   it("offers multi-source selection behind one protected importer contract", () => {
-    const tutorial = functionSource("tutorialContent", "selectedNativeApps");
+    const tutorial = functionSource("setupAppsContent", "setupAppLogo");
     const browser = functionSource("browserImportContent", "persistSavedAccountPreferences");
     const binding = functionSource("bindBrowserImportControls", "importIdentityForm");
     expect(tutorial).not.toContain("data-browser-import");
@@ -588,7 +590,7 @@ describe("fresh-account continuation", () => {
   });
 
   it("keeps the normal-profile default browser behind explicit truthful consent", () => {
-    const choices = functionSource("browserSessionModeChoices", "detectedAppsContent");
+    const choices = functionSource("browserSessionModeChoices", "selectedBrowserForLaunch");
     const binding = functionSource("bindSavedAccountControls", "bindBrowserImportControls");
     expect(source).toContain('let useDefaultBrowserCompanion = localStorage.getItem("osl-default-browser-companion-v1") === "true"');
     expect(choices).toContain('data-browser-session-mode="isolatedOsl"');
@@ -706,14 +708,21 @@ describe("fresh-account continuation", () => {
     expect(recovery).not.toContain('class="compact-lead"');
   });
 
-  it("uses the shared centred layout for the empty recovery screen", () => {
-    const recovery = functionSource("recoveryContent", "identityPasswordForm");
-    const binding = functionSource("bindOnboarding", "completeOnboarding");
-    expect(recovery).toMatch(/No recovery secret is available[\s\S]*?\/section>/);
-    expect(recovery).toContain('class="onboarding-centered-step recovery-empty"');
-    expect(recovery).toContain('id="recovery-no-secret-continue"');
-    expect(recovery).not.toContain('data-onboarding="pro"');
-    expect(binding).toMatch(/#recovery-no-secret-continue[\s\S]*?applyRecoveryKitAction\(\{ kind: "continue" \}\)[\s\S]*?onboardingRoute = onboardingRouteForBuild\("pro"\)/);
+  // TASK 6802: Recovery Empty is deleted. The recovery step now has ONE door
+  // and it refuses to open without a generated kit, so the empty page has no
+  // state to render and the marker it carried may not appear anywhere.
+  it("guarantees a generated recovery kit before the recovery step instead of an empty recovery page", () => {
+    const door = functionSource("enterRecoveryStep", "recoveryKitMissingRefusalContent");
+    const recovery = functionSource("recoveryContent", "revealRecoveryKit");
+    expect(door).toContain("if (recoveryBundle) {");
+    expect(door).toContain('onboardingRoute = "recovery";');
+    expect(door).toContain('nextOnboardingRoute("recovery-check", onboardingBranch)');
+    expect(source).not.toContain('class="onboarding-centered-step recovery-empty"');
+    expect(source).not.toContain("No recovery secret is available");
+    expect(source).not.toContain("recovery-no-secret-continue");
+    expect(recovery).toContain("recoveryKitMissingRefusalContent()");
+    // The only assignment of the recovery route is inside the door.
+    expect([...source.matchAll(/onboardingRoute = "recovery";/gu)]).toHaveLength(1);
     expect(styles).toMatch(/\.onboarding-centered-step\s*\{[^}]*width:\s*min\(440px,\s*100%\);[^}]*margin:\s*auto;[^}]*text-align:\s*center;/s);
   });
 
@@ -741,8 +750,8 @@ describe("fresh-account continuation", () => {
     const password = functionSource("bindPasswordForm", "bindImportForm");
     const imported = functionSource("bindImportForm", "continueOnboardingFromService");
     const burn = functionSource("executeBurn", "ttlSeconds");
-    expect(password).toMatch(/recoveryBundle = noRecoverySecret \? null : \{[\s\S]*?recoverySavedAcknowledged = false;[\s\S]*?onboardingRoute = "recovery"/);
-    expect(imported).toMatch(/recoveryBundle = \{[\s\S]*?recoverySavedAcknowledged = false;[\s\S]*?onboardingRoute = "recovery"/);
+    expect(password).toMatch(/recoveryBundle = noRecoverySecret \? null : \{[\s\S]*?recoverySavedAcknowledged = false;[\s\S]*?enterRecoveryStep\(\)/);
+    expect(imported).toMatch(/recoveryBundle = \{[\s\S]*?recoverySavedAcknowledged = false;[\s\S]*?enterRecoveryStep\(\)/);
     expect(burn).toMatch(/localStorage\.clear\(\);[\s\S]*?recoveryBundle = null;[\s\S]*?recoverySavedAcknowledged = false;/);
   });
 
@@ -769,26 +778,32 @@ describe("fresh-account continuation", () => {
   it("keeps setup sequential without a global completion shortcut", () => {
     const onboardingRender = functionSource("renderOnboarding", "onboardingContent");
     const binding = functionSource("bindOnboarding", "completeOnboarding");
-    expect(onboardingRender).toContain('id="onboarding-back"');
+    expect(functionSource("onboardingSetupNavigationMarkup", "renderOnboarding")).toContain('id="onboarding-back"');
     expect(onboardingRender).not.toContain('id="skip-onboarding"');
     expect(onboardingRender).not.toContain("Skip · manual setup");
-    expect(onboardingRender).toContain('["pro", "forward-secrecy", "privacy", "defaults", "tor", "sending", "cover", "passwords", "burnpass", "browser", "detected", "install", "apps", "mullvad"]');
-    expect(onboardingRender).not.toContain('"tutorial"');
+    const navigation = functionSource("onboardingSetupNavigationMarkup", "renderOnboarding");
+    // TASK 6802: the Back-bearing list was a literal that carried three deleted
+    // routes. It is now derived from the retained contract, so a deleted page
+    // cannot be reintroduced by editing a string here.
+    expect(navigation).toContain('RETAINED_SETUP_ROUTES.filter((step) => step !== "welcome" && step !== "recovery")');
+    for (const deleted of ["tutorial", "detected", "install", "silent-visible"]) {
+      expect(navigation).not.toContain(`"${deleted}"`);
+    }
     expect(onboardingRender).not.toContain('"scrub"].includes(onboardingRoute)');
     expect(binding).not.toContain('document.querySelector("#skip-onboarding")');
     expect(binding).toContain('document.querySelector("#onboarding-back")?.addEventListener("click"');
   });
 
   it("completes after persisting the single chooser without opening apps", () => {
-    const apps = functionSource("tutorialContent", "selectedNativeApps");
+    const apps = functionSource("setupAppsContent", "setupAppLogo");
     const binding = functionSource("bindOnboarding", "completeOnboarding");
-    expect(apps).toContain('id="continue-app-choice"');
+    expect(apps).toContain("setupAppsMarkup");
     expect(apps).not.toContain('id="continue-connect-app"');
-    expect(binding).toMatch(/#continue-app-choice[\s\S]*?persistCombinedHomeChoices\(\)[\s\S]*?await completeOnboarding\(\)/);
+    expect(binding).toMatch(/#continue-setup-apps[\s\S]*?persistCombinedHomeChoices\(\)[\s\S]*?await completeOnboarding\(\)/);
   });
 
   it("persists only non-sensitive chooser state before Home", () => {
-    const intent = functionSource("persistCombinedHomeChoices", "selectedNativeApps");
+    const intent = functionSource("persistCombinedHomeChoices", "hasSelectedNativeAppChoice");
     expect(intent).toContain("selectedOnboardingAppsStorageKey");
     expect(intent).not.toContain("savedNativeApps");
     expect(intent).not.toContain("persistSavedAccountPreferences");
@@ -808,14 +823,17 @@ describe("fresh-account continuation", () => {
     expect(indexOf("sending")).toBeLessThan(indexOf("cover"));
     expect(indexOf("cover")).toBeLessThan(indexOf("passwords"));
     expect(indexOf("passwords")).toBeLessThan(indexOf("burnpass"));
-    expect(indexOf("browser")).toBeLessThan(indexOf("detected"));
-    // 2026-08-06: the tour left the first-run spine on the owner's instruction.
-    // The route and its steps still exist for Settings -> About to replay; what
-    // must not come back is walking a new person through it before they have
-    // used the app once.
+    expect(indexOf("browser")).toBeLessThan(indexOf("setup-apps"));
+    // TASK 6802: owner rulings D4/D5 deleted the tour, Choose apps, Onboarding
+    // Detected, the separate Install route and Onboarding Apps. None of them
+    // may come back to the spine, from first run or from anywhere else.
     expect(ONBOARDING_SEQUENCE).not.toContain("tutorial");
+    expect(ONBOARDING_SEQUENCE).not.toContain("detected");
+    expect(ONBOARDING_SEQUENCE).not.toContain("install");
+    expect(ONBOARDING_SEQUENCE).not.toContain("apps");
+    expect(ONBOARDING_SEQUENCE).not.toContain("silent-visible");
     expect(ONBOARDING_SEQUENCE).not.toContain("scrub");
-    expect(nextOnboardingRoute(ONBOARDING_SEQUENCE.at(-1)!, { detected: true, install: true })).toBeNull();
+    expect(nextOnboardingRoute(ONBOARDING_SEQUENCE.at(-1)!, {})).toBeNull();
   });
 
   it("completes first run into the useful Balanced default", () => {
@@ -828,10 +846,9 @@ describe("fresh-account continuation", () => {
     expect(normalizer).toContain("needsRiskAcceptance(sendMode) && state.acceptedRisk && state.acceptedRiskForMode === sendMode");
     expect(completion).toContain("if (!canCompleteSetup(completedSetup)) throw new Error");
     expect(completion).toContain("setup = completedSetup");
-    expect(completion).toContain("saveOnboardingPreferences({ onboardingComplete: true, setup, showPlaintextPreview: true, windowCaptureEnabled, forwardSecrecyMode })");
+    expect(completion).toContain("saveOnboardingPreferences({ onboardingComplete: true, setup, coverInsertion, rnWirePolicyRequested, showPlaintextPreview, windowCaptureEnabled, forwardSecrecyMode })");
     expect(completion).toContain("onboardingComplete = true");
     expect(completion).toContain("clearServiceOnboardingResume()");
-    expect(completion).toContain("resetOnboardingBranch()");
     expect(completion).toContain("resetOnboardingConnections()");
     expect(completion).toContain("await refreshIdentityScopedState()");
     expect(completion).toContain("nativeApps = await loadNativeApps().catch(() => nativeApps)");
@@ -841,7 +858,7 @@ describe("fresh-account continuation", () => {
   });
 
   it("offers Pro activation after fresh account creation without storing the code in the renderer", () => {
-    const content = functionSource("proSetupContent", "tutorialContent");
+    const content = functionSource("proSetupContent", "setupAppsContent");
     const binding = functionSource("bindOnboarding", "completeOnboarding");
     const activation = functionSource("activatePro", "requestClearProActivation");
     const bootstrap = source.slice(source.indexOf("async function bootstrap"));
@@ -856,7 +873,7 @@ describe("fresh-account continuation", () => {
   });
 
   it("makes the optional Pro Skip control explicitly advance to privacy", () => {
-    const content = functionSource("proSetupContent", "tutorialContent");
+    const content = functionSource("proSetupContent", "setupAppsContent");
     const binding = functionSource("bindOnboarding", "completeOnboarding");
     expect(content).toContain('id="skip-pro-setup"');
     expect(binding).toMatch(/#skip-pro-setup[\s\S]*?addEventListener\("click"[\s\S]*?continueFromProOnboarding\("skipped"\)\.route[\s\S]*?render\(\)/);
@@ -1024,7 +1041,7 @@ describe("fresh-account continuation", () => {
     expect(onboardingBinding).not.toContain('querySelectorAll<HTMLButtonElement>("[data-password-role-next]")');
     expect(onboardingBinding).toContain('querySelectorAll<HTMLButtonElement>("button[data-skip-onboarding-password-role]")');
     expect(onboardingBinding).toMatch(/button\[data-skip-onboarding-password-role\][\s\S]*?onboardingRoute = next/);
-    expect(binding).toContain("form.dataset.onboardingPasswordNext as OnboardingRoute");
+    expect(binding).toContain("migrateOnboardingRoute(form.dataset.onboardingPasswordNext)");
     expect(binding).not.toContain("form.dataset.passwordRoleNext");
   });
 

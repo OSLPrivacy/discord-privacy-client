@@ -7,15 +7,15 @@ import {
   proOnboardingStepContract,
 } from "./onboarding-sequence";
 
-const ALL_BRANCHES = { detected: true, install: true };
+// TASK 6802: the spine no longer branches. The argument is kept because the
+// navigation helpers still take it, and an empty record is the only value it
+// can now hold.
+const ALL_BRANCHES = {};
 
 describe("T15-C1 onboarding sequence", () => {
-  // Protects the exact first-run order. "tutorial" left this list on
-  // 2026-08-06 by the owner's instruction -- the route and its five steps are
-  // still built and still replayable from Settings -> About, but nobody is
-  // walked through them before they have used the app once. The absence is
-  // asserted separately so re-adding it fails on its own name, not just as a
-  // length mismatch.
+  // Protects the exact first-run order after owner rulings D4/D5. Each deleted
+  // page is asserted absent by its own name so putting one back fails on that
+  // name rather than as a length mismatch.
   it("pins every setup step in its intended order", () => {
     expect(ONBOARDING_SEQUENCE).toEqual([
       "welcome",
@@ -24,21 +24,20 @@ describe("T15-C1 onboarding sequence", () => {
       "pro",
       "forward-secrecy",
       "privacy",
-      "defaults",
       "tor",
+      "defaults",
       "sending",
       "cover",
-      "silent-visible",
       "visibility",
       "passwords",
       "burnpass",
       "mullvad",
       "browser",
-      "detected",
-      "install",
-      "apps",
+      "setup-apps",
     ]);
-    expect(ONBOARDING_SEQUENCE).not.toContain("tutorial");
+    for (const deleted of ["tutorial", "detected", "install", "apps", "silent-visible"]) {
+      expect(ONBOARDING_SEQUENCE).not.toContain(deleted);
+    }
   });
 
   it("round-trips every non-initial route through Back and Next", () => {
@@ -62,27 +61,24 @@ describe("T15-C1 onboarding sequence", () => {
     expect(reached).toEqual(ONBOARDING_SEQUENCE);
   });
 
-  // Protects: turning the optional app branches off skips the SAME routes in
-  // both directions, so Back always retraces the exact path Next took. The
-  // anchor used to be "tutorial"; with the tour off the spine the step either
-  // side of the optional branches is `browser` -> `apps`.
-  it("skips optional app branches symmetrically", () => {
-    const noOptionalAppSteps = { detected: false, install: false };
-
-    expect(nextOnboardingRoute("browser", noOptionalAppSteps)).toBe("apps");
-    expect(previousOnboardingRoute("apps", noOptionalAppSteps)).toBe("browser");
+  // Protects: browser consent runs straight into the one app page, with
+  // nothing wedged between them in either direction.
+  it("runs browser consent straight into the one app page", () => {
+    expect(nextOnboardingRoute("browser", ALL_BRANCHES)).toBe("setup-apps");
+    expect(previousOnboardingRoute("setup-apps", ALL_BRANCHES)).toBe("browser");
+    expect(nextOnboardingRoute("setup-apps", ALL_BRANCHES)).toBeNull();
   });
 
-  // Protects the 2026-08-06 removal: the tour is not a setup step, so the spine
-  // cannot walk into it or out of it in either direction. If "tutorial" is put
-  // back into ONBOARDING_SEQUENCE these stop being null and this fails.
-  it("gives the replay-only tour no place in the spine's navigation", () => {
-    expect(nextOnboardingRoute("tutorial", ALL_BRANCHES)).toBeNull();
-    expect(previousOnboardingRoute("tutorial", ALL_BRANCHES)).toBeNull();
-    // ...and nothing in the spine leads to it.
-    for (const route of ONBOARDING_SEQUENCE) {
-      expect(nextOnboardingRoute(route, ALL_BRANCHES)).not.toBe("tutorial");
-      expect(previousOnboardingRoute(route, ALL_BRANCHES)).not.toBe("tutorial");
+  // TASK 6802: a deleted page has no place in the spine's navigation in either
+  // direction, and nothing in the spine leads to one.
+  it("gives every deleted page no place in the spine's navigation", () => {
+    for (const deleted of ["tutorial", "detected", "install", "apps", "silent-visible"]) {
+      expect(nextOnboardingRoute(deleted, ALL_BRANCHES)).toBeNull();
+      expect(previousOnboardingRoute(deleted, ALL_BRANCHES)).toBeNull();
+      for (const route of ONBOARDING_SEQUENCE) {
+        expect(nextOnboardingRoute(route, ALL_BRANCHES)).not.toBe(deleted);
+        expect(previousOnboardingRoute(route, ALL_BRANCHES)).not.toBe(deleted);
+      }
     }
   });
 });

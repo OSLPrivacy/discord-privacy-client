@@ -13,7 +13,9 @@ function slice(name: string, next: string): string {
 
 describe("per-account opening contract", () => {
   it("labels desktop reuse as provider-wide and isolation as exact-account", () => {
-    const detected = slice("detectedAppsContent", "browserImportContent");
+    // TASK 6802: the per-account choice moved out of the deleted Onboarding
+    // Detected page into Settings, unchanged.
+    const detected = slice("accountClaimingSettingsContent", "scanPrivacyExport");
     expect(detected).toContain("Current desktop session · provider-wide");
     expect(detected).toContain("Use isolated OSL profile · this account");
     const picker = slice("serviceAccountPickerContent", "serviceGuideContent");
@@ -22,7 +24,7 @@ describe("per-account opening contract", () => {
   });
 
   it("forces a picker when any account overrides the provider-wide default", () => {
-    const selected = slice("selectedInstalledNativeApp", "detectedAppsContent");
+    const selected = slice("selectedInstalledNativeApp", "browserImportContent");
     expect(selected).toContain("detectedAccountChoiceKey(service.id, account.id)");
     expect(selected).toContain('=== "osl"');
     expect(selected).toContain("return undefined");

@@ -146,7 +146,7 @@ describe("review defaults onboarding", () => {
   // Protects: this screen sits between the explicit Tor choice and send setup,
   // and both neighbours still render, so the route order cannot silently strand it.
   it("is wired between protection presets, the explicit Tor choice, and send setup", () => {
-    const branches = { detected: false, install: false };
+    const branches = {};
     const { reviewDefaultsOnboardingContent, sendingSetupContent } = ui;
 
     expect(nextOnboardingRoute("privacy", branches)).toBe("defaults");

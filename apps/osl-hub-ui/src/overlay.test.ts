@@ -1278,13 +1278,13 @@ describe("trusted composer overlay", () => {
     expect(permission).toContain("It cannot touch Discord history, profiles, logins, or recipient copies.");
   });
 
-  it("keeps attachments unusable unless native state confirms Pro", () => {
+  it("keeps attachments unusable unless native state confirms friend approval", () => {
     const source = readRelative("./overlay.ts");
     const nativeMain = readRelative("../../osl-hub/src/main.rs");
     expect(source).toContain("chooseAttachment.hidden = !attachmentsEnabled");
     expect(source).toContain("attachmentBusy || !overlayReady || !attachmentsEnabled");
-    expect(nativeMain).toContain("ipc::tier_gate::is_paid_equivalent(&core.osl)");
-    expect(nativeMain).toContain("require_active_pro_entitlement(&app.state::<HubCoreState>())?");
+    expect(nativeMain).toContain("attachments_enabled: scope_approved");
+    expect(nativeMain).toContain("shipping_account_tier(&core.osl)");
   });
 
   it("anchors the protected composer to the measured native rectangle at the window bottom", () => {

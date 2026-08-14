@@ -111,3 +111,27 @@
   .cv-onboarding { width: 100%; padding: 0 16px; }
   .cv-choice-row { grid-template-columns: 1fr; }
 }
+
+/* TASK 6802 — four real switches replaced the two dead SILENT/VISIBLE tiles. */
+.cv-switch-list {
+  display: grid;
+  gap: 8px;
+  margin: 0 auto 16px;
+  max-width: 520px;
+  text-align: left;
+}
+
+.cv-switch {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: start;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--line, rgba(255, 255, 255, 0.12));
+  border-radius: 10px;
+}
+
+.cv-switch span {
+  display: grid;
+  gap: 2px;
+}

@@ -1,43 +1,28 @@
+import { RETAINED_SETUP_ROUTES } from "./onboarding-route-contract";
+
 /**
  * The canonical order of the account-setup flow. Entry routes (`create`,
- * `import`, and `unlock`) and the decoy workspace are deliberately absent:
+ * `import`, and `unlock`) are deliberately absent:
  * they branch into or out of this setup spine rather than being setup steps.
+ *
+ * TASK 6802: the spine is now exactly `RETAINED_SETUP_ROUTES`. Tutorial, Silent
+ * Visible, Onboarding Detected, the separate Install route and Onboarding Apps
+ * were deleted by owner rulings D4/D5 and replaced by one `setup-apps` page, so
+ * there is no longer any branch in this sequence — every retained step is
+ * always reachable and always in the same order.
  */
-export const ONBOARDING_SEQUENCE = [
-  "welcome",
-  "recovery",
-  "recovery-check",
-  "pro",
-  "forward-secrecy",
-  "privacy",
-  "tor",
-  "defaults",
-  "sending",
-  "cover",
-  "silent-visible",
-  "visibility",
-  "passwords",
-  "burnpass",
-  "mullvad",
-  "browser",
-  // 2026-08-06: the tour left the onboarding spine on the owner's instruction.
-  // The route and its five steps still exist -- Settings -> About replays them --
-  // but nobody is walked through it on first run any more.
-  "detected",
-  "install",
-  "apps",
-] as const;
+export const ONBOARDING_SEQUENCE = RETAINED_SETUP_ROUTES;
 
 export type OnboardingSequenceRoute = (typeof ONBOARDING_SEQUENCE)[number];
 
-export interface OnboardingSequenceBranch {
-  detected: boolean;
-  install: boolean;
-}
+/**
+ * Retained for callers, deliberately empty of decisions. The two branch flags
+ * it used to carry (`detected`, `install`) named deleted routes; keeping the
+ * shape without them means a caller cannot resurrect a branch by setting one.
+ */
+export type OnboardingSequenceBranch = Record<string, never>;
 
-function isEnabled(route: OnboardingSequenceRoute, branch: OnboardingSequenceBranch): boolean {
-  if (route === "detected") return branch.detected;
-  if (route === "install") return branch.install;
+function isEnabled(_route: OnboardingSequenceRoute, _branch: OnboardingSequenceBranch): boolean {
   return true;
 }
 

@@ -93,7 +93,7 @@ describe("first-party OSL Chats integration", () => {
   });
 
   it("uses the established encrypted route for view-once without persisting it to history", () => {
-    expect(source).toContain("prepareOslChatText(draft, oslChatViewOnce)");
+    expect(source).toContain("prepareOslChatText(formatOslChatText(draft, format), oslChatViewOnce)");
     expect(source).toContain('message.state === "opened"');
     expect(source).toContain("[...durableMessages, ...queuedViewOnce].slice(-200)");
     expect(source).toContain('filter((message) => message.state !== "opened")');
@@ -101,7 +101,7 @@ describe("first-party OSL Chats integration", () => {
   });
 
   it("uses dedicated first-party attachment commands rather than provider attachment IPC", () => {
-    expect(source).toContain("selectOslChatAttachment(oslChatViewOnce)");
+    expect(source).toContain("selectOslChatAttachment(oslChatViewOnce, oslChatSpoiler)");
     expect(source).toContain("listOslChatAttachments()");
     expect(source).toContain("openOslChatAttachment(attachmentId)");
     expect(source).toContain("Other supported files open temporarily in their Windows viewer, which may allow capture.");
