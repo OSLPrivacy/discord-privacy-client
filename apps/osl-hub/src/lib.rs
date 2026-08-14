@@ -34,6 +34,8 @@ pub mod attachment_thumbnail_policy;
 pub mod ai_carrier;
 pub mod ai_consent;
 #[cfg(feature = "core")]
+pub mod automod_filter_bundle;
+#[cfg(feature = "core")]
 pub mod app_own_names;
 pub mod attended_imap;
 #[cfg(feature = "core")]
