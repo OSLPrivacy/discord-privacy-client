@@ -24,6 +24,17 @@ pub struct XTimerInventory {
     pub available: bool,
 }
 
+/// A surface that has no installed timed-delete path in this release.
+///
+/// These rows are intentionally separate from email's pointer-only path: a
+/// catalogue/contract entry must not become an adapter, a timer control, or a
+/// carrier action by implication.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct UninstalledTimerPathInventory {
+    pub app_id: &'static str,
+    pub installed_timer_paths: usize,
+}
+
 pub fn arm_protected_email_timer(
     cover_id: impl Into<String>,
     protected_object: impl Into<String>,
@@ -71,6 +82,27 @@ pub const fn installed_x_timer_inventory() -> XTimerInventory {
     }
 }
 
+/// X, Instagram, and Messenger are not timed-delete carrier paths.
+///
+/// The fixed inventory gives callers a narrow way to prove the absence of all
+/// three without treating an ordinary email contract as a shipping adapter.
+pub const fn installed_non_email_timer_path_inventory() -> [UninstalledTimerPathInventory; 3] {
+    [
+        UninstalledTimerPathInventory {
+            app_id: "x",
+            installed_timer_paths: 0,
+        },
+        UninstalledTimerPathInventory {
+            app_id: "instagram",
+            installed_timer_paths: 0,
+        },
+        UninstalledTimerPathInventory {
+            app_id: "messenger",
+            installed_timer_paths: 0,
+        },
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -91,12 +123,32 @@ mod tests {
         let refusal = arm_protected_email_timer("ordinary-cover", "", 100)
             .expect_err("ordinary email does not get a timer");
         assert!(refusal.contains("records=0"));
-        assert_eq!(installed_x_timer_inventory(), XTimerInventory {
-            timer_controls: 0,
-            records: 0,
-            live_effects: 0,
-            shipping_claims: 0,
-            available: false,
-        });
+        assert_eq!(
+            installed_x_timer_inventory(),
+            XTimerInventory {
+                timer_controls: 0,
+                records: 0,
+                live_effects: 0,
+                shipping_claims: 0,
+                available: false,
+            }
+        );
+        assert_eq!(
+            installed_non_email_timer_path_inventory(),
+            [
+                UninstalledTimerPathInventory {
+                    app_id: "x",
+                    installed_timer_paths: 0
+                },
+                UninstalledTimerPathInventory {
+                    app_id: "instagram",
+                    installed_timer_paths: 0
+                },
+                UninstalledTimerPathInventory {
+                    app_id: "messenger",
+                    installed_timer_paths: 0
+                },
+            ]
+        );
     }
 }

@@ -42,6 +42,20 @@ pub const MAX_RECORDS_PER_WAKE: usize = 4_096;
 /// service, as written by TASK 3306/3307.
 pub const PROTECTED: &str = "protected";
 
+/// The one carrier whose delivered cover must never be deleted by an OSL timer.
+///
+/// Email can only make a protected pointer stop resolving.  Its delivered cover
+/// remains in the mailbox, even when a provider-side delete action would have
+/// failed.  Keeping this rule in the sweep, immediately after the service has
+/// removed the protected part, makes the service-side destruction independent
+/// of any carrier result.
+pub const POINTER_ONLY_EMAIL_APP_ID: &str = "email";
+
+/// A timed-delete record for ordinary email is outside the product's scope.
+/// `email_timer_contract` refuses creating one; this second guard prevents a
+/// malformed persisted row from becoming a carrier-delete path later.
+pub const ORDINARY_EMAIL_TIMER_REFUSED: &str = "ordinary_email_timer_refused";
+
 /// The name a fetch of an already-taken-away protected part is refused by.
 ///
 /// The pointer in the cover words leads here, and once the protected part is
@@ -463,7 +477,12 @@ impl TimedDeleteSweepJob {
                 continue;
             }
 
-            if cleaners.cleaner_for(&record.app_id).is_none() {
+            // Pointer-only email has no carrier deletion action at all.  Every
+            // other app must still prove that its one shared cleaner exists
+            // before the protected half can be taken away.
+            if record.app_id != POINTER_ONLY_EMAIL_APP_ID
+                && cleaners.cleaner_for(&record.app_id).is_none()
+            {
                 pass.refused.push(SweepRefusal {
                     identity,
                     code: "no_cleaner_for_app",
@@ -486,6 +505,27 @@ impl TimedDeleteSweepJob {
                         continue;
                     }
                 }
+            }
+
+            // A protected email timer is pointer-only.  The protected part is
+            // already gone above, so the pointer now refuses; deliberately do
+            // not ask any carrier adapter to delete the delivered cover.  This
+            // also means a forced carrier failure cannot strand the private
+            // part on the OSL service.  Retiring the record is safe because
+            // the only promised deletion has completed.
+            if record.app_id == POINTER_ONLY_EMAIL_APP_ID {
+                if record.is_protected() {
+                    work.retire_swept_record(record)?;
+                    pass.swept.push(identity);
+                } else {
+                    pass.refused.push(SweepRefusal {
+                        identity,
+                        code: ORDINARY_EMAIL_TIMER_REFUSED,
+                        reason: "ordinary email is refused: protected email is required; records=0"
+                            .to_owned(),
+                    });
+                }
+                continue;
             }
 
             // Refused just above if it were missing, so this is the same
