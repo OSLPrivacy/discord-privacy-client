@@ -51,6 +51,7 @@ WORKFLOWS = Path(__file__).parent
 REPO = WORKFLOWS.parent.parent
 INTEGRATION_GLOB = "integration/**"
 SHIPPING_BRANCH = "integration/full"
+FUTURE_INTEGRATION_BRANCH = "integration/6981-trigger-proof"
 
 # Workflows that MUST run on every push to an integration branch.
 # The value is why, so a future reader has to argue with a reason, not a list.
@@ -200,6 +201,12 @@ class IntegrationBranchGatingTest(unittest.TestCase):
                     "D-172: a gate that does not run on the branch we ship from "
                     "is decoration.",
                 )
+                self.assertTrue(
+                    branch_list_fires_on(
+                        push_branches(load(name)), FUTURE_INTEGRATION_BRANCH
+                    ),
+                    f"{name} does not select future branch {FUTURE_INTEGRATION_BRANCH}",
+                )
 
     def test_the_glob_actually_matches_the_branch_we_ship_from(self) -> None:
         # D-195. This used to compare two module constants through pathlib's
@@ -208,6 +215,9 @@ class IntegrationBranchGatingTest(unittest.TestCase):
         # the gating workflows, and carries the negative controls that prove the
         # matcher can say no.
         self.assertTrue(actions_pattern_to_regex(INTEGRATION_GLOB).match(SHIPPING_BRANCH))
+        self.assertTrue(
+            actions_pattern_to_regex(INTEGRATION_GLOB).match(FUTURE_INTEGRATION_BRANCH)
+        )
         self.assertFalse(
             actions_pattern_to_regex("integrate/*").match("integrate/a/b"),
             "single-star must not cross a slash, or this matcher would call a "
@@ -216,6 +226,9 @@ class IntegrationBranchGatingTest(unittest.TestCase):
         self.assertFalse(actions_pattern_to_regex(INTEGRATION_GLOB).match("main"))
         self.assertFalse(actions_pattern_to_regex("integrate/**").match(SHIPPING_BRANCH))
         self.assertTrue(branch_list_fires_on(["main", INTEGRATION_GLOB], SHIPPING_BRANCH))
+        self.assertTrue(
+            branch_list_fires_on(["main", INTEGRATION_GLOB], FUTURE_INTEGRATION_BRANCH)
+        )
         self.assertFalse(branch_list_fires_on(["main"], SHIPPING_BRANCH))
         self.assertFalse(
             branch_list_fires_on([INTEGRATION_GLOB, "!integration/full"], SHIPPING_BRANCH),
