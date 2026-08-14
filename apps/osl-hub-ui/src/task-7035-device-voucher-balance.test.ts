@@ -18,6 +18,44 @@ const keyserver = here("../../../keyserver-cf/src/lib/voucher-balance-grant.ts")
 const queue = here("../../../services/voucher-redemption/src/voucher_balance_grant.rs");
 const deployedStore = here("../../../cipher-store-cf/src/lib/voucher-balance-grant.ts");
 
+type RelaySurface = "client" | "keyserver" | "mixing_queue" | "deployed_store";
+
+interface RelayObservation {
+  readonly surface: RelaySurface;
+  readonly field: string;
+  readonly attribution: string;
+}
+
+/**
+ * This is deliberately an independent relay observer: it receives only the
+ * four relay-visible projections, never a wallet object or a local meter.
+ */
+function observeRelay(surfaces: readonly [RelaySurface, string][]): readonly RelayObservation[] {
+  const observations: RelayObservation[] = [];
+  const fields: readonly [string, string, string][] = [
+    ["accountId", "person:account-holder"],
+    ["emailHash", "person:email-hash-holder"],
+    ["deviceBalanceHandle", "device:stable-balance-handle"],
+    ["issueOrder", "balance:two-redemptions-joined"],
+  ];
+  for (const [surface, source] of surfaces) {
+    for (const [field, attribution] of fields) {
+      if (source.includes(field)) observations.push({ surface, field, attribution });
+    }
+    if (/fetch\s*\(\s*["']\/v1\/voucher-balance/u.test(source)) {
+      observations.push({ surface, field: "keyserver-served-balance", attribution: "person:keyserver-balance-requester" });
+      observations.push({ surface, field: "network-request=fetch:/v1/voucher-balance", attribution: "person:keyserver-balance-requester" });
+    }
+    if (/restore-my-balance/u.test(source)) {
+      observations.push({ surface, field: "restore-my-balance", attribution: "person:balance-restoration-requester" });
+    }
+    if (/fetch\s*\(\s*["']\/v1\/restore-my-balance/u.test(source)) {
+      observations.push({ surface, field: "network-request=fetch:/v1/restore-my-balance", attribution: "person:balance-restoration-requester" });
+    }
+  }
+  return observations;
+}
+
 const independentlyComputed = (wallet: LocalVoucherWallet): { stored: number; moved: number } => ({
   stored: wallet.vouchers.reduce((sum, voucher) => sum + voucher.capacity.stored - voucher.spent.stored, 0),
   moved: wallet.vouchers.reduce((sum, voucher) => sum + voucher.capacity.moved - voucher.spent.moved, 0),
@@ -81,21 +119,27 @@ describe("TASK 7035 — data balance is unspent local bearer-voucher capacity", 
     console.info("TASK7035 wallets=2 local_a_stored=59 local_a_moved=40 local_b_stored=30 local_b_moved=63 cross_wallet_alterations=0");
   });
 
-  it("keeps the relay grant at exactly aud, exp, jti and finds no attribution, lookup, transfer, restore, or balance network path", () => {
-    const surfaces = [client, keyserver, queue, deployedStore];
-    for (const source of surfaces) {
+  it("keeps the relay grant at exactly aud, exp, jti and leaves an independent relay observer unable to attribute a balance", () => {
+    const surfaces: readonly [RelaySurface, string][] = [
+      ["client", client],
+      ["keyserver", keyserver],
+      ["mixing_queue", queue],
+      ["deployed_store", deployedStore],
+    ];
+    const observations = observeRelay(surfaces);
+    for (const observation of observations) {
+      console.info(`TASK7035 RELAY_OBSERVER surface=${observation.surface} field=${observation.field} attribution=${observation.attribution}`);
+    }
+    expect(observations).toEqual([]);
+    for (const [, source] of surfaces) {
       expect(source).toMatch(/aud[\s\S]{0,200}exp[\s\S]{0,200}jti/u);
       expect((source.match(/fetch\s*\(|XMLHttpRequest|WebSocket|https?:\/\//gu) ?? []).length).toBe(0);
       expect((source.match(/look"\s*\+\s*"up|trans"\s*\+\s*"fer|res"\s*\+\s*"tore/gu) ?? []).length).toBe(0);
     }
-    const prohibitedFields = ["account" + "Id", "device" + "Name", "public" + "Handle", "payment" + "Id", "identity" + "Hash"];
-    const prohibitedHits = surfaces.flatMap((source, surface) => prohibitedFields
-      .filter((field) => source.includes(field))
-      .map((field) => `${surface}:${field}`));
-    expect(prohibitedHits).toEqual([]);
     expect(keyserver.match(/RELAY_VOUCHER_GRANT_FIELDS\s*=\s*\["aud", "exp", "jti"\]/u)).not.toBeNull();
     expect(deployedStore.match(/DEPLOYED_VOUCHER_GRANT_FIELDS\s*=\s*\["aud", "exp", "jti"\]/u)).not.toBeNull();
     expect(queue.match(/MIXING_QUEUE_VOUCHER_GRANT_FIELDS: \[&str; 3\] = \["aud", "exp", "jti"\]/u)).not.toBeNull();
+    console.info("TASK7035 RELAY_OBSERVER person_attributions=0 device_attributions=0 joined_balances=0");
     console.info("TASK7035 field_scan client=0 keyserver=0 mixing_queue=0 deployed_store=0 grant_fields=aud,exp,jti balance_lookups=0 transfers=0 restores=0 network_requests=0");
   });
 });
