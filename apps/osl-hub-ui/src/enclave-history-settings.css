@@ -1,0 +1,25 @@
+.enclave-history-for-new-members {
+  align-items: start;
+}
+
+.enclave-history-for-new-members .choice-chip-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  justify-content: flex-end;
+}
+
+.enclave-history-for-new-members .choice-chip[aria-pressed="true"] {
+  outline: 2px solid var(--accent, #75d4ae);
+  outline-offset: 2px;
+}
+
+.enclave-history-join-disclosure,
+.member-reshared-history-item__sharer {
+  margin: 0.65rem 0;
+}
+
+.member-reshared-history-item {
+  border-inline-start: 3px solid var(--accent, #75d4ae);
+  padding-inline-start: 0.75rem;
+}

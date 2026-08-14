@@ -1,5 +1,9 @@
 import { oslEnclaveStateMarkup, type OslEnclaveState } from "./osl-enclaves-view";
 import { enclaveEntryDisclosuresMarkup } from "./enclave-disclosures";
+import {
+  enclaveHistoryForNewMembersSettingsMarkup,
+  type SignedEnclaveHistoryRecord,
+} from "./enclave-history-settings";
 
 /**
  * The Enclaves surface is intentionally independent of the application shell.
@@ -9,9 +13,12 @@ import { enclaveEntryDisclosuresMarkup } from "./enclave-disclosures";
 export interface OslEnclavesSurfaceModel {
   readonly state?: OslEnclaveState;
   readonly statusTag: (label: string) => string;
+  /** Signed enclave configuration; a freshly created enclave supplies HIDDEN. */
+  readonly historyRecord?: SignedEnclaveHistoryRecord;
 }
 
 /** Render the first-party entry point for encrypted OSL Enclaves. */
-export function oslEnclavesSurfaceMarkup({ state = {}, statusTag }: OslEnclavesSurfaceModel): string {
-  return `<main class="content-viewport osl-servers-page"><header class="osl-chat-page-header"><button class="text-button" data-route="home" type="button">Back</button><h1 id="route-heading" tabindex="-1">OSL Enclaves</h1></header><p>Enclaves are OSL's encrypted communities for the members you choose.</p>${enclaveEntryDisclosuresMarkup()}<section class="settings-list" aria-label="OSL Enclaves"><div class="setting-line"><span><strong>Enclaves</strong><small>Create and use encrypted Enclaves with their own membership.</small></span>${statusTag("Available")}</div></section>${oslEnclaveStateMarkup(state)}<p class="scope-approval-note">OSL Enclaves are separate from third-party platforms. OSL does not claim access to provider communities or read provider pages.</p></main>`;
+export function oslEnclavesSurfaceMarkup({ state = {}, statusTag, historyRecord }: OslEnclavesSurfaceModel): string {
+  const historySettings = historyRecord ? enclaveHistoryForNewMembersSettingsMarkup(historyRecord) : "";
+  return `<main class="content-viewport osl-servers-page"><header class="osl-chat-page-header"><button class="text-button" data-route="home" type="button">Back</button><h1 id="route-heading" tabindex="-1">OSL Enclaves</h1></header><p>Enclaves are OSL's encrypted communities for the members you choose.</p>${enclaveEntryDisclosuresMarkup()}${historySettings}<section class="settings-list" aria-label="OSL Enclaves"><div class="setting-line"><span><strong>Enclaves</strong><small>Create and use encrypted Enclaves with their own membership.</small></span>${statusTag("Available")}</div></section>${oslEnclaveStateMarkup(state)}<p class="scope-approval-note">OSL Enclaves are separate from third-party platforms. OSL does not claim access to provider communities or read provider pages.</p></main>`;
 }
