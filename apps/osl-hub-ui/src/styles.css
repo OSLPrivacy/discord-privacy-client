@@ -4201,6 +4201,23 @@ code {
 .burn-dialog::backdrop,
 .owned-confirmation-dialog::backdrop { background: rgba(4, 6, 9, .82); }
 
+.sender-draft-advisory {
+  width: min(500px, calc(100vw - 28px));
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: var(--shadow);
+}
+
+.sender-draft-advisory::backdrop { background: rgba(4, 6, 9, .82); }
+.sender-draft-advisory-card { display: grid; gap: 14px; padding: 22px; }
+.sender-draft-advisory-card header p { margin: 0 0 4px; color: var(--warn); font-size: 12px; font-weight: 700; text-transform: uppercase; }
+.sender-draft-advisory-card h2,
+.sender-draft-advisory-card p { margin: 0; }
+.sender-draft-advisory-card footer { display: flex; justify-content: flex-end; gap: 10px; }
+
 .burn-card,
 .owned-confirmation-card {
   padding: 22px;

@@ -8,5 +8,6 @@ export const englishCatalogue = Object.freeze({
   stripHelp: "Quick settings are verified only for: Discord. On every other integration, use full Settings; Strip controls may be unavailable.",
   notificationHelp: "Notification actions are informational shortcuts; confirm security, recovery and payment state inside the app before acting.",
   recoveryKitTheftWarning: "Anyone who obtains this recovery kit may race to take over the account and revoke your devices. Store it encrypted and offline.",
+  senderDraftFilterAdvisory: "Advisory: this is your device checking your own draft. A modified client would not run this check, and nothing prevents the message from arriving.",
   successionWarning: (period: string, successor: string) => `After ${period} without a successfully authenticated foreground owner action, ownership transfers automatically to ${successor} and you may lose owner access. Background sync does not reset this timer.`,
 });

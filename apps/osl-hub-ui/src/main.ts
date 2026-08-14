@@ -207,6 +207,7 @@ import { passwordSecuritySettingsContent } from "./security-settings-section";
 import { whitelistRosterMarkup, whitelistRosterPersonMarkup } from "./whitelisting-settings-section";
 import { inDomTooltipMarkup } from "./in-dom-tooltip";
 import { applyOslChatDraftToElement, firstPartyOslSurfaceContract, OSL_CHAT_KEY_CHANGED_REFUSAL_REASON, OSL_CHAT_MAX_DRAFT_BYTES, oslChatDraftBytes, oslChatHandshakeConfirmed, oslChatsViewMarkup, senderReceiptStateFor, type OslChatMessage } from "./osl-chats-view";
+import { advisoryForSenderDraft, senderDraftAdvisoryMarkup, type SenderDraftAdvisory, type SenderFilterSet } from "./sender-draft-advisory";
 import { createOslChatDeliveryRuntime, mergeOslChatTimeline, oslChatHistoryMessages, receivedOslChatBatchMessage, type OslChatDeliveryHost } from "./osl-chat-runtime";
 import { createOslChatTypingController, OSL_CHAT_TYPING_INCOMING_EVENT, OSL_CHAT_TYPING_OUTGOING_EVENT, type OslChatTypingPreferences, type OslChatTypingSignal } from "./typing-indicator";
 import { peopleReverificationNoticeMarkup } from "./people-reverification-notice";
@@ -714,6 +715,8 @@ let activeOslChatContext: ManualPeerContext | null = null;
 let oslChatDraft = "";
 let oslChatViewOnce = false;
 let oslChatBusy = false;
+let senderFilterSet: SenderFilterSet = "basic";
+let senderDraftAdvisory: SenderDraftAdvisory | null = null;
 let oslChatOperationEpoch = 0;
 const oslChatMessages = new Map<string, OslChatMessage[]>();
 const oslChatUnread = new Map<string, number>();
@@ -5270,6 +5273,7 @@ function oslChatContent(): string {
   const receipt = activeOslChatPersonId
     ? oslChatSenderReceiptMarkup(oslChatMessages.get(activeOslChatPersonId) ?? [])
     : "";
+  const senderFilterControl = `<label class="setting-line sender-filter-control"><span><strong>Draft advisory filter</strong><small>Choose which local draft checks this device runs before encryption.</small></span><select id="sender-filter-set" aria-label="Draft advisory filter"><option value="off" ${senderFilterSet === "off" ? "selected" : ""}>Off</option><option value="basic" ${senderFilterSet === "basic" ? "selected" : ""}>Basic</option><option value="strict" ${senderFilterSet === "strict" ? "selected" : ""}>Strict</option></select></label>`;
   const offlineStatus = oslRelayConnectionState() === "offline" ? offlineCapabilitiesMarkup() : "";
   return `<main class="content-viewport osl-chat-page"><header class="osl-chat-page-header"><button class="text-button" id="osl-chat-back" type="button" ${oslChatBusy ? "disabled" : ""}>Back</button><h1 id="route-heading" tabindex="-1">OSL Chats</h1><button class="text-button" id="osl-chat-refresh" type="button" ${activeOslChatContext?.scopeApproved && !oslChatBusy ? "" : "disabled"}>Refresh</button></header>${approval}${oslChatsViewMarkup({
     friends,
@@ -5280,7 +5284,7 @@ function oslChatContent(): string {
     viewOnce: oslChatViewOnce,
     homeLogoUrl: oslVectorLogoUrl,
     deletionUnconfirmed: oslChatDeletionUnconfirmed,
-  })}${offlineStatus}${receipt}${attachments}${settings}</main>`;
+  })}${senderFilterControl}${offlineStatus}${receipt}${attachments}${settings}${senderDraftAdvisoryMarkup(senderDraftAdvisory)}</main>`;
 }
 
 const OFFLINE_CAPABILITIES: readonly OfflineUnavailableCapability[] = [
@@ -7691,6 +7695,14 @@ function bindWorkspace(): void {
   });
   document.querySelector<HTMLInputElement>("#osl-chat-view-once")?.addEventListener("change", (event) => { oslChatViewOnce = (event.currentTarget as HTMLInputElement).checked; });
   document.querySelector<HTMLFormElement>("[data-osl-chat-compose]")?.addEventListener("submit", (event) => void sendOslChat(event));
+  document.querySelector<HTMLSelectElement>("#sender-filter-set")?.addEventListener("change", (event) => {
+    const next = (event.currentTarget as HTMLSelectElement).value;
+    if (next === "off" || next === "basic" || next === "strict") senderFilterSet = next;
+  });
+  document.querySelector<HTMLButtonElement>("#sender-draft-send-anyway")?.addEventListener("click", () => void sendOslChat({ preventDefault() {} } as SubmitEvent, true));
+  document.querySelector<HTMLButtonElement>("#sender-draft-edit")?.addEventListener("click", () => {
+    editSenderDraft();
+  });
   document.querySelector<HTMLButtonElement>("#osl-chat-attach")?.addEventListener("click", () => void sendOslChatAttachment());
   document.querySelectorAll<HTMLButtonElement>("[data-osl-chat-attachment]").forEach((button) => button.addEventListener("click", () => void openPendingOslChatAttachment(button.dataset.oslChatAttachment ?? "")));
   const nativeProtectDialog = document.querySelector<HTMLDialogElement>("#native-protect-friend-dialog");
@@ -8915,7 +8927,7 @@ async function openPendingOslChatAttachment(attachmentId: string): Promise<void>
   render();
 }
 
-async function sendOslChat(event: SubmitEvent): Promise<void> {
+async function sendOslChat(event: SubmitEvent, sendAnyway = false): Promise<void> {
   event.preventDefault();
   escapeAuditSendAttempts += 1;
   const context = activeOslChatContext;
@@ -8928,6 +8940,14 @@ async function sendOslChat(event: SubmitEvent): Promise<void> {
     return;
   }
   if (!context?.scopeApproved || !personId || oslChatBusy || !isHubPlaintext(draft) || refuseOfflineCapability("sendMessage")) return;
+  const advisory = advisoryForSenderDraft(draft, senderFilterSet);
+  if (!sendAnyway && advisory) {
+    senderDraftAdvisory = advisory;
+    render();
+    return;
+  }
+  if (sendAnyway && senderDraftAdvisory?.draft !== draft) return;
+  senderDraftAdvisory = null;
   const epoch = oslChatOperationEpoch;
   oslChatBusy = true;
   render();
@@ -8953,12 +8973,19 @@ async function sendOslChat(event: SubmitEvent): Promise<void> {
   render();
 }
 
+function editSenderDraft(): void {
+  senderDraftAdvisory = null;
+  render();
+  document.querySelector<HTMLTextAreaElement>("#osl-chat-draft")?.focus();
+}
+
 function resetOslChatUiState(clearMessages: boolean): void {
   oslChatOperationEpoch += 1;
   activeOslChatPersonId = null;
   activeOslChatContext = null;
   oslChatDraft = "";
   oslChatBusy = false;
+  senderDraftAdvisory = null;
   oslChatAttachments = [];
   if (clearMessages) oslChatMessages.clear();
 }
@@ -10574,7 +10601,21 @@ export const __oslHubUiTest = {
       scopeApproved: true,
     };
     oslChatBusy = false;
+    senderDraftAdvisory = null;
     setOslChatDraft(draft);
+  },
+  setSenderFilterSetForTest(next: SenderFilterSet): void {
+    senderFilterSet = next;
+    senderDraftAdvisory = null;
+  },
+  sendSenderDraftAdvisoryForTest(): Promise<void> {
+    return sendOslChat({ preventDefault() {} } as SubmitEvent);
+  },
+  sendSenderDraftAnywayForTest(): Promise<void> {
+    return sendOslChat({ preventDefault() {} } as SubmitEvent, true);
+  },
+  editSenderDraftForTest(): void {
+    editSenderDraft();
   },
   renderOslChatForTest(): string {
     route = "osl-chat";
