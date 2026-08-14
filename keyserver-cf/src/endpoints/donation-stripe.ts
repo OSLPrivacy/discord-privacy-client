@@ -15,6 +15,7 @@ import {
 } from "../lib/donations.js";
 import { badRequest, json, serverError, serviceUnavailable, tooMany } from "../lib/http.js";
 import { callerIp, checkRateLimit } from "../lib/rate-limit.js";
+import { PAYMENTS_CLOSED_MESSAGE, paymentsOpen } from "../lib/payments-open.js";
 import { createCheckoutSession, isLiveStripeSecretKey } from "../lib/stripe.js";
 
 export async function handleStripeDonationSession(
@@ -22,6 +23,13 @@ export async function handleStripeDonationSession(
   env: Env,
   fetcher: typeof fetch = fetch,
 ): Promise<Response> {
+  // TASK 0001: single source of truth for whether OSL takes money. First
+  // statement in the handler -- nothing is parsed, rate-limited or sent
+  // upstream while payments are closed.
+  if (!paymentsOpen(env)) {
+    return serviceUnavailable(PAYMENTS_CLOSED_MESSAGE);
+  }
+
   const limit = await checkRateLimit(env, callerIp(request), 5, "stripe-donation");
   if (!limit.ok) return tooMany(limit.retryAfter);
 

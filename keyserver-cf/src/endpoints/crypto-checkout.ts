@@ -12,6 +12,7 @@ import {
 } from "../lib/anonymous-crypto.js";
 import { getLatestSnapshot } from "../lib/crypto-prices.js";
 import { badRequest, json, serviceUnavailable, tooMany } from "../lib/http.js";
+import { PAYMENTS_CLOSED_MESSAGE, paymentsOpen } from "../lib/payments-open.js";
 import { callerIp, checkRateLimit } from "../lib/rate-limit.js";
 import {
   prepaidRedemptionReady,
@@ -29,6 +30,15 @@ export async function handleCryptoQuote(
   fetcher: typeof fetch = fetch,
   readiness: PrepaidRedemptionReadiness = prepaidRedemptionReady,
 ): Promise<Response> {
+  // TASK 0001: single source of truth for whether OSL takes money. First
+  // statement in the handler -- nothing is parsed, rate-limited or sent
+  // upstream while payments are closed.
+  if (!paymentsOpen(env)) {
+    return serviceUnavailable(PAYMENTS_CLOSED_MESSAGE);
+  }
+
+  // Independent of the switch above: prepaid-code redemption is still
+  // unimplemented, so this route stays dark even once PAYMENTS_OPEN is "true".
   if (!readiness()) {
     return serviceUnavailable(PREPAID_REDEMPTION_UNAVAILABLE);
   }

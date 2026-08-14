@@ -46,6 +46,13 @@ fallthrough = false
 enabled = false
 
 [vars]
+# TASK 0001 -- the single payment switch. Pre-launch this is "false", so every
+# payment-initiating route refuses before creating a Stripe Checkout Session,
+# payment intent, invoice, or BTC/XMR address. Nothing is deleted: to accept
+# money at launch, set this to the exact string "true" and redeploy. Any other
+# value (absent, "", "TRUE", "1", "yes") fails closed on purpose.
+# See src/lib/payments-open.ts.
+PAYMENTS_OPEN = "false"
 DEPLOYMENT_ENV = "production"
 WINDOWS_INSTALLER_URL = "https://installers.oslprivacy.com/osl-privacy-0.0.1.msi"
 CRYPTO_PRO_USD_CENTS = "500"

@@ -135,6 +135,17 @@ export interface Env {
   /** Exact one-time lifetime Pro price. Production must be the literal "500". */
   CRYPTO_PRO_USD_CENTS?: string;
 
+  // ---- TASK 0001 (payment shutdown switch) ----
+
+  /**
+   * The single switch controlling whether OSL accepts money on any route.
+   * Exact "true" opens paid checkout, crypto invoices and donations; absent or
+   * any other value fails closed. Pre-launch value is "false". Nothing about
+   * the payment implementation is removed while this is closed -- see
+   * `lib/payments-open.ts`.
+   */
+  PAYMENTS_OPEN?: string;
+
   /** Optional fallback when the Workers version-metadata binding is unavailable. */
   OSL_SERVER_REVISION?: string;
   /** Optional fallback when the Workers version-metadata binding is unavailable. */

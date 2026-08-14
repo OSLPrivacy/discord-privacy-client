@@ -17,6 +17,7 @@ import {
   isDonationAmount,
 } from "../lib/donations.js";
 import { badRequest, json, serviceUnavailable, tooMany } from "../lib/http.js";
+import { PAYMENTS_CLOSED_MESSAGE, paymentsOpen } from "../lib/payments-open.js";
 import { callerIp, checkRateLimit } from "../lib/rate-limit.js";
 
 const QUOTE_LIFETIME_SECONDS = 30 * 60;
@@ -27,6 +28,13 @@ export async function handleCryptoDonationQuote(
   env: Env,
   fetcher: typeof fetch = fetch,
 ): Promise<Response> {
+  // TASK 0001: single source of truth for whether OSL takes money. First
+  // statement in the handler -- nothing is parsed, rate-limited or sent
+  // upstream while payments are closed.
+  if (!paymentsOpen(env)) {
+    return serviceUnavailable(PAYMENTS_CLOSED_MESSAGE);
+  }
+
   const limit = await checkRateLimit(env, callerIp(request), 5, "crypto-donation-quote-v1");
   if (!limit.ok) return tooMany(limit.retryAfter);
 
