@@ -56,6 +56,7 @@ import { chatPreviewHidingVisible } from "./entitlement-gates";
 import { oslChatFriendSettingsMarkup } from "./chat-settings-dialog";
 import { entitlementCopy } from "./entitlement-copy";
 import { entitlementView } from "./entitlement-view";
+import { deviceVoucherBalanceSettingsMarkup, openLocalVoucherWallet, redeemVoucher, serializeLocalVoucherWallet, type BearerVoucher } from "./device-voucher-balance";
 import {
   escapeHtml,
   closeEmbeddedServiceHost,
@@ -357,7 +358,7 @@ const NATIVE_DISCORD_COMPOSER_UNREACHABLE_EVENT = "osl://native-discord-composer
 const NATIVE_DISCORD_COMPOSER_UNREACHABLE_REASONS = ["zorder-band", "keyboard-focus", "session-ended"] as const;
 type NativeDiscordComposerUnreachableReason = (typeof NATIVE_DISCORD_COMPOSER_UNREACHABLE_REASONS)[number];
 type OnboardingRoute = "pro" | "welcome" | "create" | "import" | "unlock" | "keylost" | "account-recovery" | "recovery" | "identity-choice" | "private-link" | "mullvad" | "sending" | "defaults" | "tor" | "forward-secrecy" | "cover" | "visibility" | "passwords" | "burnpass" | "privacy" | "tutorial" | "detected" | "install" | "apps" | "browser" | "decoy";
-type SettingsSection = "account" | "export" | "apps" | "privacy" | "scrub" | "cleanup" | "notifications" | "appearance" | "about" | "release-capabilities";
+type SettingsSection = "account" | "export" | "apps" | "privacy" | "scrub" | "cleanup" | "notifications" | "appearance" | "data-balance" | "about" | "release-capabilities";
 type SavedAccountMode = "ask" | "use" | "clean";
 type BurnScope = "chat" | "app" | "account";
 type BurnResult = {
@@ -501,6 +502,17 @@ const recoveryKitUnsavedFlag = createRecoveryKitUnsavedFlag({
   write: (unsaved) => setHubRecoveryKitUnsaved(unsaved),
 });
 let settingsSection: SettingsSection = "account";
+// Rendering takes this local snapshot only and never fetches.
+let deviceVoucherWallet = openLocalVoucherWallet('{"vouchers":[]}');
+
+/** Native redemption writes the bearer credential locally before exposing it. */
+export async function acceptRedeemedVoucher(voucher: Omit<BearerVoucher, "spent">): Promise<void> {
+  const next = redeemVoucher(deviceVoucherWallet, voucher);
+  if (!oslChatSecureStore) throw new Error("local voucher store unavailable");
+  await oslChatSecureStore.setItem(deviceVoucherWalletStorageKey, serializeLocalVoucherWallet(next));
+  deviceVoucherWallet = next;
+  if (route === "settings" && settingsSection === "data-balance") render();
+}
 let friendingVisibility: FriendingVisibilityState = loadFriendingVisibility(localStorage);
 let accountExportState: AccountExportState = { kind: "idle" };
 let activeService: LinkedService | null = null;
@@ -814,6 +826,7 @@ const oslChatPreviewStorageKey = "osl-chat-previews-visible-v1";
 const oslChatMutedStorageKey = "osl-chat-muted-people-v1";
 const oslChatUnreadStorageKey = "osl-chat-unread-v1";
 const oslChatNotificationStorageKey = "osl-chat-notifications-v1";
+const deviceVoucherWalletStorageKey = "osl-bearer-vouchers-v1";
 let identityDiscoveryChoice: IdentityDiscoveryChoice | null = localStorage.getItem(identityDiscoveryChoiceStorageKey) === "private-link"
   ? "private-link"
   : localStorage.getItem(identityDiscoveryChoiceStorageKey) === "public-name" ? "public-name" : null;
@@ -1068,6 +1081,12 @@ function applyOslChatUiPreferences(preferences: OslChatUiPreferenceSnapshot): vo
 
 async function loadOslChatSensitiveStateFromSecureStore(): Promise<void> {
   applyOslChatUiPreferences(await loadMigratedOslChatUiPreferences(oslChatSecureStore, localStorage));
+}
+
+async function loadDeviceVoucherWalletFromSecureStore(): Promise<void> {
+  if (!oslChatSecureStore) return;
+  const serialized = await oslChatSecureStore.getItem(deviceVoucherWalletStorageKey);
+  deviceVoucherWallet = openLocalVoucherWallet(serialized ?? '{"vouchers":[]}');
 }
 
 export function configureOslChatSecureLocalStore(store: OslChatSecureStore | null): void {
@@ -1489,6 +1508,7 @@ export async function loadUiPreferences(): Promise<void> {
   rnWirePolicyRequested = localStorage.getItem(rnWirePolicyStorageKey) === "true";
   await ensureOslChatSecureLocalStore();
   await loadOslChatSensitiveStateFromSecureStore();
+  await loadDeviceVoucherWalletFromSecureStore();
   const notices = await loadMigratedOslChatNotifications(oslChatSecureStore, localStorage);
   if (notices.length) appNotifications = notices;
   screenshotProtectionEnabled = false;
@@ -5813,7 +5833,7 @@ function serviceGuideContent(service: LinkedService, step: ServiceGuideStep): st
 }
 
 function settingsContent(): string {
-  const items: Array<[SettingsSection, string]> = [["account", "Account"], ["export", "Export my data"], ["apps", "Apps"], ["privacy", "Privacy"], ["scrub", "Scrub"], ["cleanup", "Cleanup"], ["notifications", "Notifications"], ["appearance", "Appearance"], ["about", "About"], ["release-capabilities", "Release capabilities"]];
+  const items: Array<[SettingsSection, string]> = [["account", "Account"], ["export", "Export my data"], ["apps", "Apps"], ["privacy", "Privacy"], ["scrub", "Scrub"], ["cleanup", "Cleanup"], ["notifications", "Notifications"], ["appearance", "Appearance"], ["data-balance", "Data balance"], ["about", "About"], ["release-capabilities", "Release capabilities"]];
   // These buttons pick a section WITHIN Settings, so they are not `page`.
   // Settings itself is the page, and the primary sidebar already marks it
   // `aria-current="page"`; marking a section button the same way put two
@@ -5848,6 +5868,7 @@ function settingsSectionContent(): string {
   if (settingsSection === "cleanup") return massCleanupSettingsContent();
   if (settingsSection === "notifications") return notificationSettingsContent();
   if (settingsSection === "appearance") return appearanceSettingsContent(appearancePreferences, themeChoice, appearanceProfileDraft.record("global")!);
+  if (settingsSection === "data-balance") return deviceVoucherBalanceSettingsMarkup(deviceVoucherWallet);
   if (settingsSection === "release-capabilities") return releaseCapabilitiesMarkup();
   return updateSettingsContent();
 }
