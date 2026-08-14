@@ -65,7 +65,7 @@ describe("D81 — a cipher-store fetch carries no identity", () => {
       id,
     );
     const rowsBefore = await d1Count("SELECT COUNT(*) FROM blob_capability_index");
-    const countersBefore = await d1Count("SELECT COUNT(*) FROM fetch_budget_events");
+    const countersBefore = await d1Count("SELECT COUNT(*) FROM rate_counters");
 
     for (let i = 0; i < 10; i++) {
       const response = await fetch(id, {
@@ -82,8 +82,8 @@ describe("D81 — a cipher-store fetch carries no identity", () => {
       id,
     )).toEqual(before);
     expect(await d1Count("SELECT COUNT(*) FROM blob_capability_index")).toBe(rowsBefore);
-    expect(await d1Count("SELECT COUNT(*) FROM fetch_budget_events")).toBe(countersBefore + 10);
-    const rateCounters = JSON.stringify(await d1All<Record<string, unknown>>("SELECT * FROM fetch_budget_events"));
+    expect(await d1Count("SELECT COUNT(*) FROM rate_counters")).toBe(countersBefore + 10);
+    const rateCounters = JSON.stringify(await d1All<Record<string, unknown>>("SELECT * FROM rate_counters"));
     expect(rateCounters).not.toContain("198.51.100.");
     expect(rateCounters).not.toContain(id);
   });

@@ -1,3 +1,0 @@
-2026/08/11 20:07:43 "level"=0 "msg"="published track" "name"="osl-encrypted-audio-speaker-C" "source"="MICROPHONE" "trackID"="TR_AMgdXuxjCsSK4b"
-2026/08/11 20:07:43 "level"=0 "msg"="track subscribed" "participant"="speaker-B" "track"="TR_AMfG8KoDtj9sVo" "kind"="audio"
-2026/08/11 20:07:43 "level"=0 "msg"="track subscribed" "participant"="speaker-A" "track"="TR_AMtXhELpdGbh8b" "kind"="audio"

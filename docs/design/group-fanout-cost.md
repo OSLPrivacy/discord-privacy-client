@@ -80,10 +80,10 @@ constant in the implementation.
 The dominant cost is storage and transport fan-out, not group content
 encryption.  A 100-member room at the proposed five-device maximum reaches 501
 PUTs and up to 31.3125 MiB of upload bodies for one maximum-sized message;
-500 members reaches 2,501 PUTs and up to 156.3125 MiB. These figures remain
-capacity inputs, but owner ruling T4 forbids converting them into a member cap.
-Large Enclaves continue admitting members; at measured N, removal warns before
-confirmation and resumes durable re-key fan-out with observed progress.
+500 members reaches 2,501 PUTs and up to 156.3125 MiB.  Any group-member cap
+must be selected against these figures and the resolved delivery-tag window,
+then enforced before a send starts.  Sender keys are not a reason to remove
+that cap.
 
 ## Inputs verified
 

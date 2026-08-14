@@ -4,14 +4,10 @@
 //! IDs the owner marked as allowed. Refusals happen before any action record is
 //! appended, so an unlisted place stays silent.
 
-use sha2::{
-    Digest,
-    Sha256,
-};
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::fmt;
-use std::collections::BTreeSet;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostedAllowedPlaceRecord {

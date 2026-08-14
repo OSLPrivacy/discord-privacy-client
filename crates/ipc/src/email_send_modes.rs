@@ -7,46 +7,6 @@ pub enum EmailSendMode {
     MatchTyping,
 }
 
-/// The owner-approved ordinary subject for a protected email whose visible
-/// subject field was left empty.
-///
-/// Keep this independent from the visible-subject protection warning's
-/// `"OSL protected message"`: this value is the deliberately plain carrier
-/// subject, and must not disclose that OSL is involved.
-pub const DEFAULT_PLAIN_EMAIL_SUBJECT: &str = "Quick note";
-
-/// The visible subject that will be placed on one hidden-content email.
-///
-/// The resolved value is retained byte-for-byte so the provider placement
-/// path can read back the exact subject it is about to send. Only the literally
-/// empty string receives the default; every non-empty subject is user-authored
-/// and is therefore preserved without trimming, normalising, or rewriting.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HiddenEmailSubject {
-    subject: String,
-}
-
-impl HiddenEmailSubject {
-    pub fn read_back(&self) -> &str {
-        &self.subject
-    }
-
-    pub fn into_subject(self) -> String {
-        self.subject
-    }
-}
-
-pub fn prepare_hidden_email_subject(typed_subject: &str) -> HiddenEmailSubject {
-    let subject = if typed_subject.is_empty() {
-        DEFAULT_PLAIN_EMAIL_SUBJECT
-    } else {
-        typed_subject
-    };
-    HiddenEmailSubject {
-        subject: subject.to_owned(),
-    }
-}
-
 impl EmailSendMode {
     pub const ALL: [Self; 5] = [
         Self::Manual,

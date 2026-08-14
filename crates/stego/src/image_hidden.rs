@@ -1,9 +1,8 @@
 //! Image carrier for the fixed OSL pointer payload.
 //!
-//! Normal photo-sized images use a low-amplitude, two-dimensional blue-channel
-//! lattice that survives provider resize and PNG re-save without drawing a
-//! visible stripe. Tiny images fall back to the original lossless low-bit
-//! carrier so existing small fixtures continue to work.
+//! Normal photo-sized images use a redundant luminance stripe that survives
+//! provider resize and PNG re-save. Tiny images fall back to the original
+//! lossless low-bit carrier so existing small fixtures continue to work.
 //! Lossless image carrier for the fixed OSL pointer payload.
 //!
 //! The carrier writes a small OSL marker plus the full protected pointer
@@ -25,62 +24,11 @@ pub const IMAGE_HIDDEN_CHECK_MARK_BYTES: usize = DETECT_TAG_BYTES;
 const MAGIC: &[u8; 8] = b"OSLIH1\0\0";
 const FRAME_BYTES: usize = MAGIC.len() + IMAGE_HIDDEN_POINTER_BYTES + IMAGE_HIDDEN_CHECK_MARK_BYTES;
 const FRAME_BITS: usize = FRAME_BYTES * 8;
-const RESAVE_GRID_SIDE: u32 = 16;
-const RESAVE_QUANTUM: i32 = 8;
-const RESAVE_ZERO_RESIDUE: i32 = 2;
-const RESAVE_ONE_RESIDUE: i32 = 6;
-
-/// A pixel must differ from a horizontal or vertical neighbour by at least
-/// this much luminance before it contributes robust image-hidden capacity.
-/// Low-bit changes in flatter areas are easier to see and less likely to
-/// survive a provider transform.
-const QUALITY_MIN_LOCAL_LUMINANCE_DELTA: u64 = 12;
-
-/// Liam's selected low-quality-image behavior from task 3134. There is no
-/// warning/override path: callers must stop before posting this image.
-pub const IMAGE_HIDDEN_LOW_QUALITY_REFUSAL: &str = "Choose a larger or more detailed image.";
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ImageHiddenQualityDecision {
-    Accepted,
-    Refused,
-}
-
-/// Capacity decision for one decoded source image.
-///
-/// `file_name` remains the caller-visible source name even when the decoder has
-/// normalized JPEG, PNG, or another supported format to RGB samples.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ImageHiddenQualityResult {
-    pub file_name: String,
-    pub marked_bytes: usize,
-    pub measured_capacity_bytes: usize,
-    pub decision: ImageHiddenQualityDecision,
-}
-
-impl ImageHiddenQualityResult {
-    pub const fn is_accepted(&self) -> bool {
-        matches!(self.decision, ImageHiddenQualityDecision::Accepted)
-    }
-
-    /// Complete person-facing result. Both the accepted and refused forms name
-    /// the file and the capacity actually measured from its decoded pixels.
-    pub fn message(&self) -> String {
-        match self.decision {
-            ImageHiddenQualityDecision::Accepted => format!(
-                "{}: accepted {} marked bytes; measured capacity {} bytes.",
-                self.file_name, self.marked_bytes, self.measured_capacity_bytes
-            ),
-            ImageHiddenQualityDecision::Refused => format!(
-                "{}: refused {} marked bytes; measured capacity {} bytes. {}",
-                self.file_name,
-                self.marked_bytes,
-                self.measured_capacity_bytes,
-                IMAGE_HIDDEN_LOW_QUALITY_REFUSAL
-            ),
-        }
-    }
-}
+const RESAVE_MIN_WIDTH: u32 = FRAME_BITS as u32;
+const RESAVE_STRIPE_DIVISOR: u32 = 8;
+const RESAVE_LOW: u8 = 15;
+const RESAVE_HIGH: u8 = 240;
+const RESAVE_THRESHOLD: u64 = 128;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ImageHiddenPointer {
@@ -144,98 +92,6 @@ pub fn decode_png_hidden_pointer(path: impl AsRef<Path>) -> Result<Option<ImageH
 pub fn decode_png_hidden_pointer_bytes(source_png: &[u8]) -> Result<Option<ImageHiddenPointer>> {
     let decoded = decode_png_reader(Cursor::new(source_png))?;
     extract_frame(&decoded)
-}
-
-/// Measure whether decoded RGB pixels have enough detailed area to carry the
-/// requested number of marked bytes without relying on flat or tiny regions.
-///
-/// The caller supplies RGB samples after decoding, so the original can be a
-/// JPEG, PNG, or another locally supported image type. One qualifying pixel is
-/// counted as one conservative mark bit even though it has three colour
-/// components. This reserves redundancy for provider resize/re-save behavior
-/// and means geometric size alone cannot make a plain image look safe.
-pub fn check_decoded_rgb_hidden_image_quality(
-    file_name: impl Into<String>,
-    width: u32,
-    height: u32,
-    rgb_pixels: &[u8],
-    marked_bytes: usize,
-) -> Result<ImageHiddenQualityResult> {
-    let file_name = file_name.into();
-    let pixel_count = usize::try_from(width)
-        .ok()
-        .and_then(|width| {
-            usize::try_from(height)
-                .ok()
-                .and_then(|height| width.checked_mul(height))
-        })
-        .ok_or(Error::ImageHiddenQualityDimensions { width, height })?;
-    let expected_rgb_bytes = pixel_count
-        .checked_mul(3)
-        .ok_or(Error::ImageHiddenQualityDimensions { width, height })?;
-    if rgb_pixels.len() != expected_rgb_bytes {
-        return Err(Error::ImageHiddenQualityPixelLength {
-            file_name,
-            expected: expected_rgb_bytes,
-            got: rgb_pixels.len(),
-        });
-    }
-
-    let measured_capacity_bytes = detailed_pixel_count(width, height, rgb_pixels) / 8;
-    let decision = if measured_capacity_bytes >= marked_bytes {
-        ImageHiddenQualityDecision::Accepted
-    } else {
-        ImageHiddenQualityDecision::Refused
-    };
-    Ok(ImageHiddenQualityResult {
-        file_name,
-        marked_bytes,
-        measured_capacity_bytes,
-        decision,
-    })
-}
-
-fn detailed_pixel_count(width: u32, height: u32, rgb_pixels: &[u8]) -> usize {
-    let width = width as usize;
-    let height = height as usize;
-    let mut detailed = 0usize;
-
-    for y in 0..height {
-        for x in 0..width {
-            let offset = (y * width + x) * 3;
-            let current = luminance(
-                rgb_pixels[offset],
-                rgb_pixels[offset + 1],
-                rgb_pixels[offset + 2],
-            );
-            let horizontal_delta = (x > 0).then(|| {
-                let neighbour = offset - 3;
-                current.abs_diff(luminance(
-                    rgb_pixels[neighbour],
-                    rgb_pixels[neighbour + 1],
-                    rgb_pixels[neighbour + 2],
-                ))
-            });
-            let vertical_delta = (y > 0).then(|| {
-                let neighbour = offset - width * 3;
-                current.abs_diff(luminance(
-                    rgb_pixels[neighbour],
-                    rgb_pixels[neighbour + 1],
-                    rgb_pixels[neighbour + 2],
-                ))
-            });
-            let local_delta = horizontal_delta
-                .into_iter()
-                .chain(vertical_delta)
-                .max()
-                .unwrap_or(0);
-            if local_delta >= QUALITY_MIN_LOCAL_LUMINANCE_DELTA {
-                detailed += 1;
-            }
-        }
-    }
-
-    detailed
 }
 
 fn decode_png_reader<R: std::io::Read>(reader: R) -> Result<DecodedPng> {
@@ -339,50 +195,61 @@ fn extract_frame(decoded: &DecodedPng) -> Result<Option<ImageHiddenPointer>> {
 }
 
 fn can_embed_resave_survival(decoded: &DecodedPng) -> bool {
-    decoded.width >= RESAVE_GRID_SIDE * 4 && decoded.height >= RESAVE_GRID_SIDE * 4
+    decoded.width >= RESAVE_MIN_WIDTH && decoded.height >= RESAVE_STRIPE_DIVISOR
 }
 
 fn embed_resave_survival_frame(decoded: &mut DecodedPng, payload: ImageHiddenPointer) {
     let frame = frame_bytes(payload);
     let samples = decoded.color_type.samples();
+    let stripe_height = resave_stripe_height(decoded.height);
 
     for bit_index in 0..FRAME_BITS {
         let byte = frame[bit_index / 8];
         let bit = (byte >> (7 - (bit_index % 8))) & 1;
-        let (x_start, x_end, y_start, y_end) = resave_cell_bounds(decoded, bit_index);
-        let mean = cell_blue_mean(decoded, x_start, x_end, y_start, y_end) as i32;
-        let residue = if bit == 1 {
-            RESAVE_ONE_RESIDUE
-        } else {
-            RESAVE_ZERO_RESIDUE
-        };
-        let delta = nearest_lattice_value(mean, residue) - mean;
+        let value = if bit == 1 { RESAVE_HIGH } else { RESAVE_LOW };
+        let x_start = resave_column_start(decoded.width, bit_index);
+        let x_end = resave_column_start(decoded.width, bit_index + 1).max(x_start + 1);
 
-        for y in y_start..y_end {
-            for x in x_start..x_end {
+        for y in 0..stripe_height {
+            for x in x_start..x_end.min(decoded.width) {
                 let offset = ((y * decoded.width + x) as usize) * samples;
-                decoded.pixels[offset + 2] =
-                    (i32::from(decoded.pixels[offset + 2]) + delta).clamp(0, 255) as u8;
+                decoded.pixels[offset] = value;
+                decoded.pixels[offset + 1] = value;
+                decoded.pixels[offset + 2] = value;
             }
         }
     }
 }
 
 fn extract_resave_survival_frame(decoded: &DecodedPng) -> Result<Option<ImageHiddenPointer>> {
-    if !can_embed_resave_survival(decoded) {
+    if decoded.width < RESAVE_MIN_WIDTH || decoded.height == 0 {
         return Ok(None);
     }
 
+    let samples = decoded.color_type.samples();
+    let stripe_height = resave_stripe_height(decoded.height);
     let mut frame = [0u8; FRAME_BYTES];
 
     for bit_index in 0..FRAME_BITS {
-        let (x_start, x_end, y_start, y_end) = resave_cell_bounds(decoded, bit_index);
-        let mean = cell_blue_mean(decoded, x_start, x_end, y_start, y_end) as i32;
-        let residue = mean.rem_euclid(RESAVE_QUANTUM);
-        let zero_distance = circular_residue_distance(residue, RESAVE_ZERO_RESIDUE);
-        let one_distance = circular_residue_distance(residue, RESAVE_ONE_RESIDUE);
+        let x_start = resave_column_start(decoded.width, bit_index);
+        let x_end = resave_column_start(decoded.width, bit_index + 1).max(x_start + 1);
+        let mut total = 0u64;
+        let mut count = 0u64;
+
+        for y in 0..stripe_height {
+            for x in x_start..x_end.min(decoded.width) {
+                let offset = ((y * decoded.width + x) as usize) * samples;
+                total += luminance(
+                    decoded.pixels[offset],
+                    decoded.pixels[offset + 1],
+                    decoded.pixels[offset + 2],
+                );
+                count += 1;
+            }
+        }
+
         frame[bit_index / 8] <<= 1;
-        if one_distance < zero_distance {
+        if count > 0 && total / count >= RESAVE_THRESHOLD {
             frame[bit_index / 8] |= 1;
         }
     }
@@ -401,43 +268,16 @@ fn extract_resave_survival_frame(decoded: &DecodedPng) -> Result<Option<ImageHid
     Ok(Some(ImageHiddenPointer::new(pointer, check_mark)))
 }
 
-fn resave_cell_bounds(decoded: &DecodedPng, bit_index: usize) -> (u32, u32, u32, u32) {
-    let column = bit_index as u32 % RESAVE_GRID_SIDE;
-    let row = bit_index as u32 / RESAVE_GRID_SIDE;
-    let x_start = decoded.width * column / RESAVE_GRID_SIDE;
-    let x_end = decoded.width * (column + 1) / RESAVE_GRID_SIDE;
-    let y_start = decoded.height * row / RESAVE_GRID_SIDE;
-    let y_end = decoded.height * (row + 1) / RESAVE_GRID_SIDE;
-    (x_start, x_end, y_start, y_end)
+fn resave_stripe_height(height: u32) -> u32 {
+    (height / RESAVE_STRIPE_DIVISOR).max(1)
 }
 
-fn cell_blue_mean(decoded: &DecodedPng, x_start: u32, x_end: u32, y_start: u32, y_end: u32) -> u64 {
-    let samples = decoded.color_type.samples();
-    let mut total = 0u64;
-    let mut count = 0u64;
-    for y in y_start..y_end {
-        for x in x_start..x_end {
-            let offset = ((y * decoded.width + x) as usize) * samples;
-            total += u64::from(decoded.pixels[offset + 2]);
-            count += 1;
-        }
-    }
-    (total + count / 2) / count
+fn resave_column_start(width: u32, bit_index: usize) -> u32 {
+    ((u64::from(width) * bit_index as u64) / FRAME_BITS as u64) as u32
 }
 
-fn nearest_lattice_value(value: i32, residue: i32) -> i32 {
-    let lower = (value - residue).div_euclid(RESAVE_QUANTUM) * RESAVE_QUANTUM + residue;
-    let upper = lower + RESAVE_QUANTUM;
-    if value - lower <= upper - value {
-        lower
-    } else {
-        upper
-    }
-}
-
-fn circular_residue_distance(left: i32, right: i32) -> i32 {
-    let direct = (left - right).abs();
-    direct.min(RESAVE_QUANTUM - direct)
+fn luminance(r: u8, g: u8, b: u8) -> u64 {
+    (u64::from(r) * 299 + u64::from(g) * 587 + u64::from(b) * 114) / 1000
 }
 
 fn frame_bytes(payload: ImageHiddenPointer) -> [u8; FRAME_BYTES] {

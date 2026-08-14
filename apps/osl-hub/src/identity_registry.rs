@@ -50,7 +50,6 @@ const ACCOUNT_ARTIFACTS: &[&str] = &[
     // saved" reminder would be silently lost — and the file left behind —
     // exactly when the owner added their second identity.
     crate::account_recovery::RECOVERY_KIT_STATUS_FILE,
-    crate::coach_tips::COACH_TIP_STATE_FILE,
     "store",
 ];
 

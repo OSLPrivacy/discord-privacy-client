@@ -1,2 +1,0 @@
-# Minimal checked fixture. Production input is rc-state/deferred-lane-edits.txt.
-lane/n | apps/osl-hub-ui/src/main.ts | 55 lines | keep RC

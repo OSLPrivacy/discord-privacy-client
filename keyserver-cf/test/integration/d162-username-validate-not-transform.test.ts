@@ -81,14 +81,19 @@ async function claim(
   });
 }
 
-// Every one of these is outside the public-name grammar and must be refused
-// rather than trimmed or otherwise transformed.
+// Every one of these is a spelling a naive "be helpful, just lowercase it"
+// server would have accepted and folded onto `alice_01` or `alice`.
 const NON_CANONICAL = [
+  "Alice",       // leading capital
+  "ALICE",       // all caps
+  "Alice_01",    // capital, otherwise identical to a real handle
   "al ice",      // interior space
   "alice-01",    // hyphen is not in the grammar
   " alice_01",   // leading whitespace a trim would have eaten
   "alice_01 ",   // trailing whitespace
-  "a".repeat(17), // exceeds the 16-character maximum
+  "_alice",      // underscore is interior-only
+  "alice_",      // underscore is interior-only
+  "Ab",          // too short AND non-canonical
 ];
 
 describe("D-162 username endpoints validate and never transform", () => {
@@ -98,7 +103,7 @@ describe("D-162 username endpoints validate and never transform", () => {
       const pair = await registerTestUser(SELF, uid);
       const response = await claim(username, uid, pair);
       expect(response.status, `claim accepted ${JSON.stringify(username)}`).toBe(400);
-      expect(await response.text()).toContain("username must use only letters, digits, and underscores and be 1 to 16 characters");
+      expect(await response.text()).toContain("username must already be normalized");
     }
   });
 
@@ -106,7 +111,7 @@ describe("D-162 username endpoints validate and never transform", () => {
     for (const username of NON_CANONICAL) {
       const response = await lookup(username);
       expect(response.status, `lookup accepted ${JSON.stringify(username)}`).toBe(400);
-      expect(await response.text()).toContain("username must use only letters, digits, and underscores and be 1 to 16 characters");
+      expect(await response.text()).toContain("username must already be normalized");
     }
   });
 
@@ -162,7 +167,8 @@ describe("D-162 username endpoints validate and never transform", () => {
       found: true, username: "d162_alice",
     });
 
-    // Case is allowed, but lookup still remains exact and never transforms.
-    expect((await lookup("D162_alice")).status).toBe(200);
+    // And the capitalised spelling is refused outright rather than folded onto
+    // the row that exists.
+    expect((await lookup("D162_alice")).status).toBe(400);
   });
 });

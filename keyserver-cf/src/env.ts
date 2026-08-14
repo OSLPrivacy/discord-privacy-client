@@ -105,11 +105,6 @@ export interface Env {
   DEPLOYMENT_ENV?: "production" | "qa";
   /** 0028 link-grant lane. Absent/anything-but-"true" keeps the route 503. */
   LINK_GRANT_ENABLED?: string;
-  /**
-   * Private-contact link lifetime in seconds. Production omits this and uses
-   * the mandatory 24-hour ceiling; isolated deployments may choose less.
-   */
-  PRIVATE_CONTACT_LINK_TTL_SECONDS?: string;
   /** QA-only checksum root. Must never equal LICENSE_HMAC_SECRET. */
   QA_LICENSE_HMAC_SECRET?: string;
   /** Independent second factor for the owner comp-code operator route. */

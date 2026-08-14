@@ -113,17 +113,7 @@ pub fn save_license_cache(
         },
     };
     let json = serde_json::to_vec_pretty(&on_disk)?;
-    crate::recoverable_file::write_recoverable_secret(
-        path,
-        &json,
-        crate::secret_trace::SecretClass::CachedProviderCredential,
-        if sealer.requires_insecure_banner() {
-            crate::secret_trace::Protection::Plaintext
-        } else {
-            crate::secret_trace::Protection::DeviceSealedAead
-        },
-        "keystore::license_cache::save_license_cache",
-    )?;
+    crate::recoverable_file::write_recoverable(path, &json)?;
     Ok(())
 }
 
@@ -160,14 +150,6 @@ pub fn load_license_cache(path: &Path, sealer: &dyn Sealer) -> Result<LicenseCac
     let sealed = STANDARD.decode(&on_disk.sealed_b64)?;
     let inner_bytes = sealer.unseal(&sealed)?;
     let inner: LicenseCacheInner = serde_json::from_slice(&inner_bytes)?;
-    crate::secret_trace::record(
-        crate::secret_trace::SecretOp::Read,
-        crate::secret_trace::SecretClass::CachedProviderCredential,
-        crate::secret_trace::Protection::DeviceSealedAead,
-        "keystore::license_cache::load_license_cache",
-        path,
-        bytes.len(),
-    );
     Ok(inner)
 }
 

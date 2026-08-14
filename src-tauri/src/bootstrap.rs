@@ -375,18 +375,6 @@ pub fn register_after_local_bootstrap(state: &AppState) {
     let base_url = ipc::commands::resolve_keyserver_base_url(&base);
     let client_token = keyserver_cfg.and_then(|config| config.client_token);
     init_keyserver_and_register(state, &base_url, client_token);
-    if state
-        .app_preferences
-        .lock()
-        .map(|prefs| prefs.discovery_off_pending)
-        .unwrap_or(true)
-    {
-        if let Err(error) =
-            ipc::commands::cmd_osl_resume_discovery_off_transition(state, Some(base))
-        {
-            tracing::warn!(%error, "OSL bootstrap: discovery take-back remains pending");
-        }
-    }
 }
 
 fn install_keyserver_without_register(

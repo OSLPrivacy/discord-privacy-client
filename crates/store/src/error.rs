@@ -89,12 +89,4 @@ pub enum StoreError {
 
     #[error("corrupted: {0}")]
     Corrupted(String),
-
-    /// A submitted post, story or archive item was refused before anything
-    /// reached the disk — a missing field, a value the 4650/4651/4652
-    /// decisions do not admit, an author with no live owner authority, a
-    /// stale authority version, a digest that does not cover the submitted
-    /// bytes, or a signature that is not by the currently authorized key.
-    #[error("social record refused: {0}")]
-    SocialRecord(#[from] crate::social::SocialRecordError),
 }

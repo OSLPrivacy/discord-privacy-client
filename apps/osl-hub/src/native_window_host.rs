@@ -25,16 +25,6 @@ use std::sync::{Arc, Mutex};
 #[cfg(any(target_os = "windows", test))]
 use std::time::Duration;
 
-/// Shipping, data-driven inventory for ordinary Discord composer references.
-///
-/// The Windows host owns the installed-channel inventory, so this contract is
-/// embedded beside that authority instead of being inferred by the capture
-/// harness. Task 5106's independently dated live census is deliberately a
-/// separate input to the release check, preventing coordinated shrinkage of
-/// this contract and the reference manifest.
-pub const DISCORD_COMPOSER_SURFACE_CONTRACT_JSON: &str =
-    include_str!("discord_composer_surface_contract.json");
-
 /// Pixels of OSL chrome above a borrowed native window. This MUST equal the
 /// rendered height of osl-hub-ui's `.desktop-top-row` (its `--chrome-row-height`
 /// custom property, which also drives `.workspace-header`): the borrowed window

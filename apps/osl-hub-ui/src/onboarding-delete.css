@@ -80,23 +80,9 @@
 }
 
 .del-control {
-  flex: 1 1 260px;
-  min-width: 0;
+  flex: 0 0 60px;
   display: flex;
-  flex-direction: column;
-  align-items: flex-end;
   justify-content: flex-end;
-}
-
-.del-disclosure {
-  display: block;
-  width: 100%;
-  margin-top: 8px;
-  color: var(--osl-setup-muted);
-  font-family: inherit;
-  font-size: 11px;
-  line-height: 1.35;
-  text-align: left;
 }
 
 /* --- the two scenes ------------------------------------------------------- */

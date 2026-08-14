@@ -318,18 +318,9 @@ export function createDiscordProtectedTranscript(
   if (!document) throw new Error("A document is required to render the transcript");
   validateDiscordTranscriptWindow(options.window);
   const root = element(document, "section", "osl-discord-transcript");
-  const ariaLabel = options.ariaLabel || "OSL protected Discord transcript";
-  root.setAttribute("aria-label", ariaLabel);
+  root.setAttribute("aria-label", options.ariaLabel || "OSL protected Discord transcript");
   const viewport = element(document, "div", "osl-discord-transcript__viewport");
-  // This persistent role-log is the conversation surface itself, not a QA-only
-  // control. Its exact automation identity lets an external Windows process
-  // bind real input and content changes to the surface that displays received
-  // protected content. Focusability gives the normal keyboard-scroll path a
-  // real target; the observer never calls UIA SetFocus or an invoke pattern.
-  viewport.id = "osl-protected-receive-surface";
-  viewport.tabIndex = 0;
   viewport.setAttribute("role", "log");
-  viewport.setAttribute("aria-label", ariaLabel);
   viewport.setAttribute("aria-live", "polite");
   viewport.setAttribute("aria-relevant", "additions text");
   const list = document.createElement("ol");

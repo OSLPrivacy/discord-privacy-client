@@ -73,16 +73,6 @@ local data. Declining the backup removes any prior backup too. This is still not
 remove server relay blobs, peer copies, provider messages, browser cookies, native-app history,
 screenshots, exports, or any backups outside OSL's control.
 
-The offered Documents backup is one same-Windows-user copy of identity and local
-message data, not independent recovery. Its provider, region, account, control
-plane, administrator, credential and key authority are those of Documents;
-observed independent isolation and guaranteed recovery are both 0. A shared
-failure can lose both the installed data and the copy. Hosted task 6582 is held
-under owner ruling T7 because genuine disaster isolation is wanted but not
-funded or operated for this release. That hold does not change the rule above:
-declining the backup removes the prior backup, and other deletion/erasure duties
-remain active.
-
 ## Uninstall footprint map
 
 This is the full uninstall-facing map of places OSL writes to in the current Hub build. It groups

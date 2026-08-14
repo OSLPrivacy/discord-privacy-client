@@ -1,9 +1,0 @@
-{
-  "listen": "127.0.0.1:17443",
-  "upstream": "127.0.0.1:17880",
-  "minimum_tls": "TLSv1.3",
-  "certificate": "config/tls-certificate.txt",
-  "private_key": "config/tls-private-key.txt",
-  "clear_refusal": "transport encryption required"
-}
-

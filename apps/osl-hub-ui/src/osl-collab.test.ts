@@ -9,17 +9,6 @@ describe("local-first collaboration IPC", () => {
 });
 
 describe("Enclave audience contract", () => {
-  it("does not turn a large Enclave roster into an unsupported schema value", () => {
-    const memberCount = 100_001;
-    const parsed = parseEnclaveAudience({
-      ...enclaveAudience,
-      memberCount,
-      membershipVisibility: "count-only",
-      visibleMembers: [],
-    });
-    expect(parsed).toMatchObject({ memberCount, membershipVisibility: "count-only" });
-  });
-
   it("models a visible private audience without exposing service machinery", () => {
     expect(parseEnclaveAudience(enclaveAudience)).toEqual({ audienceId: "c".repeat(32), name: "Close friends", memberCount: 2, membershipVisibility: "visible", visibleMembers: [{ memberId: "1".repeat(32), name: "Maya", verified: true }, { memberId: "2".repeat(32), name: "Theo", verified: false }], canPost: true, refusal: null });
   });

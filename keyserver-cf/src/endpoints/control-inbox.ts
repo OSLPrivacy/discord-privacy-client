@@ -702,13 +702,6 @@ async function insertControlInboxRow(
         {
           id: reportedId,
           expires_at: expiresAt,
-          // The desktop client consumes every successful control-inbox result
-          // through its person-facing result contract.  Keep an explicit
-          // machine-stable acceptance code here so attachment notices can
-          // reach the authorised recipient instead of failing JSON decode
-          // after the ciphertext has already been stored.
-          reason_code: "accepted",
-          parameters: {},
           inbox_eviction_count: args.inboxEvictionCount,
         },
         { status: 201 },

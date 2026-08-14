@@ -9,17 +9,16 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fmt;
+#[cfg(unix)]
 use std::io::Read;
-#[cfg(windows)]
-use windows_sys::Win32::Security::Cryptography::{
-    BCryptGenRandom, BCRYPT_USE_SYSTEM_PREFERRED_RNG,
-};
 use zeroize::{Zeroize, Zeroizing};
 
-pub const MAX_ATTACHMENT_SIZE: u64 = 512 * 1024 * 1024;
+pub const MAX_ATTACHMENT_SIZE: u64 = crate::attachment_limits::MAX_ATTACHMENT_BYTES;
 pub const MAX_CAPTION_BYTES: usize = 4_096;
 pub const PROGRESS_THROTTLE_MS: u64 = 500;
 pub const AUTHENTICATED_FIELDS: [&str; 4] = ["jobId", "metadata", "caption", "viewOnce"];
+const CLIPBOARD_PNG_FILENAME: &str = "clipboard-image.png";
+const CLIPBOARD_JPEG_FILENAME: &str = "clipboard-image.jpg";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -55,6 +54,23 @@ pub struct SafeAttachmentMetadata {
     pub filename: String,
     pub media_type: String,
     pub size: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AttachmentTrayFileInput {
+    pub name: String,
+    pub r#type: String,
+    pub size: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AttachmentTrayRecord {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub r#type: String,
+    pub size: u64,
+    pub removable_id: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -175,9 +191,83 @@ impl std::error::Error for NativeAttachmentJobError {}
 #[derive(Default)]
 pub struct NativeAttachmentJobRegistry {
     jobs: HashMap<String, NativeAttachmentJob>,
+    tray_records: HashMap<String, Vec<AttachmentTrayRecord>>,
 }
 
 impl NativeAttachmentJobRegistry {
+    pub fn store_tray_records(
+        &mut self,
+        context_id: &str,
+        files: impl IntoIterator<Item = AttachmentTrayFileInput>,
+    ) -> Result<Vec<AttachmentTrayRecord>, NativeAttachmentJobError> {
+        validate_context(context_id)?;
+        let mut records = Vec::new();
+        for file in files {
+            let (Ok(name), Ok(file_type), Ok(size)) = (
+                sanitize_filename(&file.name),
+                sanitize_media_type(&file.r#type),
+                validate_size(file.size),
+            ) else {
+                continue;
+            };
+            let removable_id = self.mint_unique_tray_removable_id()?;
+            records.push(AttachmentTrayRecord {
+                name,
+                r#type: file_type,
+                size,
+                removable_id,
+            });
+        }
+        self.tray_records
+            .entry(context_id.to_owned())
+            .or_default()
+            .extend(records.iter().cloned());
+        Ok(records)
+    }
+
+    pub fn query_tray_records(&self, context_id: &str) -> Vec<AttachmentTrayRecord> {
+        self.tray_records
+            .get(context_id)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    pub fn remove_tray_record(
+        &mut self,
+        context_id: &str,
+        removable_id: &str,
+    ) -> Result<AttachmentTrayRecord, NativeAttachmentJobError> {
+        let records = self
+            .tray_records
+            .get_mut(context_id)
+            .ok_or(NativeAttachmentJobError::JobNotFound)?;
+        let index = records
+            .iter()
+            .position(|record| record.removable_id == removable_id)
+            .ok_or(NativeAttachmentJobError::JobNotFound)?;
+        Ok(records.remove(index))
+    }
+
+    pub fn stage_clipboard_image(
+        &mut self,
+        context_id: &str,
+        media_type: &str,
+        image_bytes: Vec<u8>,
+        now_ms: u64,
+    ) -> Result<NativeAttachmentJobDto, NativeAttachmentJobError> {
+        let filename = clipboard_image_filename(media_type)?;
+        validate_clipboard_image_bytes(media_type, &image_bytes)?;
+        let size =
+            u64::try_from(image_bytes.len()).map_err(|_| NativeAttachmentJobError::InvalidSize)?;
+        let mut key_material = vec![0_u8; 32];
+        if let Err(error) = fill_os_entropy(&mut key_material) {
+            key_material.zeroize();
+            return Err(error);
+        }
+        let secrets = NativeAttachmentSecrets::new(image_bytes, key_material)?;
+        self.stage(context_id, filename, media_type, size, secrets, now_ms)
+    }
+
     pub fn stage(
         &mut self,
         context_id: &str,
@@ -445,6 +535,22 @@ impl NativeAttachmentJobRegistry {
             removed.dto.caption.zeroize();
             removed.secrets.zeroize_now();
         }
+        self.tray_records.remove(context_id);
+    }
+
+    fn mint_unique_tray_removable_id(&self) -> Result<String, NativeAttachmentJobError> {
+        let mut removable_id = mint_opaque_job_id()?;
+        for _ in 0..8 {
+            if self.tray_records.values().all(|records| {
+                records
+                    .iter()
+                    .all(|record| record.removable_id != removable_id)
+            }) {
+                return Ok(removable_id);
+            }
+            removable_id = mint_opaque_job_id()?;
+        }
+        Err(NativeAttachmentJobError::EntropyUnavailable)
     }
 
     fn matching_job(
@@ -562,10 +668,41 @@ fn valid_media_type_byte(byte: u8) -> bool {
 }
 
 fn validate_size(size: u64) -> Result<u64, NativeAttachmentJobError> {
-    if (1..=MAX_ATTACHMENT_SIZE).contains(&size) {
-        Ok(size)
+    crate::attachment_limits::check_attachment_request(
+        size,
+        1,
+        crate::attachment_limits::AttachmentAccountTier::Pro,
+    )
+    .map(|()| size)
+    .map_err(|_| NativeAttachmentJobError::InvalidSize)
+}
+
+fn clipboard_image_filename(media_type: &str) -> Result<&'static str, NativeAttachmentJobError> {
+    match media_type {
+        "image/png" => Ok(CLIPBOARD_PNG_FILENAME),
+        "image/jpeg" => Ok(CLIPBOARD_JPEG_FILENAME),
+        _ => Err(NativeAttachmentJobError::InvalidMediaType),
+    }
+}
+
+fn validate_clipboard_image_bytes(
+    media_type: &str,
+    image_bytes: &[u8],
+) -> Result<(), NativeAttachmentJobError> {
+    validate_size(
+        u64::try_from(image_bytes.len()).map_err(|_| NativeAttachmentJobError::InvalidSize)?,
+    )?;
+    let valid = match media_type {
+        "image/png" => image_bytes.starts_with(b"\x89PNG\r\n\x1a\n"),
+        "image/jpeg" => {
+            image_bytes.starts_with(&[0xff, 0xd8]) && image_bytes.ends_with(&[0xff, 0xd9])
+        }
+        _ => false,
+    };
+    if valid {
+        Ok(())
     } else {
-        Err(NativeAttachmentJobError::InvalidSize)
+        Err(NativeAttachmentJobError::InvalidMediaType)
     }
 }
 
@@ -658,6 +795,108 @@ mod tests {
                 1_000,
             )
             .unwrap()
+    }
+
+    #[test]
+    fn direct_attachment_tray_query_returns_all_four_fields_for_one_file() {
+        let mut registry = NativeAttachmentJobRegistry::default();
+        let stored = registry
+            .store_tray_records(
+                CONTEXT,
+                [
+                    AttachmentTrayFileInput {
+                        name: "C:\\Users\\liam\\Quarterly Report.pdf".to_owned(),
+                        r#type: "application/pdf".to_owned(),
+                        size: 4_096,
+                    },
+                    AttachmentTrayFileInput {
+                        name: "..".to_owned(),
+                        r#type: "application/pdf".to_owned(),
+                        size: 128,
+                    },
+                ],
+            )
+            .unwrap();
+        assert_eq!(stored.len(), 1);
+
+        let records = registry.query_tray_records(CONTEXT);
+        assert_eq!(records.len(), 1);
+        let record = &records[0];
+        let removable_id_is_hex = record
+            .removable_id
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit());
+        println!(
+            "TASK0621 direct_attachment_tray_query records={} name={} type={} size={} removable_id={} removable_id_len={} removable_id_hex={}",
+            records.len(),
+            record.name,
+            record.r#type,
+            record.size,
+            record.removable_id,
+            record.removable_id.len(),
+            removable_id_is_hex
+        );
+
+        assert_eq!(record.name, "Quarterly Report.pdf");
+        assert_eq!(record.r#type, "application/pdf");
+        assert_eq!(record.size, 4_096);
+        assert_eq!(record.removable_id.len(), 64);
+        assert!(removable_id_is_hex);
+
+        let removed = registry
+            .remove_tray_record(CONTEXT, &record.removable_id)
+            .unwrap();
+        assert_eq!(removed, *record);
+        assert!(registry.query_tray_records(CONTEXT).is_empty());
+    }
+
+    #[test]
+    fn removing_one_attachment_by_tray_record_id_leaves_the_other_id() {
+        let mut registry = NativeAttachmentJobRegistry::default();
+        let stored = registry
+            .store_tray_records(
+                CONTEXT,
+                [
+                    AttachmentTrayFileInput {
+                        name: "first.txt".to_owned(),
+                        r#type: "text/plain".to_owned(),
+                        size: 11,
+                    },
+                    AttachmentTrayFileInput {
+                        name: "second.txt".to_owned(),
+                        r#type: "text/plain".to_owned(),
+                        size: 22,
+                    },
+                ],
+            )
+            .unwrap();
+        assert_eq!(stored.len(), 2);
+        assert_ne!(stored[0].removable_id, stored[1].removable_id);
+
+        let removed = registry
+            .remove_tray_record(CONTEXT, &stored[0].removable_id)
+            .unwrap();
+        let remaining = registry.query_tray_records(CONTEXT);
+        let other = &stored[1];
+        println!(
+            "TASK0622 remove_one_attachment removed_id={} other_id={} tray_count={} remaining_id={} remaining_name={}",
+            removed.removable_id,
+            other.removable_id,
+            remaining.len(),
+            remaining
+                .first()
+                .map(|record| record.removable_id.as_str())
+                .unwrap_or("<none>"),
+            remaining
+                .first()
+                .map(|record| record.name.as_str())
+                .unwrap_or("<none>")
+        );
+
+        assert_eq!(removed, stored[0]);
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].removable_id, other.removable_id);
+        assert_eq!(remaining[0].name, "second.txt");
     }
 
     #[test]
@@ -857,74 +1096,47 @@ mod tests {
             "NativeAttachmentSecrets([REDACTED])"
         );
     }
-}
-const CLIPBOARD_PNG_FILENAME: &str = "clipboard-image.png";
-const CLIPBOARD_JPEG_FILENAME: &str = "clipboard-image.jpg";
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AttachmentTrayFileInput {
-    pub name: String,
-    pub r#type: String,
-    pub size: u64,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct AttachmentTrayRecord {
-    pub name: String,
-    #[serde(rename = "type")]
-    pub r#type: String,
-    pub size: u64,
-    pub removable_id: String,
-}
-
-impl NativeAttachmentJobRegistry {
-    pub fn stage_clipboard_image(
-        &mut self,
-        context_id: &str,
-        media_type: &str,
-        image_bytes: Vec<u8>,
-        now_ms: u64,
-    ) -> Result<NativeAttachmentJobDto, NativeAttachmentJobError> {
-        let filename = clipboard_image_filename(media_type)?;
-        validate_clipboard_image_bytes(media_type, &image_bytes)?;
-        let size =
-            u64::try_from(image_bytes.len()).map_err(|_| NativeAttachmentJobError::InvalidSize)?;
-        let mut key_material = vec![0_u8; 32];
-        if let Err(error) = fill_os_entropy(&mut key_material) {
-            key_material.zeroize();
-            return Err(error);
-        }
-        let secrets = NativeAttachmentSecrets::new(image_bytes, key_material)?;
-        self.stage(context_id, filename, media_type, size, secrets, now_ms)
+    #[test]
+    fn over_limit_file_never_enters_the_attachment_tray() {
+        let mut registry = NativeAttachmentJobRegistry::default();
+        let refused = registry.stage(
+            CONTEXT,
+            "oversized.png",
+            "image/png",
+            crate::attachment_limits::MAX_ATTACHMENT_BYTES + 1,
+            secrets(4),
+            1_000,
+        );
+        assert_eq!(refused, Err(NativeAttachmentJobError::InvalidSize));
+        assert_eq!(registry.snapshot(CONTEXT), None);
+        println!(
+            "TASK0046 attachment_tray result=refused staged_count=0 limit_bytes={} attempted_bytes={}",
+            crate::attachment_limits::MAX_ATTACHMENT_BYTES,
+            crate::attachment_limits::MAX_ATTACHMENT_BYTES + 1
+        );
     }
-}
 
-fn clipboard_image_filename(media_type: &str) -> Result<&'static str, NativeAttachmentJobError> {
-    match media_type {
-        "image/png" => Ok(CLIPBOARD_PNG_FILENAME),
-        "image/jpeg" => Ok(CLIPBOARD_JPEG_FILENAME),
-        _ => Err(NativeAttachmentJobError::InvalidMediaType),
-    }
-}
+    #[test]
+    fn clipboard_image_intake_creates_one_selected_image_attachment_card() {
+        let mut registry = NativeAttachmentJobRegistry::default();
+        let card = registry
+            .stage_clipboard_image(
+                CONTEXT,
+                "image/png",
+                b"\x89PNG\r\n\x1a\nfixture".to_vec(),
+                10_000,
+            )
+            .unwrap();
 
-fn validate_clipboard_image_bytes(
-    media_type: &str,
-    image_bytes: &[u8],
-) -> Result<(), NativeAttachmentJobError> {
-    validate_size(
-        u64::try_from(image_bytes.len()).map_err(|_| NativeAttachmentJobError::InvalidSize)?,
-    )?;
-    let valid = match media_type {
-        "image/png" => image_bytes.starts_with(b"\x89PNG\r\n\x1a\n"),
-        "image/jpeg" => {
-            image_bytes.starts_with(&[0xff, 0xd8]) && image_bytes.ends_with(&[0xff, 0xd9])
-        }
-        _ => false,
-    };
-    if valid {
-        Ok(())
-    } else {
-        Err(NativeAttachmentJobError::InvalidMediaType)
+        assert_eq!(card.metadata.filename, "clipboard-image.png");
+        assert_eq!(card.metadata.media_type, "image/png");
+        assert_eq!(card.stage, NativeAttachmentStage::Selected);
+        assert_eq!(card.progress, 0);
+        assert_eq!(registry.snapshot(CONTEXT), Some(card));
+        assert_eq!(
+            registry.stage_clipboard_image(CONTEXT, "text/plain", b"plain".to_vec(), 10_001),
+            Err(NativeAttachmentJobError::InvalidMediaType)
+        );
     }
 }

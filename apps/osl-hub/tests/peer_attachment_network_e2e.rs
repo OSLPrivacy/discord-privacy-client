@@ -54,17 +54,15 @@
 
 #![cfg(feature = "core")]
 
-use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
-use base64::Engine as _;
 use ipc::cipher_store_client::{
-    AttachmentUploadTier, CipherStoreClient, CipherStoreError, ATTACHMENT_MULTIPART_MAX_PARTS,
+    CipherStoreClient, CipherStoreError, ATTACHMENT_MULTIPART_MAX_PARTS,
     ATTACHMENT_MULTIPART_PART_BYTES, FETCH_TOKEN_BYTES, MAX_SEALED_ATTACHMENT_BYTES,
 };
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fs::{self, File};
-use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
+use std::io::{BufWriter, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -84,11 +82,10 @@ const MAX_DRAIN_ROWS: usize = 64;
 // fixture silently becoming more permissive than production.
 // ---------------------------------------------------------------------------
 
-const MAX_DIRECT_ATTACHMENT_BYTES: u64 = 25 * 1024 * 1024;
-const WORKER_MAX_SEALED_ATTACHMENT_BYTES: u64 = 1024 * 1024 * 1024;
-const FREE_MAX_SEALED_ATTACHMENT_BYTES: u64 = 50 * 1024 * 1024 + 64 * 1024;
+const MAX_DIRECT_ATTACHMENT_BYTES: u64 = 26 * 1024 * 1024;
+const WORKER_MAX_SEALED_ATTACHMENT_BYTES: u64 = 513 * 1024 * 1024;
 const MAX_ATTACHMENT_PART_BYTES: u64 = 8 * 1024 * 1024;
-const MAX_ATTACHMENT_PARTS: u32 = 128;
+const MAX_ATTACHMENT_PARTS: u32 = 65;
 const MAX_LIVE_ATTACHMENT_ROWS: usize = 512;
 const MAX_LIVE_ATTACHMENT_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 
@@ -167,29 +164,6 @@ struct Counts {
     fetches: u32,
     deletes: u32,
     rate_limited: u32,
-    account_tiers: Vec<String>,
-    direct_bodies: Vec<Vec<u8>>,
-    part_bodies: Vec<(u32, Vec<u8>)>,
-}
-
-fn read_account_tier(headers: &BTreeMap<String, String>) -> Result<&str, Vec<u8>> {
-    match headers.get("x-osl-account-tier").map(String::as_str) {
-        Some("free") => Ok("free"),
-        Some("pro") => Ok("pro"),
-        _ => Err(error_response(
-            400,
-            "bad_account_tier",
-            "X-OSL-Account-Tier must be free or pro",
-        )),
-    }
-}
-
-fn sealed_tier_allows(tier: &str, size: u64) -> bool {
-    match tier {
-        "free" => size <= FREE_MAX_SEALED_ATTACHMENT_BYTES,
-        "pro" => size <= WORKER_MAX_SEALED_ATTACHMENT_BYTES,
-        _ => false,
-    }
 }
 
 #[derive(Default)]
@@ -384,21 +358,6 @@ impl RelayServer {
                 .get(id)
                 .and_then(|row| row.body.as_ref())
                 .map(|body| body.len() as u64)
-        })
-    }
-
-    fn object_bytes(&self, id: &str) -> Option<Vec<u8>> {
-        self.with_state(|state| state.attachments.get(id).and_then(|row| row.body.clone()))
-    }
-
-    fn encrypted_inbox_bundles_for(&self, recipient_id: &str) -> Vec<Vec<u8>> {
-        self.with_state(|state| {
-            state
-                .inbox
-                .iter()
-                .filter(|row| row.recipient_id == recipient_id)
-                .filter_map(|row| BASE64_STANDARD.decode(&row.bundle_b64).ok())
-                .collect()
         })
     }
 
@@ -833,17 +792,6 @@ fn handle_direct_upload(
     if declared.is_some_and(|declared| declared != size) {
         return error_response(400, "content_length_mismatch", "invalid attachment length");
     }
-    let tier = match read_account_tier(headers) {
-        Ok(tier) => tier,
-        Err(response) => return response,
-    };
-    if !sealed_tier_allows(tier, size) {
-        return error_response(
-            413,
-            "attachment_tier_limit",
-            "sealed attachment exceeds tier limit",
-        );
-    }
     if !state.quota_allows(size) {
         return error_response(
             503,
@@ -852,7 +800,6 @@ fn handle_direct_upload(
         );
     }
     let id = state.next_hex(16);
-    state.counts.direct_bodies.push(body.clone());
     state.attachments.insert(
         id.clone(),
         AttachmentRow {
@@ -867,7 +814,6 @@ fn handle_direct_upload(
         },
     );
     state.counts.direct_uploads += 1;
-    state.counts.account_tiers.push(tier.to_owned());
     json_response(
         201,
         json!({ "id": id, "expires_at": now + i64::from(ttl), "size_bytes": size }),
@@ -896,17 +842,6 @@ fn handle_session_create(
         }
         Err(response) => return response,
     };
-    let tier = match read_account_tier(headers) {
-        Ok(tier) => tier,
-        Err(response) => return response,
-    };
-    if !sealed_tier_allows(tier, declared) {
-        return error_response(
-            413,
-            "attachment_tier_limit",
-            "sealed attachment exceeds tier limit",
-        );
-    }
     if !state.quota_allows(declared) {
         return error_response(
             503,
@@ -930,7 +865,6 @@ fn handle_session_create(
         },
     );
     state.counts.sessions += 1;
-    state.counts.account_tiers.push(tier.to_owned());
     json_response(
         201,
         json!({
@@ -1025,7 +959,6 @@ fn handle_part_upload(
             "invalid attachment part length",
         );
     }
-    state.counts.part_bodies.push((part_number, body.clone()));
     if let Some(row) = state.attachments.get_mut(id) {
         row.parts
             .insert(part_number, (actual, Some(format!("etag-{part_number}"))));
@@ -1370,15 +1303,7 @@ fn serve_legacy_request(
             };
             state.posted.push(row.clone());
             state.inbox.push(row.clone());
-            json_response(
-                201,
-                json!({
-                    "id": row.id,
-                    "expires_at": now + 3600,
-                    "reason_code": "accepted",
-                    "parameters": {},
-                }),
-            )
+            json_response(200, json!({ "id": row.id, "expires_at": now + 3600 }))
         }
         ("GET", path) if path.starts_with("/v1/control-inbox/") => {
             let recipient = path.trim_start_matches("/v1/control-inbox/");
@@ -1747,81 +1672,6 @@ fn write_plaintext_source(path: &Path, len: usize) -> PathBuf {
     path.to_owned()
 }
 
-fn png_crc32(bytes: &[u8]) -> u32 {
-    let mut crc = 0xffff_ffffu32;
-    for byte in bytes {
-        crc ^= u32::from(*byte);
-        for _ in 0..8 {
-            crc = (crc >> 1) ^ (0xedb8_8320u32 & 0u32.wrapping_sub(crc & 1));
-        }
-    }
-    !crc
-}
-
-/// Produce a decoder-valid 1x1 PNG with a large, random ancillary chunk. The
-/// source is non-sparse, differs for every tier/run, and carries a 64-byte
-/// canary while remaining selectable by the shipping Windows image picker.
-fn write_random_png_source(path: &Path, random_payload_len: usize, canary: &[u8]) -> PathBuf {
-    const ONE_PIXEL_PNG_B64: &str =
-        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
-    let base = BASE64_STANDARD
-        .decode(ONE_PIXEL_PNG_B64)
-        .expect("decode one-pixel PNG");
-    assert!(base.ends_with(b"\0\0\0\0IEND\xaeB`\x82"));
-    assert!(random_payload_len > canary.len() + 8192);
-    let mut payload = crypto::random::random_bytes(random_payload_len);
-    payload[4096..4096 + canary.len()].copy_from_slice(canary);
-
-    let mut file = BufWriter::new(File::create(path).expect("create random PNG source"));
-    file.write_all(&base[..base.len() - 12])
-        .expect("write PNG prefix");
-    file.write_all(&(payload.len() as u32).to_be_bytes())
-        .expect("write ancillary length");
-    file.write_all(b"raNd").expect("write ancillary type");
-    file.write_all(&payload)
-        .expect("write random ancillary data");
-    let mut crc_input = Vec::with_capacity(4 + payload.len());
-    crc_input.extend_from_slice(b"raNd");
-    crc_input.extend_from_slice(&payload);
-    file.write_all(&png_crc32(&crc_input).to_be_bytes())
-        .expect("write ancillary CRC");
-    file.write_all(&base[base.len() - 12..])
-        .expect("write PNG terminator");
-    file.flush().expect("flush random PNG source");
-    path.to_owned()
-}
-
-fn contains_canary_window(bytes: &[u8], canary: &[u8]) -> bool {
-    canary.len() >= 32
-        && canary
-            .windows(32)
-            .any(|needle| contains_bytes(bytes, needle))
-}
-
-fn tree_canary_boundary(root: &Path, canary: &[u8]) -> Option<PathBuf> {
-    let mut stack = vec![root.to_owned()];
-    while let Some(path) = stack.pop() {
-        let Ok(entries) = fs::read_dir(path) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let entry_path = entry.path();
-            match entry.file_type() {
-                Ok(kind) if kind.is_dir() => stack.push(entry_path),
-                Ok(kind) if kind.is_file() => {
-                    if fs::read(&entry_path)
-                        .is_ok_and(|bytes| contains_canary_window(&bytes, canary))
-                    {
-                        return Some(entry_path);
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-    None
-}
-
 /// Write `len` bytes of opaque filler, standing in for already-sealed
 /// ciphertext when a specific sealed length is required.
 fn write_opaque_file(path: &Path, len: u64) {
@@ -2037,20 +1887,12 @@ fn send_attachment(
     let burn_scope = plan.burn_scope.clone();
     let ttl = u32::try_from(plan.expires_at.saturating_sub(plan.created_at))
         .expect("scope TTL fits in u32");
-    let account_tier = osl_privacy_hub::attachment_limits::shipping_account_tier(&sender.core.osl);
-    let upload_tier = match account_tier {
-        osl_privacy_hub::attachment_limits::AttachmentAccountTier::Free => {
-            AttachmentUploadTier::Free
-        }
-        osl_privacy_hub::attachment_limits::AttachmentAccountTier::Pro => AttachmentUploadTier::Pro,
-    };
 
-    let staged = osl_privacy_hub::peer_attachment_io::encrypt_file_for_account_tier(
+    let staged = osl_privacy_hub::peer_attachment_io::encrypt_file(
         &sender.local_root,
         &mut source,
         &plan.original_filename,
         &plan.mime_type,
-        account_tier,
         crypto::aead::Key::from_bytes(attachment_key),
         content_id.to_vec(),
         0,
@@ -2063,7 +1905,7 @@ fn send_attachment(
     let token = fresh_fetch_token();
     let sealed_file = File::open(staged.path()).expect("reopen the sealed file");
     let upload = client
-        .upload_attachment_file_for_tier(sealed_file, ttl, &token, upload_tier)
+        .upload_attachment_file(sealed_file, ttl, &token)
         .expect("upload the sealed attachment");
 
     osl_privacy_hub::peer_attachment_io::remove_staged_file(staged)
@@ -2200,627 +2042,6 @@ fn attachment_ready_decision(
         return ReadyDecision::NonReady("missing-recipient-notice");
     }
     ReadyDecision::Ready
-}
-
-struct Task0044aTierReport {
-    tier: &'static str,
-    selection: u8,
-    source_bytes: u64,
-    source_sha256: String,
-    sealed_bytes: u64,
-    object_id: String,
-    part_count: usize,
-    nonce_first: String,
-    nonce_second: String,
-    ciphertext_sha256_first: String,
-    ciphertext_sha256_second: String,
-}
-
-/// Exercise one actual selected file without constructing another account.
-/// The outer tier journey deliberately reuses its sender and recipient for all
-/// three selections: three one-file accounts would not prove that one real
-/// account can repeatedly use the shipping picker path.
-fn task_0044a_selected_file_journey(
-    relay: &RelayServer,
-    tier: osl_privacy_hub::attachment_limits::AttachmentAccountTier,
-    storage: &TestStorage,
-    sender: &Peer,
-    recipient: &Peer,
-    selection: u8,
-) -> Result<Task0044aTierReport, String> {
-    use osl_privacy_hub::attachment_limits::AttachmentAccountTier;
-
-    relay.reset_counts();
-    let tier_label = tier.label();
-    let tier_wire = tier.wire_label();
-    let relay_url = relay.base_url();
-    sender.activate();
-    if osl_privacy_hub::attachment_limits::shipping_account_tier(&sender.core.osl) != tier {
-        return Err(format!(
-            "tier={tier_label} account inventory did not resolve"
-        ));
-    }
-
-    let mut canary = crypto::random::random_bytes(64);
-    let prefix = if tier == AttachmentAccountTier::Free {
-        b"FREE0044"
-    } else {
-        b"PRO-0044"
-    };
-    canary[..prefix.len()].copy_from_slice(prefix);
-    canary[prefix.len()] = selection;
-    let source = write_random_png_source(
-        &storage
-            .root
-            .join(format!("task0044a-{tier_wire}-selected-{selection}.png")),
-        // One dense MiB is large enough to cross the streaming cipher's
-        // buffer boundary while keeping all six real-account round trips
-        // practical in the focused integration test.
-        1024 * 1024 + 4096,
-        &canary,
-    );
-    let (source_hash, source_bytes) = osl_privacy_hub::peer_attachment_io::sha256_file(&source)
-        .map_err(|error| format!("tier={tier_label} source hash failed: {error}"))?;
-    if source_bytes == 0
-        || !fs::read(&source).is_ok_and(|bytes| contains_canary_window(&bytes, &canary))
-    {
-        return Err(format!("tier={tier_label} random source canary is missing"));
-    }
-
-    let client = CipherStoreClient::new(&relay_url)
-        .map_err(|error| format!("tier={tier_label} store client failed: {error}"))?;
-    // Use the shipping send sequence itself.  It owns the picker-selected
-    // source's encrypt/stage/upload/deliver order; duplicating that sequence
-    // here had drifted into a second, non-shipping sender and could fail at
-    // the control-inbox boundary before a recipient ever had a read-back.
-    let sent = send_attachment(
-        sender,
-        &client,
-        &source,
-        &format!("task0044a-{tier_wire}-{selection}.png"),
-        false,
-    );
-    let completed = relay
-        .object_bytes(&sent.object_id)
-        .ok_or_else(|| format!("tier={tier_label} completed object missing"))?;
-    if completed.is_empty() || contains_canary_window(&completed, &canary) {
-        return Err(format!(
-            "tier={tier_label} service object was empty or contained plaintext object_id={}",
-            sent.object_id
-        ));
-    }
-
-    recipient.activate();
-    let pending = osl_privacy_hub::broker::list_osl_chat_attachments(
-        &recipient.core,
-        &recipient.security,
-        &recipient.broker,
-    )
-    .map_err(|error| format!("tier={tier_label} recipient list failed: {error}"))?;
-    if pending.len() != 1 {
-        return Err(format!(
-            "tier={tier_label} recipient pending count was {}",
-            pending.len()
-        ));
-    }
-    let open_plan = osl_privacy_hub::broker::take_osl_chat_attachment(
-        &recipient.core,
-        &recipient.security,
-        &recipient.broker,
-        &pending[0].attachment_id,
-    )
-    .map_err(|error| format!("tier={tier_label} recipient authority failed: {error}"))?;
-    if open_plan.object_id != sent.object_id {
-        return Err(format!("tier={tier_label} recipient object binding changed"));
-    }
-    let download_path = fetch_and_verify(recipient, &client, &open_plan)
-        .map_err(|error| format!("tier={tier_label} recipient fetch failed: {error}"))?;
-    let mut sealed_file = File::open(&download_path)
-        .map_err(|_| format!("tier={tier_label} recipient ciphertext open failed"))?;
-    let opened = osl_privacy_hub::peer_attachment_io::decrypt_file_to_memory(
-        &mut sealed_file,
-        &open_plan.original_filename,
-        &open_plan.mime_type,
-        crypto::aead::Key::from_bytes(open_plan.attachment_key),
-    )
-    .map_err(|error| format!("tier={tier_label} authorised decrypt failed: {error}"))?;
-    let opened_hash = Sha256::digest(opened.as_slice());
-    if opened.len() as u64 != source_bytes || opened_hash.as_slice() != source_hash {
-        return Err(format!("tier={tier_label} recipient byte count or hash changed"));
-    }
-    drop(opened);
-    osl_privacy_hub::broker::commit_osl_chat_attachment_open(
-        &recipient.core,
-        &recipient.security,
-        &recipient.broker,
-        &open_plan,
-    )
-    .map_err(|error| format!("tier={tier_label} recipient commit failed: {error}"))?;
-    osl_privacy_hub::peer_attachment_io::remove_staging_path_in_root(
-        &recipient.local_root,
-        &download_path,
-    )
-    .map_err(|error| format!("tier={tier_label} recipient cleanup failed: {error}"))?;
-    let (source_hash_after, source_bytes_after) =
-        osl_privacy_hub::peer_attachment_io::sha256_file(&source)
-            .map_err(|error| format!("tier={tier_label} final source hash failed: {error}"))?;
-    if source_bytes_after != source_bytes || source_hash_after != source_hash {
-        return Err(format!("tier={tier_label} selected source file changed"));
-    }
-    return Ok(Task0044aTierReport {
-        tier: tier_label,
-        selection,
-        source_bytes,
-        source_sha256: hex_lower(&source_hash),
-        sealed_bytes: sent.sealed_size,
-        object_id: sent.object_id,
-        part_count: 1,
-        // Fresh-nonce and independent-key evidence are deliberately owned by
-        // 0044c; this round trip does not claim either as its own proof.
-        nonce_first: "0044c-owned".to_owned(),
-        nonce_second: "0044c-owned".to_owned(),
-        ciphertext_sha256_first: sent.digest_hex.clone(),
-        ciphertext_sha256_second: sent.digest_hex,
-    });
-
-    let mut source_file = File::open(&source)
-        .map_err(|_| format!("tier={tier_label} selected source open failed"))?;
-    let plan = osl_privacy_hub::broker::begin_osl_chat_attachment(
-        &sender.core,
-        &sender.broker,
-        format!("task0044a-{tier_wire}-{selection}.png"),
-        source_bytes,
-        false,
-    )
-    .map_err(|error| format!("tier={tier_label} native plan failed: {error}"))?;
-    let attachment_key = plan.attachment_key;
-    let content_id = plan.content_id;
-    let burn_scope = plan.burn_scope.clone();
-    let ttl = u32::try_from(plan.expires_at.saturating_sub(plan.created_at))
-        .map_err(|_| format!("tier={tier_label} TTL overflow"))?;
-
-    let staged = osl_privacy_hub::peer_attachment_io::encrypt_file_for_account_tier(
-        &sender.local_root,
-        &mut source_file,
-        &plan.original_filename,
-        &plan.mime_type,
-        tier,
-        crypto::aead::Key::from_bytes(attachment_key),
-        content_id.to_vec(),
-        0,
-    )
-    .map_err(|error| format!("tier={tier_label} encrypted staging failed: {error}"))?;
-    let staged_bytes = fs::read(staged.path())
-        .map_err(|_| format!("tier={tier_label} sealed staging read failed"))?;
-    let staging_plaintext_leak = contains_canary_window(&staged_bytes, &canary);
-    let staging_key_leak = contains_bytes(&staged_bytes, &attachment_key);
-
-    source_file
-        .seek(SeekFrom::Start(0))
-        .map_err(|_| format!("tier={tier_label} selected source rewind failed"))?;
-    let repeated = osl_privacy_hub::peer_attachment_io::encrypt_file_for_account_tier(
-        &sender.local_root,
-        &mut source_file,
-        &plan.original_filename,
-        &plan.mime_type,
-        tier,
-        crypto::aead::Key::from_bytes(attachment_key),
-        content_id.to_vec(),
-        0,
-    )
-    .map_err(|error| format!("tier={tier_label} repeated encryption failed: {error}"))?;
-    let repeated_bytes = fs::read(repeated.path())
-        .map_err(|_| format!("tier={tier_label} repeated staging read failed"))?;
-    let ciphertext_hash_first = Sha256::digest(&staged_bytes);
-    let ciphertext_hash_second = Sha256::digest(&repeated_bytes);
-    let (nonce_first, nonce_second) = if !staging_plaintext_leak {
-        let (first_header, _) = crypto::attachment::StreamHeader::deserialize(&staged_bytes)
-            .map_err(|_| format!("tier={tier_label} first stream header invalid"))?;
-        let (second_header, _) = crypto::attachment::StreamHeader::deserialize(&repeated_bytes)
-            .map_err(|_| format!("tier={tier_label} second stream header invalid"))?;
-        if first_header.base_nonce_prefix == second_header.base_nonce_prefix
-            || staged_bytes == repeated_bytes
-        {
-            return Err(format!(
-                "tier={tier_label} repeated encryption reused nonce or ciphertext"
-            ));
-        }
-        (
-            hex_lower(&first_header.base_nonce_prefix),
-            hex_lower(&second_header.base_nonce_prefix),
-        )
-    } else {
-        ("plaintext-bypass".to_owned(), "plaintext-bypass".to_owned())
-    };
-    osl_privacy_hub::peer_attachment_io::remove_staged_file(repeated)
-        .map_err(|error| format!("tier={tier_label} repeated staging cleanup failed: {error}"))?;
-
-    let (digest, sealed_size) = osl_privacy_hub::peer_attachment_io::sha256_file(staged.path())
-        .map_err(|error| format!("tier={tier_label} sealed digest failed: {error}"))?;
-    let token = fresh_fetch_token();
-    let upload_tier = match tier {
-        AttachmentAccountTier::Free => AttachmentUploadTier::Free,
-        AttachmentAccountTier::Pro => AttachmentUploadTier::Pro,
-    };
-    let upload = client
-        .upload_attachment_file_for_tier(
-            File::open(staged.path())
-                .map_err(|_| format!("tier={tier_label} staged upload open failed"))?,
-            ttl,
-            &token,
-            upload_tier,
-        )
-        .map_err(|error| format!("tier={tier_label} upload failed: {error}"))?;
-    let object_id = upload.id_hex.clone();
-    osl_privacy_hub::peer_attachment_io::remove_staged_file(staged)
-        .map_err(|error| format!("tier={tier_label} sealed staging cleanup failed: {error}"))?;
-    osl_privacy_hub::security::record_peer_attachment_burn_capability(
-        &sender.security,
-        burn_scope,
-        object_id.clone(),
-        hex_lower(&token),
-        upload.expires_at,
-    )
-    .map_err(|error| format!("tier={tier_label} burn capability persistence failed: {error}"))?;
-    osl_privacy_hub::broker::deliver_osl_chat_attachment(
-        &sender.core,
-        &sender.broker,
-        plan,
-        sealed_size,
-        hex_lower(&digest),
-        object_id.clone(),
-        hex_lower(&token),
-    )
-    .map_err(|error| format!("tier={tier_label} encrypted notice delivery failed: {error}"))?;
-
-    let completed = relay
-        .object_bytes(&object_id)
-        .ok_or_else(|| format!("tier={tier_label} completed object missing"))?;
-    let (account_tiers, direct_bodies, part_bodies, part_count) = relay.counts(|counts| {
-        (
-            counts.account_tiers.clone(),
-            counts.direct_bodies.clone(),
-            counts.part_bodies.clone(),
-            counts.parts.len(),
-        )
-    });
-    if account_tiers != vec![tier_wire.to_owned()] {
-        return Err(format!(
-            "tier={tier_label} service tier header mismatch object_id={object_id} observed={account_tiers:?}"
-        ));
-    }
-    let upload_leak = direct_bodies
-        .iter()
-        .any(|body| contains_canary_window(body, &canary))
-        || part_bodies
-            .iter()
-            .any(|(_, body)| contains_canary_window(body, &canary));
-    let upload_key_leak = direct_bodies
-        .iter()
-        .any(|body| contains_bytes(body, &attachment_key))
-        || part_bodies
-            .iter()
-            .any(|(_, body)| contains_bytes(body, &attachment_key));
-    let completed_leak = contains_canary_window(&completed, &canary);
-    let completed_key_leak = contains_bytes(&completed, &attachment_key);
-    let inbox_bundles = relay.encrypted_inbox_bundles_for(&recipient.identity_id);
-    let inbox_plaintext_leak = inbox_bundles
-        .iter()
-        .any(|bundle| contains_canary_window(bundle, &canary));
-    let inbox_key_leak = inbox_bundles
-        .iter()
-        .any(|bundle| contains_bytes(bundle, &attachment_key));
-    let local_plaintext_boundary = osl_roots(&sender, &recipient)
-        .into_iter()
-        .find_map(|root| tree_canary_boundary(&root, &canary));
-    let local_key_boundary = osl_roots(&sender, &recipient)
-        .into_iter()
-        .find_map(|root| file_containing(&root, &attachment_key));
-
-    let plaintext_boundary = if staging_plaintext_leak {
-        Some("client:sealed-staging")
-    } else if upload_leak {
-        Some(if part_bodies.is_empty() {
-            "service:direct-upload-body"
-        } else {
-            "service:multipart-upload-part"
-        })
-    } else if completed_leak {
-        Some("service:completed-object")
-    } else if inbox_plaintext_leak {
-        Some("service:encrypted-recipient-notice")
-    } else if local_plaintext_boundary.is_some() {
-        Some("client:owned-persistence-tree")
-    } else {
-        None
-    };
-    if let Some(boundary) = plaintext_boundary {
-        return Err(format!(
-            "tier={tier_label} plaintext boundary={boundary} object_id={object_id}"
-        ));
-    }
-    if staging_key_leak
-        || upload_key_leak
-        || completed_key_leak
-        || inbox_key_leak
-        || local_key_boundary.is_some()
-    {
-        return Err(format!(
-            "tier={tier_label} key stored beside ciphertext object_id={object_id}"
-        ));
-    }
-
-    recipient.activate();
-    let pending = osl_privacy_hub::broker::list_osl_chat_attachments(
-        &recipient.core,
-        &recipient.security,
-        &recipient.broker,
-    )
-    .map_err(|error| format!("tier={tier_label} recipient list failed: {error}"))?;
-    if pending.len() != 1 {
-        return Err(format!(
-            "tier={tier_label} recipient pending count was {}",
-            pending.len()
-        ));
-    }
-    let open_plan = osl_privacy_hub::broker::take_osl_chat_attachment(
-        &recipient.core,
-        &recipient.security,
-        &recipient.broker,
-        &pending[0].attachment_id,
-    )
-    .map_err(|error| format!("tier={tier_label} authorised recipient plan failed: {error}"))?;
-    if open_plan.object_id != object_id || open_plan.attachment_key != attachment_key {
-        return Err(format!(
-            "tier={tier_label} recipient authority did not bind the object"
-        ));
-    }
-    let download_path = fetch_and_verify(&recipient, &client, &open_plan)
-        .map_err(|error| format!("tier={tier_label} recipient fetch failed: {error}"))?;
-    let download_bytes = fs::read(&download_path)
-        .map_err(|_| format!("tier={tier_label} recipient ciphertext read failed"))?;
-    if contains_canary_window(&download_bytes, &canary)
-        || contains_bytes(&download_bytes, &attachment_key)
-    {
-        return Err(format!(
-            "tier={tier_label} plaintext boundary=client:recipient-download object_id={object_id}"
-        ));
-    }
-
-    let wrong_key_bytes = crypto::random::random_bytes(32);
-    let mut wrong_key = [0u8; 32];
-    wrong_key.copy_from_slice(&wrong_key_bytes);
-    if crypto::attachment::decrypt_attachment(
-        crypto::aead::Key::from_bytes(wrong_key),
-        &download_bytes,
-    )
-    .is_ok()
-    {
-        return Err(format!("tier={tier_label} wrong key released plaintext"));
-    }
-    let (_, header_len) = crypto::attachment::StreamHeader::deserialize(&download_bytes)
-        .map_err(|_| format!("tier={tier_label} downloaded header invalid"))?;
-    let mut flipped = download_bytes.clone();
-    flipped[header_len + 17] ^= 1;
-    if crypto::attachment::decrypt_attachment(
-        crypto::aead::Key::from_bytes(attachment_key),
-        &flipped,
-    )
-    .is_ok()
-    {
-        return Err(format!(
-            "tier={tier_label} flipped ciphertext released plaintext"
-        ));
-    }
-    let part = ATTACHMENT_MULTIPART_PART_BYTES as usize;
-    if download_bytes.len() <= part * 3 {
-        return Err(format!(
-            "tier={tier_label} fixture did not exercise multipart ordering"
-        ));
-    }
-    let mut reordered = Vec::with_capacity(download_bytes.len());
-    reordered.extend_from_slice(&download_bytes[..part]);
-    reordered.extend_from_slice(&download_bytes[part * 2..part * 3]);
-    reordered.extend_from_slice(&download_bytes[part..part * 2]);
-    reordered.extend_from_slice(&download_bytes[part * 3..]);
-    if crypto::attachment::decrypt_attachment(
-        crypto::aead::Key::from_bytes(attachment_key),
-        &reordered,
-    )
-    .is_ok()
-    {
-        return Err(format!(
-            "tier={tier_label} reordered upload part released plaintext"
-        ));
-    }
-
-    let mut sealed_file = File::open(&download_path)
-        .map_err(|_| format!("tier={tier_label} recipient ciphertext open failed"))?;
-    let opened = osl_privacy_hub::peer_attachment_io::decrypt_file_to_memory(
-        &mut sealed_file,
-        &open_plan.original_filename,
-        &open_plan.mime_type,
-        crypto::aead::Key::from_bytes(open_plan.attachment_key),
-    )
-    .map_err(|error| format!("tier={tier_label} authorised decrypt failed: {error}"))?;
-    let opened_hash = Sha256::digest(opened.as_slice());
-    if opened.len() as u64 != source_bytes || opened_hash.as_slice() != source_hash {
-        return Err(format!(
-            "tier={tier_label} recipient byte count or hash changed"
-        ));
-    }
-    drop(opened);
-    osl_privacy_hub::broker::commit_osl_chat_attachment_open(
-        &recipient.core,
-        &recipient.security,
-        &recipient.broker,
-        &open_plan,
-    )
-    .map_err(|error| format!("tier={tier_label} recipient commit failed: {error}"))?;
-    osl_privacy_hub::peer_attachment_io::remove_staging_path_in_root(
-        &recipient.local_root,
-        &download_path,
-    )
-    .map_err(|error| format!("tier={tier_label} recipient download cleanup failed: {error}"))?;
-    let (source_hash_after, source_bytes_after) =
-        osl_privacy_hub::peer_attachment_io::sha256_file(&source)
-            .map_err(|error| format!("tier={tier_label} final source hash failed: {error}"))?;
-    if source_bytes_after != source_bytes || source_hash_after != source_hash {
-        return Err(format!("tier={tier_label} selected source file changed"));
-    }
-
-    Ok(Task0044aTierReport {
-        tier: tier_label,
-        selection,
-        source_bytes,
-        source_sha256: hex_lower(&source_hash),
-        sealed_bytes: sealed_size,
-        object_id,
-        part_count,
-        nonce_first,
-        nonce_second,
-        ciphertext_sha256_first: hex_lower(&ciphertext_hash_first),
-        ciphertext_sha256_second: hex_lower(&ciphertext_hash_second),
-    })
-}
-
-/// Run three distinct selected sources through one sender account and one
-/// separately authorised recipient for a shipping tier.
-fn task_0044a_tier_journey(
-    relay: &RelayServer,
-    tier: osl_privacy_hub::attachment_limits::AttachmentAccountTier,
-) -> Result<Vec<Task0044aTierReport>, String> {
-    use osl_privacy_hub::attachment_limits::AttachmentAccountTier;
-
-    let tier_wire = tier.wire_label();
-    let storage = TestStorage::new(&format!("task0044a-{tier_wire}"));
-    let (sender, recipient) = verified_pair(&storage, relay);
-    match tier {
-        AttachmentAccountTier::Free => {
-            set_account_tier(&sender.core, keystore::LicenseState::Free, "Unconfigured");
-            set_account_tier(&recipient.core, keystore::LicenseState::Paid, "ACTIVE");
-        }
-        AttachmentAccountTier::Pro => {
-            set_account_tier(&sender.core, keystore::LicenseState::Paid, "ACTIVE");
-            set_account_tier(&recipient.core, keystore::LicenseState::Free, "Unconfigured");
-        }
-    }
-    sender.activate();
-    if osl_privacy_hub::attachment_limits::shipping_account_tier(&sender.core.osl) != tier {
-        return Err(format!("tier={} account inventory did not resolve", tier.label()));
-    }
-
-    (1..=3)
-        .map(|selection| {
-            task_0044a_selected_file_journey(
-                relay, tier, &storage, &sender, &recipient, selection,
-            )
-        })
-        .collect()
-}
-
-#[test]
-fn task_0044a_every_shipping_tier_encrypts_every_persistence_boundary() {
-    let _serial = fixture_lock()
-        .lock()
-        .unwrap_or_else(|error| error.into_inner());
-
-    let pricing: Value = serde_json::from_str(include_str!("../../../data/pricing.json"))
-        .expect("shipping pricing manifest parses");
-    let mut independent_tiers: Vec<(String, String)> = pricing["tiers"]
-        .as_object()
-        .expect("pricing manifest has tiers")
-        .iter()
-        .map(|(wire, value)| {
-            (
-                wire.clone(),
-                value["name"].as_str().unwrap_or_default().to_owned(),
-            )
-        })
-        .collect();
-    independent_tiers.sort();
-    let mut production_tiers: Vec<(String, String)> =
-        osl_privacy_hub::attachment_limits::SHIPPING_ATTACHMENT_TIERS
-            .iter()
-            .map(|tier| (tier.wire_label().to_owned(), tier.label().to_owned()))
-            .collect();
-    production_tiers.sort();
-    assert_eq!(
-        independent_tiers, production_tiers,
-        "shipping pricing tiers and production attachment tiers must reconcile exactly"
-    );
-    assert_eq!(
-        independent_tiers,
-        vec![
-            ("free".to_owned(), "Free".to_owned()),
-            ("pro".to_owned(), "Pro".to_owned())
-        ]
-    );
-
-    let native_transport = include_str!("../src/native_attachment_transport.rs");
-    let native_main = include_str!("../src/main.rs");
-    let windows_ui = include_str!("../../osl-hub-ui/src/main.ts");
-    assert!(native_transport.contains("blocking_pick_file()"));
-    assert!(native_transport.contains("encrypt_file_for_account_tier("));
-    assert!(native_transport.contains("upload_attachment_file_for_tier("));
-    assert!(native_main.contains("attachments_enabled: scope_approved"));
-    assert!(windows_ui.contains("const attachments = activeOslChatContext?.scopeApproved"));
-
-    println!(
-        "TASK0044A inventory manifest_tiers=free:Free,pro:Pro production_tiers=free:Free,pro:Pro exact=true windows_ui_picker=blocking_pick_file"
-    );
-    let relay = RelayServer::start();
-    let mut failures = Vec::new();
-    let mut green = 0usize;
-    for tier in osl_privacy_hub::attachment_limits::SHIPPING_ATTACHMENT_TIERS {
-        match task_0044a_tier_journey(&relay, tier) {
-            Ok(reports) => {
-                if reports.len() != 3 {
-                    failures.push(format!("tier={} selection count was {}", tier.label(), reports.len()));
-                }
-                for report in reports {
-                    green += 1;
-                    println!(
-                    "TASK0044A tier={} result=green source_bytes={} source_sha256={} sealed_bytes={} object_id={} upload_parts={} canary_windows=33 plaintext_windows_found=0 key_beside_ciphertext=0 recipient_bytes={} recipient_sha256={} wrong_key_released=0 flipped_bit_released=0 reordered_part_released=0",
-                    report.tier,
-                    report.source_bytes,
-                    report.source_sha256,
-                    report.sealed_bytes,
-                    report.object_id,
-                    report.part_count,
-                    report.source_bytes,
-                    report.source_sha256,
-                    );
-                    println!(
-                    "TASK0044A tier={} selection={} repeat nonce_first={} nonce_second={} ciphertext_sha256_first={} ciphertext_sha256_second={} nonce_changed={} ciphertext_changed={}",
-                    report.tier,
-                    report.selection,
-                    report.nonce_first,
-                    report.nonce_second,
-                    report.ciphertext_sha256_first,
-                    report.ciphertext_sha256_second,
-                    report.nonce_first != report.nonce_second,
-                    report.ciphertext_sha256_first != report.ciphertext_sha256_second,
-                    );
-                }
-            }
-            Err(error) => {
-                eprintln!("TASK0044A result=red {error}");
-                failures.push(error);
-            }
-        }
-    }
-    println!(
-        "TASK0044A summary inventoried_tiers=2 selected_files_per_tier=3 nonempty_journeys={} persistence_boundaries=7 source_files_unchanged={} authorised_recipients={} key_source=recipient-encrypted-control-inbox service_store=loopback-worker-faithful",
-        green,
-        green,
-        green,
-    );
-    assert!(failures.is_empty(), "TASK0044A {}", failures.join(" | "));
-    assert_eq!(
-        green, 6,
-        "Free and Pro must each complete three non-empty selected-file journeys"
-    );
 }
 
 // ---------------------------------------------------------------------------
@@ -4085,9 +3306,12 @@ fn fixture_refuses_the_request_shapes_the_rust_client_cannot_produce() {
     let address = relay.address().to_owned();
     let client = CipherStoreClient::new(&relay_url).expect("build cipher-store client");
 
-    // The shipping client may be stricter than the Worker's transport wall,
-    // but it must never be able to create something the Worker rejects.
-    assert!(MAX_SEALED_ATTACHMENT_BYTES <= WORKER_MAX_SEALED_ATTACHMENT_BYTES);
+    // The client's mirrored bounds must equal the worker's, or every assertion
+    // in this file is measuring the wrong wall.
+    assert_eq!(
+        MAX_SEALED_ATTACHMENT_BYTES,
+        WORKER_MAX_SEALED_ATTACHMENT_BYTES
+    );
     assert_eq!(ATTACHMENT_MULTIPART_PART_BYTES, MAX_ATTACHMENT_PART_BYTES);
     assert_eq!(ATTACHMENT_MULTIPART_MAX_PARTS, MAX_ATTACHMENT_PARTS);
 
@@ -4286,14 +3510,14 @@ fn padding_buckets_and_rate_limit_budgets_bound_the_real_multipart_shape() {
 
     // Because plaintext is padded to a bucket, sealed sizes are quantised: no
     // real attachment can land between the 25 MiB and 50 MiB buckets. So the
-    // AEAD tags put a sealed 25 MiB bucket just above the Worker's 25 MiB
-    // direct-buffer wall. It therefore takes multipart, as does the 50 MiB
-    // bucket; the plaintext tier decision happened before either route.
+    // direct route covers every bucket up to 25 MiB, and the first multipart
+    // upload in production is the 50 MiB bucket at seven parts -- there is no
+    // real two-, three- or four-part attachment.
     let twenty_five = sealed_for(25 * 1024 * 1024);
     let fifty = sealed_for(50 * 1024 * 1024);
     assert!(
-        twenty_five > MAX_DIRECT_ATTACHMENT_BYTES,
-        "the sealed 25 MiB bucket must take the multipart route"
+        twenty_five <= MAX_DIRECT_ATTACHMENT_BYTES,
+        "the 25 MiB bucket must still take the direct route"
     );
     assert!(
         fifty > MAX_DIRECT_ATTACHMENT_BYTES,
@@ -4305,14 +3529,9 @@ fn padding_buckets_and_rate_limit_budgets_bound_the_real_multipart_shape() {
         "the smallest multipart upload production can produce is seven parts"
     );
 
-    assert_eq!(parts_for(twenty_five), 4);
-
-    // The largest current crypto bucket remains within the Worker's 128-part
-    // transport ceiling; the extra service headroom preserves the 1 GiB Pro
-    // tier without forcing this client to allocate it.
+    // The largest bucket must land exactly on the part ceiling.
     let largest = sealed_for(*ATTACHMENT_BUCKETS.last().expect("buckets are non-empty"));
-    assert_eq!(parts_for(largest), 65);
-    assert!(parts_for(largest) <= u64::from(MAX_ATTACHMENT_PARTS));
+    assert_eq!(parts_for(largest), u64::from(MAX_ATTACHMENT_PARTS));
 
     // Request budget: one session + N parts + one completion.
     let requests_for_largest = 1 + parts_for(largest) + 1;

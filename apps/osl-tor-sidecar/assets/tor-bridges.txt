@@ -1,4 +1,0 @@
-# OSL bridge bundle v1. Bridge entries are data, not compiled policy. Release
-# automation replaces the TEST-NET endpoint below with the reviewed bridge set.
-# Keeping the transport name here binds every entry to the shipped managed PT.
-Bridge oslbridge 192.0.2.55:443 316E643333645F6D79216558614D3931657A5F5F

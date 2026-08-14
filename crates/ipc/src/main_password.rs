@@ -16,10 +16,10 @@
 //!
 //!     Absence of the file = no gate. Tauri loads discord.com directly.
 //!
-//! - `lockout_state.json` — failed-attempt counters, the password gate's
-//!   elapsed-realtime cooldown boundary, and the recovery-phrase path's
-//!   lock-until timestamp. It persists across Tauri/service restarts. Wall
-//!   time is never the password cooldown authority.
+//! - `lockout_state.json` — failed-attempt counters + per-counter
+//!   lock-until timestamps for the password-entry and recovery-
+//!   phrase-entry paths. Persists across Tauri restarts so a
+//!   determined attacker can't brute-force by repeated relaunch.
 //!
 //! Argon2id parameters are 64 MiB / 3 iterations / 1 lane / 64 byte
 //! output. The 64-byte output is split — first 32 bytes for the
@@ -45,8 +45,7 @@ use base64::Engine;
 use bip39::{Language, Mnemonic};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, MutexGuard, OnceLock};
+use std::sync::{Mutex, OnceLock};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use zeroize::{Zeroize, Zeroizing};
 
@@ -54,27 +53,28 @@ const MARKER_FILENAME: &str = "password_marker.json";
 const LOCKOUT_FILENAME: &str = "lockout_state.json";
 const DEVICE_BOUND_FALLBACK_KEY_FILENAME: &str = "file_storage_key_fallback.json";
 const MARKER_VERSION: u32 = 2;
-const LOCKOUT_VERSION: u32 = 2;
+const LOCKOUT_VERSION: u32 = 1;
 const DEVICE_BOUND_FALLBACK_KEY_VERSION: u32 = 1;
 const ENC_MAGIC: &[u8; 8] = b"OSL-ENC1";
 
 pub const PASSWORD_MIN_LEN: usize = 6;
 pub const RECOMMENDED_PASSWORD_LEN: usize = 12;
 pub const PASSWORD_MAX_LEN: usize = 128;
-/// The tenth consecutive wrong password starts the non-destructive cooldown.
+/// Automatic duress fires on the tenth consecutive wrong password attempt.
+///
+/// This is deliberately aligned with the unlock warning policy: attempts 7,
+/// 8, and 9 warn how many entries remain, while attempt 10 runs the production
+/// destruction path. A successful or explicit burn-code match resets the
+/// counter, so only consecutive wrong entries reach this boundary.
 pub const DURESS_WRONG_PASSWORD_ATTEMPT_LIMIT: u32 = 10;
 pub const DURESS_FAILED_ATTEMPT_THRESHOLD: u32 = DURESS_WRONG_PASSWORD_ATTEMPT_LIMIT;
-pub const PASSWORD_COOLDOWN_SECONDS: u64 = 15 * 60;
-pub const PASSWORD_COOLDOWN_MILLIS: u64 = PASSWORD_COOLDOWN_SECONDS * 1_000;
 const SALT_LEN: usize = 16;
 const ARGON_OUTPUT_LEN: usize = 64; // 32 hash + 32 AES key
 const HASH_LEN: usize = 32;
 const KEY_LEN: usize = 32;
 const NONCE_LEN: usize = 12;
+const DURESS_FAILED_PASSWORD_ATTEMPT_THRESHOLD: u32 = keystore::DEFAULT_FAILED_ATTEMPT_THRESHOLD;
 pub const INACTIVITY_AUTO_LOCK_SECONDS: u64 = keystore::DEFAULT_INACTIVITY_SECONDS;
-
-static GATE_SUBMISSION_MUTEX: OnceLock<Mutex<()>> = OnceLock::new();
-static CREDENTIAL_WORK_COUNT: AtomicU64 = AtomicU64::new(0);
 
 const ARGON_MEMORY_KB: u32 = 65_536; // 64 MiB
 const ARGON_ITERATIONS: u32 = 3;
@@ -168,12 +168,6 @@ pub struct LockoutState {
     pub password_failed_attempts: u32,
     #[serde(default)]
     pub password_locked_until: Option<i64>,
-    /// Enforcement authority for the shipping unlock cooldown. These are
-    /// milliseconds on the OS elapsed-since-boot clock, not wall time.
-    #[serde(default)]
-    pub password_cooldown_started_elapsed_ms: Option<u64>,
-    #[serde(default)]
-    pub password_cooldown_deadline_elapsed_ms: Option<u64>,
     #[serde(default)]
     pub phrase_failed_attempts: u32,
     #[serde(default)]
@@ -249,6 +243,9 @@ pub enum WrongPasswordAttemptAction {
         attempts_used: u32,
         lockout_seconds_remaining: i64,
     },
+    DuressTriggered {
+        attempts_used: u32,
+    },
 }
 
 // =====================================================================
@@ -295,34 +292,12 @@ fn derive(
     salt: &[u8],
     params: &Argon2ParamsDto,
 ) -> Result<Zeroizing<[u8; ARGON_OUTPUT_LEN]>, String> {
-    CREDENTIAL_WORK_COUNT.fetch_add(1, Ordering::SeqCst);
     let argon = Argon2::new(Algorithm::Argon2id, Version::V0x13, params.to_params()?);
     let mut out = Zeroizing::new([0u8; ARGON_OUTPUT_LEN]);
     argon
         .hash_password_into(password.as_bytes(), salt, &mut out[..])
         .map_err(|e| format!("OSL: argon2: {e}"))?;
     Ok(out)
-}
-
-/// Observation point used by the shipping-boundary proof. It counts actual
-/// Argon2 credential derivations, so an unchanged value proves a cooldown
-/// refusal returned before credential work rather than merely hiding it.
-pub fn credential_work_count() -> u64 {
-    CREDENTIAL_WORK_COUNT.load(Ordering::SeqCst)
-}
-
-pub fn reset_credential_work_count() {
-    CREDENTIAL_WORK_COUNT.store(0, Ordering::SeqCst);
-}
-
-/// Serialize the read/check/update sequence. Without this boundary, two gate
-/// workers can both read attempt N and perform credential work during a race
-/// that should already have entered cooldown.
-pub fn lock_gate_submissions() -> Result<MutexGuard<'static, ()>, String> {
-    GATE_SUBMISSION_MUTEX
-        .get_or_init(|| Mutex::new(()))
-        .lock()
-        .map_err(|_| "OSL password gate is unavailable".to_owned())
 }
 
 fn ct_eq(a: &[u8], b: &[u8]) -> bool {
@@ -537,22 +512,6 @@ fn read_marker(dir: &Path) -> Result<PasswordMarker, String> {
             marker.version
         ));
     }
-    keystore::secret_trace::record(
-        keystore::secret_trace::SecretOp::Read,
-        keystore::secret_trace::SecretClass::UnlockVerifier,
-        keystore::secret_trace::Protection::SaltedMemoryHardVerifier,
-        "ipc::main_password::read_marker",
-        &path,
-        bytes.len(),
-    );
-    keystore::secret_trace::record(
-        keystore::secret_trace::SecretOp::Read,
-        keystore::secret_trace::SecretClass::RecoveryPhrase,
-        keystore::secret_trace::Protection::UserDerivedAead,
-        "ipc::main_password::read_marker",
-        &path,
-        bytes.len(),
-    );
     Ok(marker)
 }
 
@@ -594,31 +553,6 @@ fn write_marker(dir: &Path, marker: &PasswordMarker) -> Result<(), String> {
     }
     if had_previous {
         let _ = std::fs::remove_file(&backup);
-    }
-    // TASK 5402: the marker holds the salted Argon2id unlock verifier AND the
-    // recovery phrase as AES-256-GCM ciphertext under the password-derived key.
-    // Two classes, one file, and the `.tmp`/`.bak` companions this writer
-    // creates carry both.
-    for (class, protection) in [
-        (
-            keystore::secret_trace::SecretClass::UnlockVerifier,
-            keystore::secret_trace::Protection::SaltedMemoryHardVerifier,
-        ),
-        (
-            keystore::secret_trace::SecretClass::RecoveryPhrase,
-            keystore::secret_trace::Protection::UserDerivedAead,
-        ),
-    ] {
-        for target in [&path, &temporary, &backup] {
-            keystore::secret_trace::record(
-                keystore::secret_trace::SecretOp::Write,
-                class,
-                protection,
-                "ipc::main_password::write_marker",
-                target,
-                bytes.len(),
-            );
-        }
     }
     Ok(())
 }
@@ -698,14 +632,6 @@ fn read_device_bound_fallback_key(dir: &Path) -> Result<DeviceBoundFallbackStora
             dto.version
         ));
     }
-    keystore::secret_trace::record(
-        keystore::secret_trace::SecretOp::Read,
-        keystore::secret_trace::SecretClass::AdjacentDataKey,
-        keystore::secret_trace::Protection::DeviceSealedAead,
-        "ipc::main_password::read_device_bound_fallback_key",
-        &path,
-        bytes.len(),
-    );
     Ok(dto)
 }
 
@@ -719,20 +645,7 @@ fn write_device_bound_fallback_key(
     let path = device_bound_fallback_key_path(dir);
     let bytes = serde_json::to_vec_pretty(dto)
         .map_err(|e| format!("OSL: serialize file_storage_key_fallback: {e}"))?;
-    std::fs::write(&path, &bytes).map_err(|e| format!("OSL: write {}: {e}", path.display()))?;
-    // TASK 5402: this file IS the adjacent data key that opens every
-    // `OSL-ENC1` state file in the same directory. It is only ever written
-    // sealed by the platform sealer; a plaintext key here would hand over
-    // everything the encryption beside it was protecting.
-    keystore::secret_trace::record(
-        keystore::secret_trace::SecretOp::Write,
-        keystore::secret_trace::SecretClass::AdjacentDataKey,
-        keystore::secret_trace::Protection::DeviceSealedAead,
-        "ipc::main_password::write_device_bound_fallback_key",
-        &path,
-        bytes.len(),
-    );
-    Ok(())
+    std::fs::write(&path, &bytes).map_err(|e| format!("OSL: write {}: {e}", path.display()))
 }
 
 fn reset_password_lockout(dir: &Path) -> Result<(), String> {
@@ -740,8 +653,6 @@ fn reset_password_lockout(dir: &Path) -> Result<(), String> {
     st.version = LOCKOUT_VERSION;
     st.password_failed_attempts = 0;
     st.password_locked_until = None;
-    st.password_cooldown_started_elapsed_ms = None;
-    st.password_cooldown_deadline_elapsed_ms = None;
     write_lockout(dir, &st)
 }
 
@@ -758,117 +669,6 @@ fn now_unix_secs() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
-}
-
-/// Elapsed milliseconds since this operating-system boot. Unlike wall time,
-/// this cannot be moved by date/time settings. Both shipping Windows and the
-/// Linux proof source include suspend time, and both values remain available
-/// across a full app/service process restart.
-pub fn elapsed_realtime_ms() -> Result<u64, String> {
-    #[cfg(windows)]
-    {
-        #[link(name = "kernel32")]
-        extern "system" {
-            fn GetTickCount64() -> u64;
-        }
-        // SAFETY: GetTickCount64 has no arguments or preconditions.
-        return Ok(unsafe { GetTickCount64() });
-    }
-
-    #[cfg(target_os = "linux")]
-    {
-        let uptime = std::fs::read_to_string("/proc/uptime")
-            .map_err(|error| format!("OSL: read elapsed-time authority: {error}"))?;
-        let value = uptime
-            .split_ascii_whitespace()
-            .next()
-            .ok_or_else(|| "OSL: elapsed-time authority was empty".to_owned())?;
-        let (seconds, fraction) = value.split_once('.').unwrap_or((value, ""));
-        let whole = seconds
-            .parse::<u64>()
-            .map_err(|_| "OSL: elapsed-time authority was invalid".to_owned())?;
-        let mut millis_text = fraction.chars().take(3).collect::<String>();
-        while millis_text.len() < 3 {
-            millis_text.push('0');
-        }
-        let millis = millis_text
-            .parse::<u64>()
-            .map_err(|_| "OSL: elapsed-time authority was invalid".to_owned())?;
-        return whole
-            .checked_mul(1_000)
-            .and_then(|value| value.checked_add(millis))
-            .ok_or_else(|| "OSL: elapsed-time authority overflowed".to_owned());
-    }
-
-    #[cfg(not(any(windows, target_os = "linux")))]
-    {
-        static PROCESS_EPOCH: OnceLock<Instant> = OnceLock::new();
-        Ok(PROCESS_EPOCH
-            .get_or_init(Instant::now)
-            .elapsed()
-            .as_millis()
-            .min(u128::from(u64::MAX)) as u64)
-    }
-}
-
-fn cooldown_remaining_millis_at(lock: &LockoutState, elapsed_ms: u64) -> u64 {
-    lock.password_cooldown_deadline_elapsed_ms
-        .unwrap_or(0)
-        .saturating_sub(elapsed_ms)
-}
-
-pub fn cooldown_remaining_seconds_at(lock: &LockoutState, elapsed_ms: u64) -> i64 {
-    let millis = cooldown_remaining_millis_at(lock, elapsed_ms);
-    if millis == 0 {
-        0
-    } else {
-        millis.div_ceil(1_000).min(i64::MAX as u64) as i64
-    }
-}
-
-/// Return a refusal before marker I/O or Argon2 work. A legacy state already
-/// at ten attempts but lacking the new elapsed deadline is upgraded by
-/// starting exactly one cooldown at the first submission after upgrade.
-pub fn refuse_or_prepare_gate_submission(
-    dir: &Path,
-    lock: &mut LockoutState,
-    elapsed_ms: u64,
-) -> Result<Option<(u32, i64)>, String> {
-    lock.version = LOCKOUT_VERSION;
-    lock.password_locked_until = None;
-    let remaining = cooldown_remaining_seconds_at(lock, elapsed_ms);
-    if remaining > 0 {
-        return Ok(Some((lock.password_failed_attempts, remaining)));
-    }
-
-    if lock.password_cooldown_deadline_elapsed_ms.is_some() {
-        // Preserve the count until a credential has actually authenticated.
-        // Locally treating it as nine means a post-boundary wrong password
-        // begins a new cooldown; no reset is written before authentication.
-        lock.password_cooldown_started_elapsed_ms = None;
-        lock.password_cooldown_deadline_elapsed_ms = None;
-        return Ok(None);
-    }
-
-    if lock.password_failed_attempts >= DURESS_WRONG_PASSWORD_ATTEMPT_LIMIT {
-        start_password_cooldown(lock, elapsed_ms)?;
-        write_lockout(dir, lock)?;
-        return Ok(Some((
-            lock.password_failed_attempts,
-            PASSWORD_COOLDOWN_SECONDS as i64,
-        )));
-    }
-    Ok(None)
-}
-
-fn start_password_cooldown(lock: &mut LockoutState, elapsed_ms: u64) -> Result<(), String> {
-    let deadline = elapsed_ms
-        .checked_add(PASSWORD_COOLDOWN_MILLIS)
-        .ok_or_else(|| "OSL: elapsed cooldown deadline overflowed".to_owned())?;
-    lock.password_cooldown_started_elapsed_ms = Some(elapsed_ms);
-    lock.password_cooldown_deadline_elapsed_ms = Some(deadline);
-    lock.password_locked_until = None;
-    Ok(())
 }
 
 // =====================================================================
@@ -897,8 +697,7 @@ fn phrase_lockout_secs(attempts: u32) -> i64 {
 }
 
 fn password_duress_triggered(attempts: u32) -> bool {
-    let _ = attempts;
-    false
+    attempts >= keystore::DEFAULT_FAILED_ATTEMPT_THRESHOLD
 }
 
 // =====================================================================
@@ -1282,20 +1081,20 @@ pub fn check_recovery_words(
 /// structured display — Tauri's command-error path always returns
 /// a flat string.
 pub fn verify_main_password(dir: &Path, password: &str) -> Result<(), String> {
-    let _gate = lock_gate_submissions()?;
     let mut state = read_lockout(dir);
     state.version = LOCKOUT_VERSION;
-    let elapsed_ms = elapsed_realtime_ms()?;
-    if let Some((attempts_used, remaining)) =
-        refuse_or_prepare_gate_submission(dir, &mut state, elapsed_ms)?
-    {
-        return Err(serde_json::to_string(&VerifyFailureDto {
-            ok: false,
-            attempts_used,
-            lockout_seconds_remaining: remaining,
-            duress_triggered: false,
-        })
-        .unwrap_or_else(|_| "OSL: cooldown active".to_string()));
+    let now = now_unix_secs();
+    // Honour an existing lockout window.
+    if let Some(until) = state.password_locked_until {
+        if now < until {
+            return Err(serde_json::to_string(&VerifyFailureDto {
+                ok: false,
+                attempts_used: state.password_failed_attempts,
+                lockout_seconds_remaining: until - now,
+                duress_triggered: password_duress_triggered(state.password_failed_attempts),
+            })
+            .unwrap_or_else(|_| "OSL: lockout active".to_string()));
+        }
     }
     // No marker → nothing to verify against. Caller shouldn't
     // reach this path unless something raced with marker removal.
@@ -1317,25 +1116,13 @@ pub fn verify_main_password(dir: &Path, password: &str) -> Result<(), String> {
             set_file_storage_key_after_main_password_unlock(*file_key);
             state.password_failed_attempts = 0;
             state.password_locked_until = None;
-            state.password_cooldown_started_elapsed_ms = None;
-            state.password_cooldown_deadline_elapsed_ms = None;
             let _ = write_lockout(dir, &state);
             Ok(())
         }
         Err(_) => {
-            let prior = if state.password_cooldown_deadline_elapsed_ms.is_some() {
-                DURESS_WRONG_PASSWORD_ATTEMPT_LIMIT - 1
-            } else {
-                state.password_failed_attempts
-            };
-            state.password_failed_attempts = prior.saturating_add(1);
-            let secs = if state.password_failed_attempts >= DURESS_WRONG_PASSWORD_ATTEMPT_LIMIT {
-                state.password_failed_attempts = DURESS_WRONG_PASSWORD_ATTEMPT_LIMIT;
-                start_password_cooldown(&mut state, elapsed_ms)?;
-                PASSWORD_COOLDOWN_SECONDS as i64
-            } else {
-                0
-            };
+            state.password_failed_attempts = state.password_failed_attempts.saturating_add(1);
+            let secs = password_lockout_secs(state.password_failed_attempts);
+            state.password_locked_until = if secs > 0 { Some(now + secs) } else { None };
             let _ = write_lockout(dir, &state);
             Err(serde_json::to_string(&VerifyFailureDto {
                 ok: false,
@@ -1357,7 +1144,6 @@ pub fn verify_recovery_phrase(
     dir: &Path,
     phrase: &str,
 ) -> Result<String, String> {
-    let _gate = lock_gate_submissions()?;
     let mut lock = read_lockout(dir);
     lock.version = LOCKOUT_VERSION;
     let now = now_unix_secs();
@@ -1449,13 +1235,6 @@ pub fn verify_recovery_phrase(
     }
     lock.phrase_failed_attempts = 0;
     lock.phrase_locked_until = None;
-    // A real recovery credential is the sole authenticated bypass for an
-    // active password cooldown. Clear it immediately; unrelated profile bytes
-    // and the password marker are untouched by this operation.
-    lock.password_failed_attempts = 0;
-    lock.password_locked_until = None;
-    lock.password_cooldown_started_elapsed_ms = None;
-    lock.password_cooldown_deadline_elapsed_ms = None;
     let _ = write_lockout(dir, &lock);
     // Issue a one-time token. AppState holds it; expires in 5 min.
     let token_bytes = random_bytes(24);
@@ -1549,50 +1328,35 @@ pub fn set_main_password_after_recovery(
 
 pub fn lockout_status(dir: &Path) -> LockoutStatusDto {
     let st = read_lockout(dir);
-    let now = now_unix_secs();
-    let remaining = elapsed_realtime_ms()
-        .map(|elapsed| cooldown_remaining_seconds_at(&st, elapsed))
-        .unwrap_or(PASSWORD_COOLDOWN_SECONDS as i64);
     LockoutStatusDto {
-        // Compatibility projection only. Enforcement never reads this wall
-        // timestamp; callers subtract `now` and receive elapsed-clock time.
-        password_locked_until: (remaining > 0).then_some(now.saturating_add(remaining)),
+        password_locked_until: st.password_locked_until,
         password_attempts_used: st.password_failed_attempts,
         phrase_locked_until: st.phrase_locked_until,
         phrase_attempts_used: st.phrase_failed_attempts,
-        now,
+        now: now_unix_secs(),
     }
 }
 
 pub fn record_wrong_password_attempt_or_duress(
-    _state: &AppState,
+    state: &AppState,
     lockout: &mut LockoutState,
-    elapsed_ms: u64,
+    now: i64,
 ) -> Result<WrongPasswordAttemptAction, String> {
     lockout.version = LOCKOUT_VERSION;
-    // An expired cooldown is not a successful authentication. Keep the
-    // durable count at ten until the comparison succeeds, while treating a
-    // post-boundary wrong credential as the next tenth failure.
-    let prior = if lockout.password_cooldown_deadline_elapsed_ms.is_some() {
-        DURESS_WRONG_PASSWORD_ATTEMPT_LIMIT - 1
-    } else {
-        lockout.password_failed_attempts
-    };
-    lockout.password_cooldown_started_elapsed_ms = None;
-    lockout.password_cooldown_deadline_elapsed_ms = None;
-    lockout.password_failed_attempts = prior.saturating_add(1);
-    lockout.password_locked_until = None;
-    if lockout.password_failed_attempts >= DURESS_WRONG_PASSWORD_ATTEMPT_LIMIT {
-        lockout.password_failed_attempts = DURESS_WRONG_PASSWORD_ATTEMPT_LIMIT;
-        start_password_cooldown(lockout, elapsed_ms)?;
-        return Ok(WrongPasswordAttemptAction::Wrong {
+    lockout.password_failed_attempts = lockout.password_failed_attempts.saturating_add(1);
+    if wrong_password_attempt_triggers_duress(lockout.password_failed_attempts) {
+        lockout.password_locked_until = None;
+        execute_gate_duress(state)?;
+        return Ok(WrongPasswordAttemptAction::DuressTriggered {
             attempts_used: lockout.password_failed_attempts,
-            lockout_seconds_remaining: PASSWORD_COOLDOWN_SECONDS as i64,
         });
     }
+
+    let secs = password_lockout_secs(lockout.password_failed_attempts);
+    lockout.password_locked_until = if secs > 0 { Some(now + secs) } else { None };
     Ok(WrongPasswordAttemptAction::Wrong {
         attempts_used: lockout.password_failed_attempts,
-        lockout_seconds_remaining: 0,
+        lockout_seconds_remaining: secs,
     })
 }
 
@@ -2180,7 +1944,6 @@ pub const AT_REST_STATE_FILES: &[&str] = &[
     "control_inbox_dead_letter.json",
     "friend_request_state.json",
     "private_contact_links.json",
-    "profile_ui_state_v1.json",
     // Sealed by `save_pending_friend_requests` (commands.rs). Omitting it here
     // would let a password change re-key the ten files above and leave this one
     // sealed under the OLD key -- the exact defect burned_scopes.json already
@@ -2439,42 +2202,22 @@ pub fn verify_gate_password_with_marker(
     Ok(GateMatch::Wrong)
 }
 
-/// Gate-side password verification with the shared persisted failure counter.
-/// The tenth consecutive wrong entry starts a non-destructive cooldown.
+/// Gate-side password verification with the shared persisted failure
+/// counter. The tenth consecutive wrong entry triggers duress immediately.
 pub fn verify_gate_password_attempt(
     dir: &Path,
     password: &str,
 ) -> Result<GatePasswordAttemptResult, String> {
-    verify_gate_password_attempt_at_elapsed(dir, password, elapsed_realtime_ms()?)
-}
-
-/// Same shipping state machine with an explicit independent elapsed-time
-/// observation. This exists so the boundary proof can sample 899,999 ms and
-/// 900,000 ms without waiting fifteen wall-clock minutes or changing the host
-/// clock. The enforcement logic is otherwise identical.
-pub fn verify_gate_password_attempt_at_elapsed(
-    dir: &Path,
-    password: &str,
-    elapsed_ms: u64,
-) -> Result<GatePasswordAttemptResult, String> {
-    let _gate = lock_gate_submissions()?;
-    verify_gate_password_attempt_at_elapsed_locked(dir, password, elapsed_ms)
-}
-
-fn verify_gate_password_attempt_at_elapsed_locked(
-    dir: &Path,
-    password: &str,
-    elapsed_ms: u64,
-) -> Result<GatePasswordAttemptResult, String> {
     let mut lock = read_lockout(dir);
     lock.version = LOCKOUT_VERSION;
-    if let Some((attempts_used, lockout_seconds_remaining)) =
-        refuse_or_prepare_gate_submission(dir, &mut lock, elapsed_ms)?
-    {
-        return Ok(GatePasswordAttemptResult::Wrong {
-            attempts_used,
-            lockout_seconds_remaining,
-        });
+    let now = now_unix_secs();
+    if let Some(until) = lock.password_locked_until {
+        if now < until {
+            return Ok(GatePasswordAttemptResult::Wrong {
+                attempts_used: lock.password_failed_attempts,
+                lockout_seconds_remaining: until - now,
+            });
+        }
     }
 
     let marker = read_marker(dir)?;
@@ -2483,58 +2226,50 @@ fn verify_gate_password_attempt_at_elapsed_locked(
             set_file_storage_key_after_main_password_unlock(file_key);
             lock.password_failed_attempts = 0;
             lock.password_locked_until = None;
-            lock.password_cooldown_started_elapsed_ms = None;
-            lock.password_cooldown_deadline_elapsed_ms = None;
             let _ = write_lockout(dir, &lock);
             Ok(GatePasswordAttemptResult::Main(file_key))
         }
         GateMatch::Stealth => {
             lock.password_failed_attempts = 0;
             lock.password_locked_until = None;
-            lock.password_cooldown_started_elapsed_ms = None;
-            lock.password_cooldown_deadline_elapsed_ms = None;
             let _ = write_lockout(dir, &lock);
             Ok(GatePasswordAttemptResult::Stealth)
         }
         GateMatch::Burn => {
             lock.password_failed_attempts = 0;
             lock.password_locked_until = None;
-            lock.password_cooldown_started_elapsed_ms = None;
-            lock.password_cooldown_deadline_elapsed_ms = None;
             let _ = write_lockout(dir, &lock);
             Ok(GatePasswordAttemptResult::Burn)
         }
         GateMatch::Duress => {
             lock.password_failed_attempts = 0;
             lock.password_locked_until = None;
-            lock.password_cooldown_started_elapsed_ms = None;
-            lock.password_cooldown_deadline_elapsed_ms = None;
             let _ = write_lockout(dir, &lock);
             set_file_storage_key(None);
             burn_wipe_all(dir)?;
             Ok(GatePasswordAttemptResult::Duress { attempts_used: 0 })
         }
-        GateMatch::Wrong => record_wrong_gate_password_attempt(dir, &mut lock, elapsed_ms),
+        GateMatch::Wrong => record_wrong_gate_password_attempt(dir, &mut lock, now),
     }
 }
 
 fn record_wrong_gate_password_attempt(
     dir: &Path,
     lock: &mut LockoutState,
-    elapsed_ms: u64,
+    now: i64,
 ) -> Result<GatePasswordAttemptResult, String> {
     lock.password_failed_attempts = lock.password_failed_attempts.saturating_add(1);
-    let attempts_used = lock
-        .password_failed_attempts
-        .min(DURESS_WRONG_PASSWORD_ATTEMPT_LIMIT);
-    lock.password_failed_attempts = attempts_used;
-    let secs = if attempts_used >= DURESS_WRONG_PASSWORD_ATTEMPT_LIMIT {
-        start_password_cooldown(lock, elapsed_ms)?;
-        PASSWORD_COOLDOWN_SECONDS as i64
-    } else {
+    let attempts_used = lock.password_failed_attempts;
+    if attempts_used >= DURESS_FAILED_PASSWORD_ATTEMPT_THRESHOLD {
         lock.password_locked_until = None;
-        0
-    };
+        let _ = write_lockout(dir, lock);
+        set_file_storage_key(None);
+        burn_wipe_all(dir)?;
+        return Ok(GatePasswordAttemptResult::Duress { attempts_used });
+    }
+
+    let secs = password_lockout_secs(attempts_used);
+    lock.password_locked_until = if secs > 0 { Some(now + secs) } else { None };
     let _ = write_lockout(dir, lock);
     Ok(GatePasswordAttemptResult::Wrong {
         attempts_used,
@@ -3031,7 +2766,7 @@ mod password_policy_tests {
     }
 
     #[test]
-    fn record_wrong_password_attempt_starts_non_destructive_cooldown_at_threshold() {
+    fn record_wrong_password_attempt_triggers_duress_at_threshold() {
         // Serialize: this test mutates the PROCESS-GLOBAL file storage key.
         // CI runs `cargo test --workspace` (N threads, ONE process) while the
         // local gate runs nextest --test-threads=1 (a process per test), so an
@@ -3053,7 +2788,7 @@ mod password_policy_tests {
         std::fs::write(&identity_file, b"identity").unwrap();
         std::fs::write(&password_file, b"password").unwrap();
         std::fs::write(&prekey_file, b"prekeys").unwrap();
-        let now = elapsed_realtime_ms().unwrap();
+        let now = now_unix_secs();
         let mut lock = LockoutState {
             version: LOCKOUT_VERSION,
             password_failed_attempts: DURESS_WRONG_PASSWORD_ATTEMPT_LIMIT - 2,
@@ -3065,7 +2800,9 @@ mod password_policy_tests {
             record_wrong_password_attempt_or_duress(&state, &mut lock, now).unwrap(),
             WrongPasswordAttemptAction::Wrong {
                 attempts_used: DURESS_WRONG_PASSWORD_ATTEMPT_LIMIT - 1,
-                lockout_seconds_remaining: 0,
+                lockout_seconds_remaining: password_lockout_secs(
+                    DURESS_WRONG_PASSWORD_ATTEMPT_LIMIT - 1
+                ),
             },
             "the ninth wrong password must not trigger duress early"
         );
@@ -3074,28 +2811,30 @@ mod password_policy_tests {
         assert!(prekey_file.exists());
         assert_eq!(get_file_storage_key(), Some([0x55; 32]));
 
+        lock.password_locked_until = Some(now - 1);
         assert_eq!(
             record_wrong_password_attempt_or_duress(&state, &mut lock, now).unwrap(),
-            WrongPasswordAttemptAction::Wrong {
+            WrongPasswordAttemptAction::DuressTriggered {
                 attempts_used: DURESS_WRONG_PASSWORD_ATTEMPT_LIMIT,
-                lockout_seconds_remaining: PASSWORD_COOLDOWN_SECONDS as i64,
             },
-            "the tenth wrong password must start the cooldown"
+            "the tenth wrong password must trigger the production duress engine"
         );
 
         assert_eq!(
             lock.password_failed_attempts,
             DURESS_WRONG_PASSWORD_ATTEMPT_LIMIT
         );
+        assert_eq!(lock.password_locked_until, None);
+        assert!(!identity_file.exists());
+        assert!(!password_file.exists());
+        assert!(!prekey_file.exists());
         assert_eq!(
-            lock.password_cooldown_deadline_elapsed_ms,
-            Some(now + PASSWORD_COOLDOWN_MILLIS)
+            get_file_storage_key(),
+            None,
+            "duress must clear the live storage key"
         );
-        assert!(identity_file.exists());
-        assert!(password_file.exists());
-        assert!(prekey_file.exists());
-        assert_eq!(get_file_storage_key(), Some([0x55; 32]));
-        assert!(state.has_identity());
+        assert!(!state.has_identity());
+        assert!(!state.has_prekey_state());
     }
 
     #[test]
@@ -3135,7 +2874,7 @@ mod password_policy_tests {
     }
 
     #[test]
-    fn gate_wrong_password_threshold_reports_cooldown_and_preserves_profile() {
+    fn gate_wrong_password_threshold_reports_duress_and_runs_cleanup() {
         struct OverrideReset;
         impl Drop for OverrideReset {
             fn drop(&mut self) {
@@ -3184,15 +2923,11 @@ mod password_policy_tests {
             crate::commands::cmd_osl_verify_gate_password(&state, "wrong-password".to_owned())
                 .unwrap();
 
-        assert_eq!(result.result, "wrong");
+        assert_eq!(result.result, "duress");
         assert_eq!(result.attempts_used, DURESS_WRONG_PASSWORD_ATTEMPT_LIMIT);
-        assert_eq!(
-            result.lockout_seconds_remaining,
-            PASSWORD_COOLDOWN_SECONDS as i64
-        );
-        assert!(account_dir.join("identity.json").exists());
-        assert!(account_dir.join("prekeys.json").exists());
-        assert!(base_dir.join("password_marker.json").exists());
+        assert!(!account_dir.join("identity.json").exists());
+        assert!(!account_dir.join("prekeys.json").exists());
+        assert!(!base_dir.join("password_marker.json").exists());
     }
 
     #[test]
@@ -3328,13 +3063,13 @@ mod password_policy_tests {
     }
 
     #[test]
-    fn gate_attempt_tenth_wrong_password_preserves_marker_and_starts_cooldown() {
+    fn gate_attempt_tenth_wrong_password_triggers_marker_duress_wipe() {
         let _serial = crate::test_process_globals::serialize();
         set_file_storage_key(None);
         let dir = tempfile::tempdir().unwrap();
         write_marker(dir.path(), &build_fast_test_marker(TEST_MAIN_PASSWORD)).unwrap();
 
-        for expected_attempt in 1..DURESS_WRONG_PASSWORD_ATTEMPT_LIMIT {
+        for expected_attempt in 1..DURESS_FAILED_PASSWORD_ATTEMPT_THRESHOLD {
             match verify_gate_password_attempt(dir.path(), "wrong-password").unwrap() {
                 GatePasswordAttemptResult::Wrong { attempts_used, .. } => {
                     assert_eq!(attempts_used, expected_attempt);
@@ -3349,34 +3084,30 @@ mod password_policy_tests {
         }
 
         match verify_gate_password_attempt(dir.path(), "wrong-password").unwrap() {
-            GatePasswordAttemptResult::Wrong {
-                attempts_used,
-                lockout_seconds_remaining,
-            } => {
-                assert_eq!(attempts_used, DURESS_WRONG_PASSWORD_ATTEMPT_LIMIT);
-                assert_eq!(lockout_seconds_remaining, PASSWORD_COOLDOWN_SECONDS as i64);
+            GatePasswordAttemptResult::Duress { attempts_used } => {
+                assert_eq!(attempts_used, DURESS_FAILED_PASSWORD_ATTEMPT_THRESHOLD);
             }
-            _ => panic!("the tenth wrong password attempt must start cooldown"),
+            _ => panic!("the tenth wrong password attempt must trigger duress"),
         }
         assert!(
-            marker_path(dir.path()).exists(),
-            "cooldown threshold must preserve the password marker"
+            !marker_path(dir.path()).exists(),
+            "duress threshold must wipe the password marker"
         );
         assert!(
-            lockout_path(dir.path()).exists(),
-            "cooldown threshold must persist the lockout state"
+            !lockout_path(dir.path()).exists(),
+            "duress threshold must wipe the persisted lockout state"
         );
         set_file_storage_key(None);
     }
 
     #[test]
-    fn tenth_consecutive_wrong_password_attempt_starts_cooldown() {
+    fn tenth_consecutive_wrong_password_attempt_triggers_duress() {
         let _serial = crate::test_process_globals::serialize();
         set_file_storage_key(None);
         let dir = tempfile::tempdir().unwrap();
         write_marker(dir.path(), &build_fast_test_marker(TEST_MAIN_PASSWORD)).unwrap();
 
-        for expected_attempt in 1..DURESS_WRONG_PASSWORD_ATTEMPT_LIMIT {
+        for expected_attempt in 1..DURESS_FAILED_PASSWORD_ATTEMPT_THRESHOLD {
             match verify_gate_password_attempt(dir.path(), "still-wrong").unwrap() {
                 GatePasswordAttemptResult::Wrong { attempts_used, .. } => {
                     assert_eq!(attempts_used, expected_attempt);
@@ -3392,18 +3123,14 @@ mod password_policy_tests {
         }
 
         match verify_gate_password_attempt(dir.path(), "still-wrong").unwrap() {
-            GatePasswordAttemptResult::Wrong {
-                attempts_used,
-                lockout_seconds_remaining,
-            } => {
-                assert_eq!(attempts_used, DURESS_WRONG_PASSWORD_ATTEMPT_LIMIT);
-                assert_eq!(lockout_seconds_remaining, PASSWORD_COOLDOWN_SECONDS as i64);
+            GatePasswordAttemptResult::Duress { attempts_used } => {
+                assert_eq!(attempts_used, DURESS_FAILED_PASSWORD_ATTEMPT_THRESHOLD);
             }
-            _ => panic!("the tenth consecutive wrong password must start cooldown"),
+            _ => panic!("the tenth consecutive wrong password must trigger duress"),
         }
         assert!(
-            marker_path(dir.path()).exists(),
-            "cooldown must preserve the marker on the threshold attempt"
+            !marker_path(dir.path()).exists(),
+            "duress must destroy the marker on the threshold attempt"
         );
         set_file_storage_key(None);
     }
@@ -3425,7 +3152,6 @@ mod password_policy_tests {
                 password_locked_until: Some(now - 1),
                 phrase_failed_attempts: 0,
                 phrase_locked_until: None,
-                ..Default::default()
             },
         )
         .expect("pre-tenth lockout state can be seeded");
@@ -3489,7 +3215,7 @@ mod password_policy_tests {
         let dir = tempfile::tempdir().unwrap();
         write_marker(dir.path(), &build_fast_test_marker(TEST_MAIN_PASSWORD)).unwrap();
 
-        for expected_attempt in 1..DURESS_WRONG_PASSWORD_ATTEMPT_LIMIT {
+        for expected_attempt in 1..DURESS_FAILED_PASSWORD_ATTEMPT_THRESHOLD {
             match verify_gate_password_attempt(dir.path(), "wrong-before-reset").unwrap() {
                 GatePasswordAttemptResult::Wrong { attempts_used, .. } => {
                     assert_eq!(attempts_used, expected_attempt);
@@ -3500,7 +3226,7 @@ mod password_policy_tests {
         }
         assert_eq!(
             read_lockout(dir.path()).password_failed_attempts,
-            DURESS_WRONG_PASSWORD_ATTEMPT_LIMIT - 1
+            DURESS_FAILED_PASSWORD_ATTEMPT_THRESHOLD - 1
         );
 
         match verify_gate_password_attempt(dir.path(), TEST_MAIN_PASSWORD).unwrap() {
@@ -3518,7 +3244,7 @@ mod password_policy_tests {
         );
         assert!(
             marker_path(dir.path()).exists(),
-            "correct password before the tenth wrong attempt must preserve the marker"
+            "correct password before the tenth wrong attempt must not trigger duress"
         );
 
         match verify_gate_password_attempt(dir.path(), "wrong-after-reset").unwrap() {
@@ -3608,7 +3334,7 @@ mod password_policy_tests {
     }
 
     #[test]
-    fn verify_main_password_tenth_consecutive_wrong_attempt_starts_cooldown_without_duress() {
+    fn verify_main_password_tenth_consecutive_wrong_attempt_sets_duress_flag() {
         let dir = tempfile::tempdir().unwrap();
         let salt = [0xA7; SALT_LEN];
         let params = Argon2ParamsDto {
@@ -3653,59 +3379,15 @@ mod password_policy_tests {
             failure.attempts_used,
             keystore::DEFAULT_FAILED_ATTEMPT_THRESHOLD
         );
-        assert!(!failure.duress_triggered);
-        assert_eq!(
-            failure.lockout_seconds_remaining,
-            PASSWORD_COOLDOWN_SECONDS as i64
+        assert!(
+            failure.duress_triggered,
+            "the 10th consecutive wrong password attempt must trigger threshold duress"
         );
 
         let lock = read_lockout(dir.path());
         assert_eq!(
             lock.password_failed_attempts,
             keystore::DEFAULT_FAILED_ATTEMPT_THRESHOLD
-        );
-        assert!(lock.password_cooldown_deadline_elapsed_ms.is_some());
-    }
-
-    #[test]
-    fn task_0337_exact_burn_password_opens_confirmation_and_near_match_is_harmless() {
-        let account_dir = tempfile::tempdir().expect("disposable account directory");
-        let _guard = use_temp_config_dir(account_dir.path());
-        let disposable_account = "osl_task_0337_disposable";
-        let account_file = account_dir.path().join("identity.json");
-        std::fs::write(&account_file, disposable_account).expect("write disposable account");
-
-        let main_password = "main-pass-0337";
-        let saved_burn_password = "burn-0337-password";
-        let near_match = "burn-0337-passw0rd";
-        set_main_password(account_dir.path(), main_password).expect("save main password");
-        set_burn_password(account_dir.path(), main_password, saved_burn_password)
-            .expect("save exact burn password");
-
-        let marker = read_marker_pub(account_dir.path()).expect("read saved password marker");
-        assert!(marker.burn_password_hash_b64.is_some());
-        let mut burn_requests = 0_u32;
-
-        let near_result = verify_gate_password_with_marker(&marker, near_match)
-            .expect("verify harmless near-match");
-        assert!(matches!(near_result, GateMatch::Wrong));
-        assert_eq!(burn_requests, 0);
-        assert_eq!(
-            std::fs::read_to_string(&account_file).unwrap(),
-            disposable_account
-        );
-        assert!(account_dir.path().join("password_marker.json").exists());
-        println!(
-            "TASK0337_MARKER_NEAR_MATCH password={near_match} role=wrong refused=true disposable_accounts=1 burn_requests={burn_requests} page=unlock"
-        );
-
-        let exact_result = verify_gate_password_with_marker(&marker, saved_burn_password)
-            .expect("verify exact saved burn password");
-        assert!(matches!(exact_result, GateMatch::Burn));
-        burn_requests += 1;
-        assert_eq!(burn_requests, 1);
-        println!(
-            "TASK0337_MARKER_BURN password={saved_burn_password} role=burn burn_requests={burn_requests} burn_confirmation=opened"
         );
     }
 
@@ -3794,7 +3476,7 @@ mod password_policy_tests {
         }
 
         #[test]
-        fn tenth_wrong_password_attempt_starts_non_destructive_cooldown() {
+        fn tenth_wrong_password_attempt_triggers_duress() {
             // Serialize: this test mutates the PROCESS-GLOBAL file storage key.
             // CI runs `cargo test --workspace` (N threads, ONE process) while the
             // local gate runs nextest --test-threads=1 (a process per test), so an
@@ -3818,7 +3500,7 @@ mod password_policy_tests {
             std::fs::write(&password_file, b"password").unwrap();
             std::fs::write(&prekey_file, b"prekeys").unwrap();
 
-            let now = elapsed_realtime_ms().unwrap();
+            let now = now_unix_secs();
             let mut lock = LockoutState {
                 version: LOCKOUT_VERSION,
                 password_failed_attempts: DURESS_WRONG_PASSWORD_ATTEMPT_LIMIT - 2,
@@ -3830,7 +3512,9 @@ mod password_policy_tests {
                 record_wrong_password_attempt_or_duress(&state, &mut lock, now).unwrap(),
                 WrongPasswordAttemptAction::Wrong {
                     attempts_used: DURESS_WRONG_PASSWORD_ATTEMPT_LIMIT - 1,
-                    lockout_seconds_remaining: 0,
+                    lockout_seconds_remaining: password_lockout_secs(
+                        DURESS_WRONG_PASSWORD_ATTEMPT_LIMIT - 1
+                    ),
                 },
                 "the ninth wrong password attempt must not trigger duress"
             );
@@ -3841,21 +3525,21 @@ mod password_policy_tests {
 
             assert_eq!(
                 record_wrong_password_attempt_or_duress(&state, &mut lock, now).unwrap(),
-                WrongPasswordAttemptAction::Wrong {
+                WrongPasswordAttemptAction::DuressTriggered {
                     attempts_used: DURESS_WRONG_PASSWORD_ATTEMPT_LIMIT,
-                    lockout_seconds_remaining: PASSWORD_COOLDOWN_SECONDS as i64,
                 },
-                "the tenth wrong password attempt must start cooldown"
+                "the tenth wrong password attempt must trigger duress"
             );
             assert_eq!(
                 lock.password_failed_attempts, DURESS_WRONG_PASSWORD_ATTEMPT_LIMIT,
-                "cooldown must be driven by the real accumulated attempt counter"
+                "duress must be driven by the real accumulated attempt counter"
             );
-            assert!(identity_file.exists());
-            assert!(password_file.exists());
-            assert!(prekey_file.exists());
-            assert_eq!(get_file_storage_key(), Some([0x62; 32]));
-            assert!(state.has_identity());
+            assert!(!identity_file.exists());
+            assert!(!password_file.exists());
+            assert!(!prekey_file.exists());
+            assert_eq!(get_file_storage_key(), None);
+            assert!(!state.has_identity());
+            assert!(!state.has_prekey_state());
         }
     }
 }

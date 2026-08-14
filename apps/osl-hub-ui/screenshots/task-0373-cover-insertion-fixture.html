@@ -12,7 +12,7 @@
       globalThis.process = { env: { VITEST: "true" } };
       const { __oslHubUiTest } = await import("/src/main.ts");
       __oslHubUiTest.reset({ route: "onboarding", onboardingRoute: "cover" });
-      document.querySelector("#app").innerHTML = __oslHubUiTest.renderOnboardingCaptureShell("cover");
+      __oslHubUiTest.renderOnboardingSetupShell("cover");
       document.documentElement.dataset.task0373 = "ready";
     </script>
   </body>

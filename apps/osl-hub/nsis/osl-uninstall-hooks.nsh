@@ -49,7 +49,7 @@ local_backup_done:
 !macro NSIS_HOOK_PREUNINSTALL
   IfSilent remove_backup 0
   MessageBox MB_YESNO|MB_ICONQUESTION \
-    "Write one OSL identity backup to Documents before uninstall removes local data? This is one same-user copy, not independent recovery. Its provider, region, account, control plane, administrator, credential and key authority are those of Documents; isolation and guaranteed recovery are 0. A shared failure can lose both the identity and copy. Hosted task 6582 is held under T7 because genuine disaster isolation is wanted but not funded or operated for this release." \
+    "Write one OSL identity backup to your Documents folder before uninstall removes local OSL data?" \
     IDYES keep_backup IDNO remove_backup
 
 keep_backup:
@@ -61,7 +61,7 @@ keep_backup:
 
 remove_backup:
   Delete "$DOCUMENTS\OSL identity backup.json"
-    "Write one OSL local data backup to Documents before uninstall removes local data? This is one same-user copy of identity and local messages, not independent recovery. Its provider, region, account, control plane, administrator, credential and key authority are those of Documents; isolation and guaranteed recovery are 0. A shared failure can lose both installed data and the copy. Hosted task 6582 is held under T7 because genuine disaster isolation is wanted but not funded or operated for this release." \
+    "Write one OSL local data backup to your Documents folder before uninstall removes local OSL data?" \
     IDYES keep_backup IDNO remove_backup
 
 keep_backup:

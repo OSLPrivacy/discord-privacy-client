@@ -11,7 +11,7 @@ on:
     # about `main` only, while `integrate/first-usable` is the branch we
     # integrate into and cut builds from. The keyserver bundle step below was
     # added to catch D-162 and could not run at all until this line existed.
-    branches: [main, 'integration/**']
+    branches: [main, 'integrate/**']
   pull_request:
   # D-195: the only trigger a commit message cannot suppress. `[skip ci]` in a
   # commit subject cancels `push` and `pull_request` outright; see the ruling in

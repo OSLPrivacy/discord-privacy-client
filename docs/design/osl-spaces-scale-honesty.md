@@ -1,16 +1,19 @@
 # Spaces scale honesty
 
-Status: **historical capacity analysis, superseded for membership policy by owner ruling T4.**
+Status: **design constraint; not public copy and not a shipped Spaces capability.**
 
-## Current product sentence
+## The public sentence, when Spaces ships
 
-> Large Enclaves can take time to update. Removing someone is not immediate
-> while OSL gives every remaining member new authority.
+> Spaces have a membership limit because every message is delivered separately to
+> each recipient device. When members are offline, their copies remain in the
+> relay until they reconnect, so the limit protects reliable delivery for Spaces
+> and direct messages instead of silently degrading either.
 
-The delay warning begins at measured N. N is a warning/progress threshold, not
-an admission limit or refusal boundary.
+This sentence may ship only with a measured member limit and the refusal that
+names that limit and this reason. Until then, D68 prohibits a present-tense
+Spaces capability claim.
 
-## Why progress is necessary
+## Why a limit is necessary
 
 The current fan-out model is one relay blob for every recipient device plus one
 manifest blob. The frozen-storage analysis used the following deliberately
@@ -34,15 +37,18 @@ queue and retry; undelivered messages must not be evicted to make room.
 
 ## What this does and does not set
 
-This note sets **no numeric member cap**. Measurements determine only when the
-plain delay warning and truthful re-key progress become mandatory. If later
-measurements differ, N changes; admission does not.
+This note sets **no numeric member cap**. A numeric cap chosen from a product
+wish would be dishonest: it must come from T21-B1's storage arithmetic, T21-G9's
+single refusal path, and T21-K4's measurements of rows, bytes, PUTs, grants,
+and manifest size at 5, 20, and 100 members. If those measurements differ from
+the arithmetic above, the measurements win and this note and the cap must
+change together.
 
-The storage owner must still decide the row budget and
+Before a cap can ship, the storage owner must also decide the row budget and
 whether Space fan-out has its own pool. Without a separate pool, a busy Space
 can fill the shared undelivered pool and prevent all direct messages from
-sending. Backpressure may delay sends, but it must not reject Enclave
-membership or silently deliver a degraded protected message.
+sending. The product must refuse the next join over the measured limit; it must
+never deliver a degraded Space message or call one protected.
 
 ## Sources
 

@@ -77,24 +77,24 @@ fn unrecoverable_fixture_exits_1_before_any_post_command() {
 }
 
 #[test]
-fn image_quality_check_is_before_provider_post_command() {
-    let source = include_str!("../../../apps/osl-hub/src/hub_command_surface.rs");
+fn quality_check_is_before_discord_post_command_in_atomic_send() {
+    let source = include_str!("../../../apps/osl-hub/src/main.rs");
     let send_start = source
-        .find("pub fn direct_photo_post_after_image_quality_check<")
-        .expect("image-hidden direct post command remains present");
+        .find("async fn send_native_discord_qa_atomic_text(")
+        .expect("atomic send command remains present");
     let send = &source[send_start..];
     let carrier_ready = send
-        .find("image_hidden_photo_command_copies(")
-        .expect("prepared image copies remain present");
+        .find("qa_discord_send_stage(\"send_carrier_text_ready\")")
+        .expect("carrier ready breadcrumb remains present");
     let quality_check = send
-        .find("check_quality(&copies)?;")
-        .expect("prepared image quality check is wired");
+        .find("read_back_prepared_native_overlay_post_copy(")
+        .expect("prepared post copy read-back check is wired");
     let refusal = send
-        .find("provider_copies = ImageCopyCommandResult")
-        .expect("provider-boundary copy selection remains explicit");
+        .find("send_refused_carrier_pointer_unrecoverable")
+        .expect("unrecoverable pointer refusal is named");
     let post_command = send
-        .find("provider_post(&provider_copies)?")
-        .expect("provider post command remains present");
+        .find("composer.place_carrier(")
+        .expect("Discord post command remains present");
 
     println!("TASK0664_SOURCE_ORDER_CARRIER_READY={carrier_ready}");
     println!("TASK0664_SOURCE_ORDER_QUALITY_CHECK={quality_check}");

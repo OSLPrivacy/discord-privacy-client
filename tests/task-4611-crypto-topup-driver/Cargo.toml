@@ -1,9 +1,0 @@
-[package]
-name = "task-4611-crypto-topup-driver"
-version.workspace = true
-edition.workspace = true
-license.workspace = true
-publish = false
-
-[dependencies]
-ipc = { path = "../../crates/ipc" }

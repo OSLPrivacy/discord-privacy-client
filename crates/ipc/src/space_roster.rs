@@ -56,13 +56,6 @@ impl SpaceId {
     pub fn as_bytes(&self) -> &[u8; Self::LENGTH] {
         &self.0
     }
-
-    /// Rebuilds an identity this client previously persisted. It accepts no
-    /// account or founder input for the same reason [`Self::generate`] does
-    /// not: the bytes have to have been CSPRNG output when they were created.
-    pub const fn from_persisted(bytes: [u8; Self::LENGTH]) -> Self {
-        Self(bytes)
-    }
 }
 
 /// Monotonic membership version for a Space.
@@ -79,16 +72,6 @@ impl SpaceEpoch {
     /// Returns the epoch as a value suitable for local roster persistence.
     pub const fn get(self) -> u64 {
         self.0
-    }
-
-    /// Rebuilds an epoch from a value this client previously persisted.
-    ///
-    /// This is not a way to move a Space forward: [`MembershipEventLog::apply`]
-    /// still refuses anything other than the exact successor of its own
-    /// high-water mark, so a reloaded event replays into the same ladder it
-    /// was written from.
-    pub const fn from_persisted(value: u64) -> Self {
-        Self(value)
     }
 
     /// Advances exactly once for one membership change.
@@ -483,33 +466,6 @@ impl SignedMembershipEvent {
         match ed25519::verify(actor, &self.signing_bytes(), &signature) {
             Ok(true) => Ok(()),
             Ok(false) | Err(_) => Err(MembershipEventError::InvalidSignature),
-        }
-    }
-
-    /// The detached signature, so a client can persist a verified event and
-    /// re-verify it on reload instead of trusting a cached verdict.
-    pub fn signature_bytes(&self) -> &[u8; ed25519::SIGNATURE_SIZE] {
-        &self.signature
-    }
-
-    /// Rebuilds an event from persisted parts.
-    ///
-    /// The result carries no trust: it is exactly as unverified as an event
-    /// that just arrived, and still has to pass [`Self::verify`] against an
-    /// actor key the caller selected from its own roster.
-    pub fn from_parts(
-        space_id: SpaceId,
-        epoch: SpaceEpoch,
-        kind: MembershipEventKind,
-        subject: ed25519::PublicKey,
-        signature: [u8; ed25519::SIGNATURE_SIZE],
-    ) -> Self {
-        Self {
-            space_id,
-            epoch,
-            kind,
-            subject,
-            signature,
         }
     }
 

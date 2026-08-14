@@ -36,12 +36,6 @@ fn explicitly_enabled(name: &str) -> bool {
 
 #[tokio::main]
 async fn main() {
-    let _english_catalogue =
-        osl_crypto_watcher::english_catalogue_entry::load_packaged_service_catalogue()
-            .unwrap_or_else(|error| {
-                eprintln!("5205 service startup refusal: {error}");
-                std::process::exit(78);
-            });
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();

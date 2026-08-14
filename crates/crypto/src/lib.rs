@@ -66,7 +66,6 @@ pub mod ed25519;
 pub mod error;
 pub mod hkdf;
 pub mod ml_kem_768;
-pub mod media_room;
 pub mod padding;
 pub mod pointer;
 pub mod pqxdh;
@@ -76,7 +75,6 @@ pub mod sender_keys;
 /// View-once link lane for recipients who do not run OSL. Structurally
 /// weaker than OSL-to-OSL and always will be — see the module docs.
 pub mod view_once_link;
-pub mod voice_call_session;
 pub mod wire;
 pub mod x25519;
 

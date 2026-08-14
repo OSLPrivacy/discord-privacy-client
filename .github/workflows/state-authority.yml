@@ -8,7 +8,7 @@ on:
     # line it had never run anywhere, on any branch, ever. It is green on
     # integrate/first-usable today (measured 2026-08-04), which is the whole
     # reason it is worth switching on rather than quarantining.
-    branches: [main, 'integration/**']
+    branches: [main, 'integrate/**']
   # D-195: the only trigger a commit message cannot suppress. `[skip ci]` in a
   # commit subject cancels `push` and `pull_request` outright; see the ruling in
   # integration-gate.yml. This makes a skipped run re-gradable by hand.

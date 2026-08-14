@@ -1,1 +1,0 @@
-telemetry: independently verified not bound/used by candidate config

@@ -1,6 +1,7 @@
-# Spaces manifest sharding and decryption cost
+# Spaces manifest ceiling and decryption cost
 
-Status: **historical one-blob finding, resolved by bounded manifest sharding.**
+Status: **contract finding for T1; not a Spaces implementation or a product
+member limit.**
 
 ## Verified constraint
 
@@ -20,10 +21,12 @@ can contain only:
 floor(65,536 / 64) = 1,024 recipient-device entries
 ```
 
-Real framing has a positive size, so one shard holds strictly fewer than 1,024
-entries. `crates/ipc/src/group_manifest.rs` emits bounded shards and opens a
-logical manifest across all of them. The 64 KiB limit is therefore a per-object
-transport property, never a member ceiling.
+Real framing has a positive size, so the real maximum is strictly below 1,024.
+For five devices per member, the absolute upper bound is 204 members, and a
+roughly-200-member Space already consumes about 1,000 entries.  This is a
+**ceiling**, not an approved membership cap: the actual cap must also leave
+headroom for manifest framing, the measured sealed-entry encoding, padding, and
+the relay's row, byte, grant, and offline-member budgets from T21-B1/K4.
 
 ## Contract vector
 
@@ -36,7 +39,7 @@ transport property, never a member ceiling.
   "assumedDevicesPerMember": 5,
   "zeroFramingDeviceUpperBound": 1024,
   "positiveFramingDeviceUpperBound": 1023,
-  "manifestMembershipMaximum": null,
+  "approximateMembersAtFiveDevices": 200,
   "requiresBoundedEntrySelection": true
 }
 ```
@@ -74,10 +77,10 @@ T1 must add a manifest-entry selection rule before Spaces fan-out is built:
    manifest entries.
 3. The entry encoding and manifest framing must be measured at 5, 20, and 100
    members in T21-K4.  That measurement replaces the 48--64-byte planning
-   range and sizes operational backpressure; it does not create a join cap.
+   range, derives the actual member ceiling, and feeds the single G9 join cap.
 
-Enclaves must not claim a numeric member limit or accept a design that performs
-unbounded trial decryption within one shard.
+Until that resolution and measurement land, Spaces must not claim a numeric
+member limit or accept a design that performs unbounded trial decryption.
 
 ## Sources
 

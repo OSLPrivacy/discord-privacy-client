@@ -55,14 +55,15 @@ expiry work.
 The last case consumes 30% of the shared undelivered pool in one day. Copies
 for offline devices remain for the fixed seven-day TTL, and D16 forbids
 evicting them to make room for retained data. Without a separate community
-fan-out pool and durable backpressure, a busy community can exhaust the same
+fan-out pool and a measured join limit, a busy community can exhaust the same
 pool that direct messages need. This is a release gate, not a later capacity
 optimization.
 
-One manifest shard remains limited to 64 KiB. The implementation emits as many
-independently authenticated shards as the roster needs, so the object bound is
-not a member ceiling. Actual framing, grants, row capacity, and offline-member
-measurements remain operational inputs.
+The manifest also has a hard planning ceiling: its 64 KiB blob can hold fewer
+than 1,024 recipient-device entries at the contract's worst-case 64-byte entry
+size. Actual framing, entry encoding, grants, row capacity, and offline-member
+measurements must set the enforced member limit; 100 is an example, not an
+approved limit.
 
 ## Dependencies before implementation can start
 
@@ -84,8 +85,9 @@ measurements remain operational inputs.
 Commit to T21 as the implementation track, with **110--140 engineering hours
 after the listed gates**, and do not attach a calendar promise until the row
 pool decision and the 5/20/100-member measurements exist. The first shippable
-community scope needs durable fan-out backpressure and measured removal warning
-N; it must never silently fall back to shared copies or first-fetch-wins delivery.
+community scope needs an enforced, measured member cap and an explicit refusal
+path; it must never silently fall back to shared copies or first-fetch-wins
+delivery.
 
 ## Contract vector
 
@@ -118,7 +120,7 @@ N; it must never silently fall back to shared copies or first-fetch-wins deliver
   },
   "requires": [
     "separate-community-fanout-pool-or-equivalent-capacity-decision",
-    "measured-removal-progress-threshold",
+    "measured-and-enforced-member-limit",
     "replacement-native-sender-authentication",
     "per-device-roster"
   ]

@@ -1,1 +1,0 @@
-TASK 6092 PASS: messages=6 surfaces=8 text_canary_matches=0 file_fingerprint_matches=0 decryptions=6 second_open_refused=6 tamper_byte_flips=1

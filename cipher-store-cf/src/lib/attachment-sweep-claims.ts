@@ -35,7 +35,6 @@ export interface AttachmentSweepClaim {
   attempt_count: number;
   claim_origin: AttachmentClaimOrigin;
   storage_fence_state: AttachmentStorageFenceState;
-  terminal_at: number | null;
 }
 
 interface ClaimedIdentity {
@@ -47,7 +46,6 @@ interface ClaimedIdentity {
   attempt_count: number;
   claim_origin: AttachmentClaimOrigin;
   storage_fence_state: AttachmentStorageFenceState;
-  terminal_at: number | null;
 }
 
 export type AttachmentSweepCompletion =
@@ -80,10 +78,7 @@ export async function requireAttachmentSweepClaimSchema(env: Env): Promise<void>
   await env.DB.prepare(
     `SELECT attachment_id, worker_id, claim_token, lease_version,
             lease_expires_at, retry_not_before, attempt_count, last_claimed_at,
-            claim_origin, storage_fence_state, cleanup_policy,
-            unrecoverable_reason, unrecoverable_count, terminal_at,
-            report_status, report_attempts, report_next_attempt_at,
-            report_delivered_at
+            claim_origin, storage_fence_state
        FROM attachment_sweep_claims
       LIMIT 0`,
   ).all();
@@ -138,7 +133,6 @@ function validateClaim(claim: AttachmentSweepClaim): void {
     || !CLAIM_TOKEN_RE.test(claim.claim_token)
     || !Number.isSafeInteger(claim.lease_version)
     || claim.lease_version <= 0
-    || claim.terminal_at !== null
     || !["lineaged", "sweep", "completion", "predecessor_adoption"].includes(
       claim.claim_origin,
     )
@@ -188,7 +182,6 @@ export async function claimNextExpiredAttachment(
          ON recovery.singleton = 1
       WHERE candidate.expires_at <= ?
         AND candidate.state IN ('uploading', 'completing', 'ready')
-        AND existing.terminal_at IS NULL
         AND (
           candidate.state <> 'completing'
           OR existing.attachment_id IS NOT NULL
@@ -214,12 +207,11 @@ export async function claimNextExpiredAttachment(
        retry_not_before = 0,
        attempt_count = attachment_sweep_claims.attempt_count + 1,
        last_claimed_at = excluded.last_claimed_at
-     WHERE attachment_sweep_claims.terminal_at IS NULL
-       AND attachment_sweep_claims.lease_expires_at <= ?
+     WHERE attachment_sweep_claims.lease_expires_at <= ?
        AND attachment_sweep_claims.retry_not_before <= ?
      RETURNING attachment_id, worker_id, claim_token, lease_version,
                lease_expires_at, attempt_count, claim_origin,
-               storage_fence_state, terminal_at`,
+               storage_fence_state`,
   ).bind(
     workerId,
     claimToken,
@@ -246,8 +238,7 @@ export async function claimNextExpiredAttachment(
             claim.lease_expires_at,
             claim.attempt_count,
             claim.claim_origin,
-            claim.storage_fence_state,
-            claim.terminal_at
+            claim.storage_fence_state
        FROM attachment_objects AS object_row
        JOIN attachment_sweep_claims AS claim
          ON claim.attachment_id = object_row.id
@@ -297,7 +288,6 @@ export async function acquireAttachmentCompletionClaim(
       WHERE candidate.id = ?
         AND candidate.state = 'uploading'
         AND candidate.expires_at > ?
-        AND existing.terminal_at IS NULL
         AND (
           existing.attachment_id IS NULL
           OR (
@@ -313,12 +303,11 @@ export async function acquireAttachmentCompletionClaim(
        retry_not_before = 0,
        attempt_count = attachment_sweep_claims.attempt_count + 1,
        last_claimed_at = excluded.last_claimed_at
-     WHERE attachment_sweep_claims.terminal_at IS NULL
-       AND attachment_sweep_claims.lease_expires_at <= ?
+     WHERE attachment_sweep_claims.lease_expires_at <= ?
        AND attachment_sweep_claims.retry_not_before <= ?
      RETURNING attachment_id, worker_id, claim_token, lease_version,
                lease_expires_at, attempt_count, claim_origin,
-               storage_fence_state, terminal_at`,
+               storage_fence_state`,
   ).bind(
     workerId,
     claimToken,
@@ -384,8 +373,7 @@ export async function acquireAttachmentCompletionClaim(
             claim.lease_expires_at,
             claim.attempt_count,
             claim.claim_origin,
-            claim.storage_fence_state,
-            claim.terminal_at
+            claim.storage_fence_state
        FROM attachment_objects AS object_row
        JOIN attachment_sweep_claims AS claim
          ON claim.attachment_id = object_row.id

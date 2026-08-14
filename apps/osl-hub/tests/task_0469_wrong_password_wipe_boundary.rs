@@ -71,6 +71,26 @@ impl ProfileState {
         assert!(self.opsec, "opsec dir must survive wrong attempt {attempt}");
     }
 
+    fn assert_wiped(&self) {
+        assert!(!self.identity, "identity must be wiped on attempt 10");
+        assert!(
+            !self.password_marker,
+            "password marker must be wiped on attempt 10"
+        );
+        assert!(!self.prekeys, "prekeys must be wiped on attempt 10");
+        assert!(!self.store, "message store must be wiped on attempt 10");
+        assert!(
+            !self.anonymous_credentials,
+            "anonymous credentials must be wiped on attempt 10"
+        );
+        assert!(!self.boot, "boot.js must be stripped on attempt 10");
+        assert!(
+            !self.injection,
+            "injection.js must be stripped on attempt 10"
+        );
+        assert!(!self.opsec, "opsec dir must be stripped on attempt 10");
+    }
+
     fn summary(&self) -> String {
         format!(
             "identity={},password_marker={},prekeys={},store={},anonymous_credentials={},boot={},injection={},opsec={}",
@@ -87,7 +107,7 @@ impl ProfileState {
 }
 
 #[test]
-fn task_0469_superseded_tenth_wrong_unlock_preserves_profile_and_cools_down() {
+fn task_0469_nine_wrong_unlock_attempts_preserve_profile_tenth_wipes() {
     let temp = TempDir::new().expect("disposable profile tempdir");
     let base_dir = temp.path().join("base");
     let account_dir = temp.path().join("accounts").join("active");
@@ -147,17 +167,14 @@ fn task_0469_superseded_tenth_wrong_unlock_preserves_profile_and_cools_down() {
     }
 
     let tenth = cmd_osl_verify_gate_password(&state, "wrong-password-0469-10".to_owned())
-        .expect("tenth wrong unlock attempt returns cooldown");
-    assert_eq!(tenth.result, "wrong");
+        .expect("tenth wrong unlock attempt returns duress");
+    assert_eq!(tenth.result, "duress");
     assert_eq!(tenth.attempts_used, DURESS_WRONG_PASSWORD_ATTEMPT_LIMIT);
-    assert_eq!(
-        tenth.lockout_seconds_remaining,
-        ipc::main_password::PASSWORD_COOLDOWN_SECONDS as i64
-    );
+    assert_eq!(tenth.lockout_seconds_remaining, 0);
 
-    let preserved = ProfileState::read(&base_dir, &account_dir);
-    preserved.assert_preserved(10);
-    assert_eq!(get_file_storage_key(), Some([0x46; 32]));
+    let wiped = ProfileState::read(&base_dir, &account_dir);
+    wiped.assert_wiped();
+    assert_eq!(get_file_storage_key(), None);
 
     println!("TASK0469_DISPOSABLE_PROFILE_ROOT={}", temp.path().display());
     println!("TASK0469_PRESERVED_WRONG_ATTEMPTS={preserved_attempts}");
@@ -167,7 +184,7 @@ fn task_0469_superseded_tenth_wrong_unlock_preserves_profile_and_cools_down() {
         tenth.result, tenth.attempts_used, tenth.lockout_seconds_remaining
     );
     println!(
-        "TASK0469_SUPERSEDED_NON_DESTRUCTIVE_RESULT={} file_storage_key=preserved",
-        preserved.summary()
+        "TASK0469_DOCUMENTED_LOCAL_WIPE_RESULT={} file_storage_key=none",
+        wiped.summary()
     );
 }

@@ -41,12 +41,6 @@ rand = { workspace = true }
 rand_core = { workspace = true }
 serde = { workspace = true }
 serde_bytes = { workspace = true }
-# The media-room wire format (`EncryptedMediaFrame::wire_bytes`) serialises with
-# serde_json in the LIBRARY, not in a test. It was declared only under
-# `[dev-dependencies]`, so `cargo test -p crypto` compiled and `cargo build -p
-# crypto` did not -- every consumer of this crate failed with three "unresolved
-# module or unlinked crate `serde_json`" errors.
-serde_json = { workspace = true }
 thiserror = { workspace = true }
 # Phase 9-A2: ratchet state persistence (mirror struct uses base64
 # strings for fixed-size byte fields to match peer_map.json convention).

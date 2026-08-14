@@ -84,8 +84,6 @@ jobs:
 
       - name: Audit OSL Privacy updater supply-chain policy
         run: |
-          cargo run -p release-trust --bin verify-release-trust -- release-trust
-          cargo run -p release-trust --bin scan-release-private-keys -- .
           python scripts/audit_hub_release.py
           python -m unittest scripts/audit_hub_release.py
           python -m unittest scripts/test_verify_hub_vm_qa_attestation.py

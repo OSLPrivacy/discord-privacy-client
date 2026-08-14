@@ -17,9 +17,9 @@ import {
   confirmAttachmentObjectAbsent,
   finalizeAttachmentReadyClaim,
   newAttachmentSweepWorkerId,
+  releaseAttachmentSweepClaimAfterFailure,
   requireAttachmentSweepClaimSchema,
 } from "./attachment-sweep-claims.js";
-import { recordAttachmentCleanupFailure } from "./retention-cleanup-recovery.js";
 import { MAX_LIVE_BLOB_ROWS } from "./blob-limits.js";
 import { R2PayloadStore } from "./payload-store.js";
 
@@ -264,12 +264,12 @@ export async function sweepExpiredAttachments(
       } else {
         result.completed += 1;
       }
-    } catch (error) {
+    } catch {
       result.failed += 1;
       // If this CAS itself fails, the still-active lease remains recoverable
       // after its short deadline. The current invocation still moves on; one
       // poisoned object cannot prevent unrelated claims from running.
-      await recordAttachmentCleanupFailure(env, claim, error, now)
+      await releaseAttachmentSweepClaimAfterFailure(env, claim, now)
         .catch(() => "stale");
     }
   }

@@ -78,7 +78,6 @@ interface CreatePasswordHarness {
   form: FakeElement;
   password: FakeElement;
   confirm: FakeElement;
-  noRecoverySecret: FakeElement;
   passwordEye: FakeElement;
   confirmEye: FakeElement;
   submitButton: FakeElement;
@@ -98,8 +97,6 @@ function buildCreatePasswordHarness(): CreatePasswordHarness {
   password.type = "password";
   const confirm = new FakeElement("INPUT", "identity-password-confirm");
   confirm.type = "password";
-  const noRecoverySecret = new FakeElement("INPUT", "identity-no-recovery-secret");
-  noRecoverySecret.type = "checkbox";
   const passwordEye = new FakeElement("BUTTON");
   passwordEye.dataset.passwordToggle = "identity-password";
   passwordEye.textContent = "Show password";
@@ -120,7 +117,6 @@ function buildCreatePasswordHarness(): CreatePasswordHarness {
     ["#identity-password-form", form],
     ["#identity-password", password],
     ["#identity-password-confirm", confirm],
-    ["#identity-no-recovery-secret", noRecoverySecret],
     ["#identity-password-submit", submitButton],
     ["#password-error", error],
   ]);
@@ -129,7 +125,6 @@ function buildCreatePasswordHarness(): CreatePasswordHarness {
     form,
     password,
     confirm,
-    noRecoverySecret,
     passwordEye,
     confirmEye,
     submitButton,
@@ -347,74 +342,6 @@ describe("TASK 0326 create-password buttons and bad match", () => {
     console.log(`TASK0326_MATCHING_LONG password=${longPassword} confirm=${longPassword} accounts_recorded=${commandCalls("create_hub_osl_identity").length} route=${ui.snapshot().onboardingRoute}`);
 
     expect(commandCalls("create_hub_osl_identity")).toHaveLength(1);
-    expect(ui.snapshot().onboardingRoute).toBe("recovery");
-  }, 30_000);
-
-  it("uses only the explicit no-recovery commands when that choice is selected", async () => {
-    const harness = buildCreatePasswordHarness();
-    const ui = await bindCreatePasswordHarness(harness);
-    const password = "correct horse battery staple";
-
-    harness.password.value = password;
-    harness.confirm.value = password;
-    harness.noRecoverySecret.checked = true;
-    await harness.password.dispatch("input");
-    await harness.confirm.dispatch("input");
-
-    mocks.invoke.mockImplementation(async (command: string, args?: unknown) => {
-      if (command === "create_hub_osl_identity_without_recovery") {
-        return {
-          userId: "osl_task0334a",
-          identityRecoveryPhrase: null,
-          storageMethod: "os-keyring",
-          passwordSetupRequired: true,
-        };
-      }
-      if (command === "setup_hub_main_password_without_recovery") {
-        expect(args).toEqual({ password });
-        return {
-          encryptedStateReloadComplete: true,
-          encryptedStateReloadIssueCount: 0,
-          readiness: passwordSetupResult().readiness,
-        };
-      }
-      if (command === "get_core_readiness") {
-        return readiness({
-          originalCoreLinked: true,
-          identityLoaded: true,
-          keyserverInitialised: true,
-          cloudRegistrationState: "registered",
-          groupSenderKeysEnabled: true,
-          remoteServiceHasNativeAccess: true,
-          passwordGateRequired: false,
-          unlocked: true,
-          activeOslUserId: "osl_task0334a",
-          bootstrapStatus: "ready",
-          storageMethod: "os-keyring",
-        });
-      }
-      if (command === "list_linked_services") return [];
-      if (command === "get_hub_password_role_status") return passwordRoleStatus();
-      if (command === "set_screenshot_protection") return true;
-      throw new Error(`unexpected command ${command}`);
-    });
-
-    await harness.submit();
-
-    const createWithoutRecovery = commandCalls("create_hub_osl_identity_without_recovery").length;
-    const setupWithoutRecovery = commandCalls("setup_hub_main_password_without_recovery").length;
-    const normalCreate = commandCalls("create_hub_osl_identity").length;
-    const normalPassword = commandCalls("setup_hub_main_password").length;
-    const recoveryStoreWrites = commandCalls("set_hub_recovery_kit_unsaved").length;
-    console.log(
-      `TASK0334A_NO_SECRET_UI create_without_recovery=${createWithoutRecovery} setup_without_recovery=${setupWithoutRecovery} normal_create=${normalCreate} normal_password=${normalPassword} recovery_store_writes=${recoveryStoreWrites} route=${ui.snapshot().onboardingRoute}`,
-    );
-
-    expect(createWithoutRecovery).toBe(1);
-    expect(setupWithoutRecovery).toBe(1);
-    expect(normalCreate).toBe(0);
-    expect(normalPassword).toBe(0);
-    expect(recoveryStoreWrites).toBe(0);
     expect(ui.snapshot().onboardingRoute).toBe("recovery");
   }, 30_000);
 });

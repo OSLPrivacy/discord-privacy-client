@@ -20,7 +20,6 @@ import { decodeBase64, isDiscordSnowflake, isHighEntropyRequestId, isNonEmptyBas
 import { verifySignedRequest } from "../lib/signed-request.js";
 import {
   USERNAME_FRESHNESS_MS,
-  USERNAME_RULES_MESSAGE,
   UsernameNotAnalyzable,
   usernameClaimMessage,
   usernameMoveMessage,
@@ -47,7 +46,7 @@ export async function handlePublicNameExactSearch(request: Request, env: Env): P
   catch { return badRequest("malformed JSON body"); }
   const keys = Object.keys(body).sort().join(",");
   if (keys !== "name") return badRequest("public name exact search must contain exactly name");
-  if (!validNormalizedUsername(body.name)) return badRequest(USERNAME_RULES_MESSAGE);
+  if (!validNormalizedUsername(body.name)) return badRequest("name must already be normalized");
   const row = await env.DB.prepare(
     `SELECT name, identity_fingerprint
        FROM public_name_directory
@@ -228,7 +227,7 @@ export async function handleUsernameLookup(request: Request, env: Env): Promise<
   // Exact lookup only. Rejecting non-canonical input prevents a supposedly
   // convenient lowercase transform from resolving a different identifier.
   if (!validNormalizedUsername(body.username)) {
-    return badRequest(USERNAME_RULES_MESSAGE);
+    return badRequest("username must already be normalized");
   }
   const row = await env.DB.prepare(
     "SELECT username, friend_code FROM username_directory WHERE username = ?",
@@ -241,7 +240,7 @@ export async function handleUsernameClaim(request: Request, env: Env): Promise<R
   let body: Record<string, unknown>;
   try { body = await request.json() as Record<string, unknown>; }
   catch { return badRequest("malformed JSON body"); }
-  if (!validNormalizedUsername(body.username)) return badRequest(USERNAME_RULES_MESSAGE);
+  if (!validNormalizedUsername(body.username)) return badRequest("username must already be normalized");
   if (!isProtocolId(body.user_id)) return badRequest("user_id invalid");
   if (typeof body.service_account_id !== "string" || !isDiscordSnowflake(body.service_account_id)) return badRequest("service_account_id must be a Discord snowflake");
   if (typeof body.friend_code !== "string" || body.friend_code.length < 24 || body.friend_code.length > 8199) return badRequest("friend_code invalid");

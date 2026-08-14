@@ -2,11 +2,9 @@
 ///
 /// Kept minimal on purpose -- no Stripe, no admin token, no
 /// keyserver-style secrets. The store accepts uploads from anyone
-/// (rate-limited by client address: atomically in D1 for writes and every
-/// ciphertext read); its data-minimisation posture rests on E2E ciphertext, short
-/// TTLs, and no per-blob app logs. The fetch allowance keeps only opaque
-/// address keys plus request ids/caller classes for one limiting window so its
-/// exact ceiling can be reconciled with independent edge and R2 observations.
+/// (rate-limited by client address: atomically in D1 for writes, best-effort in
+/// KV for reads); its data-minimisation posture rests on E2E ciphertext, short
+/// TTLs, and no per-blob app logs.
 
 export interface Env {
   /**
@@ -19,7 +17,7 @@ export interface Env {
   ATTACHMENTS: R2Bucket;
   /** Opaque, end-to-end encrypted message payloads, addressed by capability digest. */
   PAYLOADS: R2Bucket;
-  /** Legacy rollback binding; production admission no longer depends on KV. */
+  /** Read-bucket rate limiting only. Mutation buckets count in `DB`. */
   RATE_LIMIT: KVNamespace;
   /** Anonymous realtime wakeup sockets, one hibernatable Durable Object per connection. */
   PUSH_CONNECTION: DurableObjectNamespace;
@@ -33,15 +31,4 @@ export interface Env {
    * self-deleting file host. See `lib/link-grant.ts`.
    */
   LINK_GRANT_PUBKEY_B64?: string;
-  /** Existing owner-report Bot API credential, stored only as a Worker secret. */
-  TELEGRAM_BOT_TOKEN?: string;
-  /** Existing comma-separated Telegram owner/operator destination allowlist. */
-  TELEGRAM_OPERATOR_CHAT_IDS?: string;
-  /** Legacy single owner destination retained during deployment migration. */
-  TELEGRAM_ADMIN_CHAT_ID?: string;
-  /** Independent issuer keys for the only two lawful upload authorities. */
-  MONTHLY_UPLOAD_AUTHORITY_PUBKEY_B64?: string;
-  SOLD_UPLOAD_AUTHORITY_PUBKEY_B64?: string;
-  /** Enables deterministic crash hooks only in the task-specific workerd run. */
-  TASK_5215_TEST_MODE?: string;
 }

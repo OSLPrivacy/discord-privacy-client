@@ -968,15 +968,8 @@ async function renderIdentity() {
   recHint.textContent =
     "Moving to a new device? You need TWO things from the old device: its " +
     "12-word phrase AND its backup file (download it below). Enter the phrase, " +
-    "click Recover, and pick the backup file to attempt an import of its keys, " +
-    "contacts, settings, and message history. This is one user-chosen file, not " +
-    "an OSL-operated second copy. Its provider, region, account, control plane, " +
-    "administrator, credential, and key authority are those of the location you " +
-    "choose; OSL observes 0 independent isolation and guarantees 0 recovery. A " +
-    "shared failure on any axis, or loss or corruption of the file or phrase, can " +
-    "lose both active data and the backup. Hosted task 6582 is held under owner " +
-    "ruling T7 because genuine disaster isolation is wanted but not funded or " +
-    "operated for this release. Relaunch OSL after a successful import.";
+    "click Recover, and pick the backup file — this rebuilds the same account " +
+    "(keys + contacts + history) here. Relaunch OSL afterward.";
   pane.appendChild(recHint);
 
   const recInput = document.createElement("textarea");
@@ -1051,9 +1044,7 @@ async function renderIdentity() {
     "Download a single backup file containing this account's keys, contacts, " +
     "settings, and message history — all encrypted with your 12-word phrase. " +
     "To move to a new device, take this file + your phrase there and use " +
-    "\"Recover account\" above. Protect the file and phrase separately; this " +
-    "interface does not promise recovery or resistance to a compromised device, " +
-    "storage provider, account, administrator, credential, or key authority.";
+    "\"Recover account\" above. Safe to transfer; only your phrase decrypts it.";
   pane.appendChild(dataHint);
 
   const dlBtn = document.createElement("button");
@@ -1083,7 +1074,7 @@ async function renderIdentity() {
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
-      oslToast("Backup downloaded. Store the file and phrase separately; recovery is not guaranteed.");
+      oslToast("Backup downloaded. Move osl-account-backup.osl to your new device.");
     } catch (e) {
       oslToast("Download failed: " + (e && e.message ? e.message : e));
     }

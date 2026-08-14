@@ -1,5 +1,4 @@
 import type { HubFullCleanupResult } from "./adapters";
-import { DELETION_REFERENCE_DISCLOSURE } from "./feature-claims";
 
 export interface FreshStartCleanupPresentation {
   tone: "success" | "warning";
@@ -33,7 +32,7 @@ export function freshStartCleanupPresentation(result: HubFullCleanupResult): Fre
     return {
       tone: "warning",
       complete: false,
-      message: `The local OSL data in OSL's own storage was removed. Remote unregister was not acknowledged for ${unconfirmedRemote} identity ${unconfirmedRemote === 1 ? "record" : "records"}; no remote deletion success is being claimed. ${DELETION_REFERENCE_DISCLOSURE}`,
+      message: `The local OSL data in OSL's own storage was removed. Remote unregister was not acknowledged for ${unconfirmedRemote} identity ${unconfirmedRemote === 1 ? "record" : "records"}; no remote deletion success is being claimed.`,
     };
   }
 

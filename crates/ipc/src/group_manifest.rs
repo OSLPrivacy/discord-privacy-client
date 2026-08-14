@@ -5,8 +5,6 @@
 //! property: the first recipient's acknowledgement is a server-side no-op, so
 //! it cannot starve the rest of the group.
 
-use std::collections::BTreeSet;
-
 use crypto::aead::{self, Key, Nonce};
 
 use crate::transport::ObjectClass;
@@ -16,8 +14,6 @@ const HEADER_BYTES: usize = 3;
 const CAPABILITY_BYTES: usize = 16;
 const SEALED_ENTRY_BYTES: usize = aead::NONCE_SIZE + CAPABILITY_BYTES + aead::TAG_SIZE;
 const MANIFEST_AAD_LABEL: &[u8] = b"osl/group-manifest/v1";
-const SHARD_BYTES: usize = 64 * 1024;
-const ENTRIES_PER_SHARD: usize = (SHARD_BYTES - HEADER_BYTES) / SEALED_ENTRY_BYTES;
 
 /// Key material held by exactly one group recipient for opening that
 /// recipient's manifest entry.  It is deliberately separate from a
@@ -38,54 +34,18 @@ pub struct ManifestEntry<'a> {
     pub capability: [u8; CAPABILITY_BYTES],
 }
 
-/// A logical group manifest backed by as many independently uploadable blobs
-/// as its roster needs.  The transport bound applies to each shard, never to
-/// the whole recipient set.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct GroupManifest {
-    shards: Vec<Vec<u8>>,
-    recipient_count: usize,
-}
-
-impl GroupManifest {
-    /// Rebuild a logical manifest after its blobs have been fetched.
-    pub fn from_shards(shards: Vec<Vec<u8>>) -> Result<Self, GroupManifestError> {
-        if shards.is_empty() {
-            return Err(GroupManifestError::EmptyRecipients);
-        }
-        let mut recipient_count = 0usize;
-        for shard in &shards {
-            let count = parse_count(shard)?;
-            recipient_count = recipient_count
-                .checked_add(count)
-                .ok_or(GroupManifestError::Malformed)?;
-        }
-        Ok(Self {
-            shards,
-            recipient_count,
-        })
-    }
-
-    /// The bounded blobs to upload under independent transport capabilities.
-    pub fn shards(&self) -> &[Vec<u8>] {
-        &self.shards
-    }
-
-    pub const fn recipient_count(&self) -> usize {
-        self.recipient_count
-    }
-}
-
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]
 pub enum GroupManifestError {
-    #[error("a manifest requires at least one recipient")]
-    EmptyRecipients,
+    #[error("a manifest requires at least one recipient and at most {0}")]
+    RecipientCount(usize),
     #[error("a manifest must contain one distinct recipient key per entry")]
     DuplicateRecipient,
     #[error("manifest is malformed")]
     Malformed,
     #[error("manifest entry authentication failed")]
     Authentication,
+    #[error("manifest exceeds the cipher-store blob limit")]
+    TooLarge,
 }
 
 /// The object class that must accompany every manifest upload.  It is never
@@ -97,13 +57,17 @@ pub const fn object_class() -> ObjectClass {
 /// Build a padded manifest. Each entry receives an independent nonce and is
 /// sealed under that recipient's own key, so another member cannot recover
 /// the capability even though every member downloads the same blob.
-pub fn seal(entries: &[ManifestEntry<'_>]) -> Result<GroupManifest, GroupManifestError> {
-    if entries.is_empty() {
-        return Err(GroupManifestError::EmptyRecipients);
+pub fn seal(entries: &[ManifestEntry<'_>]) -> Result<Vec<u8>, GroupManifestError> {
+    let count = u16::try_from(entries.len())
+        .map_err(|_| GroupManifestError::RecipientCount(u16::MAX as usize))?;
+    if count == 0 {
+        return Err(GroupManifestError::RecipientCount(0));
     }
-    let mut recipient_keys = BTreeSet::new();
-    for entry in entries {
-        if !recipient_keys.insert(*entry.recipient_key.0.as_bytes()) {
+    for (index, entry) in entries.iter().enumerate() {
+        if entries[index + 1..]
+            .iter()
+            .any(|other| entry.recipient_key.0.as_bytes() == other.recipient_key.0.as_bytes())
+        {
             // Sharing a key would let one member open another member's
             // transport capability.  This is a send-time failure, never a
             // reason to silently collapse entries into a group-wide key.
@@ -111,16 +75,18 @@ pub fn seal(entries: &[ManifestEntry<'_>]) -> Result<GroupManifest, GroupManifes
         }
     }
 
-    let mut shards = Vec::with_capacity(entries.len().div_ceil(ENTRIES_PER_SHARD));
-    for shard_entries in entries.chunks(ENTRIES_PER_SHARD) {
-        shards.push(seal_shard(shard_entries)?);
+    let raw_len = HEADER_BYTES
+        .checked_add(
+            entries
+                .len()
+                .checked_mul(SEALED_ENTRY_BYTES)
+                .ok_or(GroupManifestError::TooLarge)?,
+        )
+        .ok_or(GroupManifestError::TooLarge)?;
+    if raw_len > 64 * 1024 {
+        return Err(GroupManifestError::TooLarge);
     }
-    GroupManifest::from_shards(shards)
-}
 
-fn seal_shard(entries: &[ManifestEntry<'_>]) -> Result<Vec<u8>, GroupManifestError> {
-    let count = u16::try_from(entries.len()).map_err(|_| GroupManifestError::Malformed)?;
-    let raw_len = HEADER_BYTES + entries.len() * SEALED_ENTRY_BYTES;
     let mut manifest = Vec::with_capacity(raw_len);
     manifest.push(VERSION);
     manifest.extend_from_slice(&count.to_be_bytes());
@@ -140,42 +106,45 @@ fn seal_shard(entries: &[ManifestEntry<'_>]) -> Result<Vec<u8>, GroupManifestErr
         manifest.extend_from_slice(&ciphertext);
     }
 
-    let padded = crate::transport_padding::pad_transport_object(manifest)
-        .ok_or(GroupManifestError::Malformed)?;
-    if padded.len() > SHARD_BYTES {
-        return Err(GroupManifestError::Malformed);
-    }
-    Ok(padded)
+    crate::transport_padding::pad_transport_object(manifest).ok_or(GroupManifestError::TooLarge)
 }
 
 /// Open the entry intended for `recipient_key`.  Entries for other recipients
 /// intentionally fail AEAD authentication and reveal no capability.
 pub fn open_for(
-    manifest: &GroupManifest,
+    manifest: &[u8],
     recipient_key: &RecipientManifestKey,
 ) -> Result<[u8; CAPABILITY_BYTES], GroupManifestError> {
-    for shard in &manifest.shards {
-        let count = parse_count(shard)?;
-        let entries_end = HEADER_BYTES + count * SEALED_ENTRY_BYTES;
-        for (index, entry) in shard[HEADER_BYTES..entries_end]
-            .chunks_exact(SEALED_ENTRY_BYTES)
-            .enumerate()
-        {
-            let nonce = Nonce::from_bytes(
-                entry[..aead::NONCE_SIZE]
-                    .try_into()
-                    .expect("fixed nonce slice"),
-            );
-            if let Ok(plaintext) = aead::open(
-                &recipient_key.0,
-                &nonce,
-                &entry_aad(u16::try_from(count).expect("parsed count fits u16"), index),
-                &entry[aead::NONCE_SIZE..],
-            ) {
-                return plaintext
-                    .try_into()
-                    .map_err(|_| GroupManifestError::Malformed);
-            }
+    let count = parse_count(manifest)?;
+    let entries_end = HEADER_BYTES
+        .checked_add(
+            count
+                .checked_mul(SEALED_ENTRY_BYTES)
+                .ok_or(GroupManifestError::Malformed)?,
+        )
+        .ok_or(GroupManifestError::Malformed)?;
+    if entries_end > manifest.len() {
+        return Err(GroupManifestError::Malformed);
+    }
+
+    for (index, entry) in manifest[HEADER_BYTES..entries_end]
+        .chunks_exact(SEALED_ENTRY_BYTES)
+        .enumerate()
+    {
+        let nonce = Nonce::from_bytes(
+            entry[..aead::NONCE_SIZE]
+                .try_into()
+                .expect("fixed nonce slice"),
+        );
+        if let Ok(plaintext) = aead::open(
+            &recipient_key.0,
+            &nonce,
+            &entry_aad(u16::try_from(count).expect("parsed count fits u16"), index),
+            &entry[aead::NONCE_SIZE..],
+        ) {
+            return plaintext
+                .try_into()
+                .map_err(|_| GroupManifestError::Malformed);
         }
     }
     Err(GroupManifestError::Authentication)
@@ -194,21 +163,11 @@ fn entry_aad(count: u16, index: usize) -> Vec<u8> {
 }
 
 fn parse_count(manifest: &[u8]) -> Result<usize, GroupManifestError> {
-    if manifest.len() < HEADER_BYTES || manifest.len() > SHARD_BYTES || manifest[0] != VERSION {
+    if manifest.len() < HEADER_BYTES || manifest[0] != VERSION {
         return Err(GroupManifestError::Malformed);
     }
     let count = u16::from_be_bytes([manifest[1], manifest[2]]) as usize;
     if count == 0 {
-        return Err(GroupManifestError::Malformed);
-    }
-    let entries_end = HEADER_BYTES
-        .checked_add(
-            count
-                .checked_mul(SEALED_ENTRY_BYTES)
-                .ok_or(GroupManifestError::Malformed)?,
-        )
-        .ok_or(GroupManifestError::Malformed)?;
-    if entries_end > manifest.len() {
         return Err(GroupManifestError::Malformed);
     }
     Ok(count)
@@ -270,47 +229,5 @@ mod tests {
         ]);
 
         assert_eq!(result, Err(GroupManifestError::DuplicateRecipient));
-    }
-
-    #[test]
-    fn roster_larger_than_one_blob_is_transparently_sharded_without_a_member_ceiling() {
-        let count = ENTRIES_PER_SHARD * 2 + 17;
-        let keys: Vec<_> = (0..count)
-            .map(|index| {
-                let mut bytes = [0u8; aead::KEY_SIZE];
-                bytes[..8].copy_from_slice(&(index as u64).to_be_bytes());
-                RecipientManifestKey::from_bytes(bytes)
-            })
-            .collect();
-        let entries: Vec<_> = keys
-            .iter()
-            .enumerate()
-            .map(|(index, recipient_key)| {
-                let mut capability = [0u8; CAPABILITY_BYTES];
-                capability[..8].copy_from_slice(&(index as u64).to_be_bytes());
-                ManifestEntry {
-                    recipient_key,
-                    capability,
-                }
-            })
-            .collect();
-
-        let manifest = seal(&entries).expect("an increasing real roster seals");
-        assert_eq!(manifest.recipient_count(), count);
-        assert_eq!(manifest.shards().len(), 3);
-        assert!(manifest.shards().iter().all(|shard| shard.len() <= SHARD_BYTES));
-        assert_eq!(
-            open_for(&manifest, &keys[count - 1]).unwrap(),
-            entries[count - 1].capability,
-            "a recipient in the final shard opens its own capability"
-        );
-
-        let restored = GroupManifest::from_shards(manifest.shards().to_vec())
-            .expect("fetched shards reconstruct the logical manifest");
-        assert_eq!(restored.recipient_count(), count);
-        assert_eq!(
-            open_for(&restored, &keys[ENTRIES_PER_SHARD]).unwrap(),
-            entries[ENTRIES_PER_SHARD].capability,
-        );
     }
 }

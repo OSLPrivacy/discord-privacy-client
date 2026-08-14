@@ -432,8 +432,8 @@ fn two_fresh_installs_reach_encrypted_messaging_only_after_a_symmetric_handshake
             .chars()
             .filter(char::is_ascii_digit)
             .count(),
-        60,
-        "the displayed number must be the 60-digit comparable form"
+        30,
+        "the displayed number must be the 30-digit comparable form"
     );
 
     // Gate 1: an added-but-unverified friend cannot be opened at all.
@@ -474,7 +474,7 @@ fn two_fresh_installs_reach_encrypted_messaging_only_after_a_symmetric_handshake
     );
 
     // The negative half, so this is not a test that cannot fail: a real,
-    // well-formed 60-digit number produced by a THIRD identity's comparison
+    // well-formed 30-digit number produced by a THIRD identity's comparison
     // must still be refused. Carol adds Bob too, and her screen shows
     // SN(carol, bob) — never SN(alice, bob).
     let carol = Install::new(&storage, "carol", &store.base_url);

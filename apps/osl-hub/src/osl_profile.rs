@@ -3,6 +3,7 @@
 //! The username is stored locally after the separately authenticated directory
 //! claim succeeds. This module enforces the exact directory normalization.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use base64::engine::general_purpose::STANDARD;
@@ -17,10 +18,10 @@ const PROFILE_VERSION: u32 = 1;
 const PROFILE_PICTURE_VERSION: u32 = 1;
 const MAX_DISPLAY_NAME_CHARS: usize = 64;
 const MAX_DISPLAY_NAME_BYTES: usize = 192;
-const MIN_USERNAME_CHARS: usize = 1;
-const MAX_USERNAME_CHARS: usize = 16;
-const USERNAME_RULES_MESSAGE: &str =
-    "OSL usernames must use only letters, digits, and underscores and be 1 to 16 characters";
+const MAX_ABOUT_LINE_CHARS: usize = 120;
+const MAX_ABOUT_LINE_BYTES: usize = 384;
+const MIN_USERNAME_CHARS: usize = 3;
+const MAX_USERNAME_CHARS: usize = 30;
 const MAX_STATUS_CHARS: usize = 160;
 const MAX_STATUS_BYTES: usize = 512;
 const MAX_HTTPS_AVATAR_BYTES: usize = 2_048;
@@ -29,6 +30,8 @@ const MAX_AVATAR_DATA_URL_BYTES: usize = 2_800_000;
 const MAX_PROFILE_PLAINTEXT_BYTES: usize = MAX_AVATAR_DATA_URL_BYTES + 8 * 1024;
 const MAX_PROFILE_SEALED_BYTES: u64 = (MAX_PROFILE_PLAINTEXT_BYTES + 4 * 1024) as u64;
 const MAX_OWNER_BYTES: usize = 160;
+const MAX_PROFILE_SCOPE_ID_CHARS: usize = 128;
+const MAX_PROFILE_SCOPE_ID_BYTES: usize = 384;
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -93,6 +96,115 @@ pub struct HubProfileDto {
     pub frame: ProfileFrame,
     pub effect: ProfileEffect,
     pub status: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum OslProfileScope {
+    Global,
+    OslChats,
+    Enclave { enclave_id: String },
+}
+
+impl OslProfileScope {
+    pub fn storage_key(&self) -> String {
+        match self {
+            Self::Global => "global".to_owned(),
+            Self::OslChats => "osl-chats".to_owned(),
+            Self::Enclave { enclave_id } => format!("enclave:{enclave_id}"),
+        }
+    }
+
+    fn label_prefix(&self) -> &'static str {
+        match self {
+            Self::Global => "global",
+            Self::OslChats => "chats",
+            Self::Enclave { .. } => "enclave",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ScopedProfileRecord {
+    pub scope: OslProfileScope,
+    pub use_separate_profile_here: bool,
+    pub display_name: String,
+    pub about_line: String,
+    pub status: String,
+    pub card_background: String,
+    pub avatar: Option<String>,
+    pub colour: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScopedProfileFields {
+    pub display_name: String,
+    pub about_line: String,
+    pub status: String,
+    pub card_background: String,
+    pub avatar: Option<String>,
+    pub colour: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolvedScopedProfile {
+    pub scope: OslProfileScope,
+    pub source_scope: OslProfileScope,
+    pub use_separate_profile_here: bool,
+    pub profile: ScopedProfileFields,
+}
+
+pub fn resolve_scoped_profile_records(
+    records: &[ScopedProfileRecord],
+) -> Result<Vec<ResolvedScopedProfile>, String> {
+    let mut seen = BTreeSet::new();
+    let mut global = None;
+    for record in records {
+        validate_profile_scope(&record.scope)?;
+        let storage_key = record.scope.storage_key();
+        if !seen.insert(storage_key.clone()) {
+            return Err(format!(
+                "OSL profile scope record is duplicated: {storage_key}"
+            ));
+        }
+        if record.scope == OslProfileScope::Global {
+            if global.replace(record).is_some() {
+                return Err("OSL profile has more than one global record".to_owned());
+            }
+        }
+    }
+
+    let global = global.ok_or_else(|| "OSL global profile record is missing".to_owned())?;
+    let global_profile = validate_scoped_profile_fields(global, "global")?;
+    let mut sorted: Vec<&ScopedProfileRecord> = records.iter().collect();
+    sorted.sort_by_key(|record| profile_scope_sort_key(&record.scope));
+
+    sorted
+        .into_iter()
+        .map(|record| {
+            let use_override =
+                record.scope != OslProfileScope::Global && record.use_separate_profile_here;
+            let profile = if use_override {
+                validate_scoped_profile_fields(record, record.scope.label_prefix())?
+            } else {
+                global_profile.clone()
+            };
+            let source_scope = if use_override {
+                record.scope.clone()
+            } else {
+                OslProfileScope::Global
+            };
+            Ok(ResolvedScopedProfile {
+                scope: record.scope.clone(),
+                source_scope,
+                use_separate_profile_here: use_override,
+                profile,
+            })
+        })
+        .collect()
 }
 
 #[derive(Deserialize, Serialize)]
@@ -277,17 +389,94 @@ fn validate_profile(input: HubProfileInput) -> Result<HubProfileDto, String> {
     })
 }
 
-pub fn normalize_username_candidate(input: &str) -> Result<String, String> {
-    if input.len() < MIN_USERNAME_CHARS
-        || input.len() > MAX_USERNAME_CHARS
-        || !input
-            .as_bytes()
-            .iter()
-            .all(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
-    {
-        return Err(USERNAME_RULES_MESSAGE.to_owned());
+fn validate_scoped_profile_fields(
+    record: &ScopedProfileRecord,
+    label_prefix: &str,
+) -> Result<ScopedProfileFields, String> {
+    Ok(ScopedProfileFields {
+        display_name: bounded_trimmed_text(
+            record.display_name.clone(),
+            &format!("{label_prefix} display name"),
+            MAX_DISPLAY_NAME_CHARS,
+            MAX_DISPLAY_NAME_BYTES,
+            false,
+        )?,
+        about_line: bounded_trimmed_text(
+            record.about_line.clone(),
+            &format!("{label_prefix} about line"),
+            MAX_ABOUT_LINE_CHARS,
+            MAX_ABOUT_LINE_BYTES,
+            true,
+        )?,
+        status: bounded_trimmed_text(
+            record.status.clone(),
+            &format!("{label_prefix} status"),
+            MAX_STATUS_CHARS,
+            MAX_STATUS_BYTES,
+            true,
+        )?,
+        card_background: normalize_color(
+            &record.card_background,
+            &format!("{label_prefix} card background"),
+        )?,
+        avatar: record.avatar.clone().map(validate_avatar).transpose()?,
+        colour: normalize_color(&record.colour, &format!("{label_prefix} colour"))?,
+    })
+}
+
+fn validate_profile_scope(scope: &OslProfileScope) -> Result<(), String> {
+    match scope {
+        OslProfileScope::Global | OslProfileScope::OslChats => Ok(()),
+        OslProfileScope::Enclave { enclave_id } => {
+            let trimmed = bounded_trimmed_text(
+                enclave_id.clone(),
+                "OSL enclave profile scope id",
+                MAX_PROFILE_SCOPE_ID_CHARS,
+                MAX_PROFILE_SCOPE_ID_BYTES,
+                false,
+            )?;
+            if trimmed != *enclave_id || trimmed.chars().any(char::is_whitespace) {
+                return Err("OSL enclave profile scope id is invalid".to_owned());
+            }
+            Ok(())
+        }
     }
-    Ok(input.to_owned())
+}
+
+fn profile_scope_sort_key(scope: &OslProfileScope) -> (u8, String) {
+    match scope {
+        OslProfileScope::Global => (0, String::new()),
+        OslProfileScope::OslChats => (1, String::new()),
+        OslProfileScope::Enclave { enclave_id } => (2, enclave_id.clone()),
+    }
+}
+
+pub fn normalize_username_candidate(input: &str) -> Result<String, String> {
+    let trimmed = input.trim();
+    let candidate = trimmed.strip_prefix('@').unwrap_or(trimmed);
+    if candidate.len() < MIN_USERNAME_CHARS || candidate.len() > MAX_USERNAME_CHARS {
+        return Err(format!(
+            "OSL username candidates must be {MIN_USERNAME_CHARS} to {MAX_USERNAME_CHARS} characters"
+        ));
+    }
+    if !candidate.is_ascii() {
+        return Err("OSL usernames use only lowercase ASCII letters, numbers, and '_'".to_owned());
+    }
+    let normalized = candidate.to_ascii_lowercase();
+    let bytes = normalized.as_bytes();
+    if !bytes.first().is_some_and(u8::is_ascii_alphanumeric)
+        || !bytes.last().is_some_and(u8::is_ascii_alphanumeric)
+    {
+        return Err(
+            "OSL username candidates must start and end with a letter or number".to_owned(),
+        );
+    }
+    for byte in bytes {
+        if !byte.is_ascii_alphanumeric() && *byte != b'_' {
+            return Err("OSL usernames use only lowercase letters, numbers, and '_'".to_owned());
+        }
+    }
+    Ok(normalized)
 }
 
 fn bounded_trimmed_text(
@@ -590,6 +779,217 @@ mod tests {
         }
     }
 
+    fn scoped_record(
+        scope: OslProfileScope,
+        display_name: &str,
+        about_line: &str,
+        status: &str,
+        card_background: &str,
+        avatar: &str,
+        colour: &str,
+    ) -> ScopedProfileRecord {
+        ScopedProfileRecord {
+            scope,
+            use_separate_profile_here: false,
+            display_name: display_name.to_owned(),
+            about_line: about_line.to_owned(),
+            status: status.to_owned(),
+            card_background: card_background.to_owned(),
+            avatar: Some(avatar.to_owned()),
+            colour: colour.to_owned(),
+        }
+    }
+
+    fn seeded_scoped_records() -> Vec<ScopedProfileRecord> {
+        vec![
+            scoped_record(
+                OslProfileScope::Global,
+                "Global Quinn",
+                "Global about line",
+                "Global status",
+                "#102030",
+                "https://example.com/global-avatar.png",
+                "#aabbcc",
+            ),
+            scoped_record(
+                OslProfileScope::OslChats,
+                "Chats Quinn",
+                "Chats about line",
+                "Chats status",
+                "#203040",
+                "https://example.com/chats-avatar.png",
+                "#bbccdd",
+            ),
+            scoped_record(
+                OslProfileScope::Enclave {
+                    enclave_id: "maple".to_owned(),
+                },
+                "Maple Quinn",
+                "Maple about line",
+                "Maple status",
+                "#304050",
+                "https://example.com/maple-avatar.png",
+                "#ccddee",
+            ),
+            scoped_record(
+                OslProfileScope::Enclave {
+                    enclave_id: "cedar".to_owned(),
+                },
+                "Cedar Quinn",
+                "Cedar about line",
+                "Cedar status",
+                "#405060",
+                "https://example.com/cedar-avatar.png",
+                "#ddeeff",
+            ),
+        ]
+    }
+
+    fn global_scoped_fields() -> ScopedProfileFields {
+        ScopedProfileFields {
+            display_name: "Global Quinn".to_owned(),
+            about_line: "Global about line".to_owned(),
+            status: "Global status".to_owned(),
+            card_background: "#102030".to_owned(),
+            avatar: Some("https://example.com/global-avatar.png".to_owned()),
+            colour: "#aabbcc".to_owned(),
+        }
+    }
+
+    fn changed_scope_keys(resolved: &[ResolvedScopedProfile]) -> BTreeSet<String> {
+        let global = global_scoped_fields();
+        resolved
+            .iter()
+            .filter(|profile| profile.profile != global)
+            .map(|profile| profile.scope.storage_key())
+            .collect()
+    }
+
+    fn print_scoped_field_counts(label: &str, resolved: &[ResolvedScopedProfile]) {
+        let global = global_scoped_fields();
+        let display_names = resolved
+            .iter()
+            .filter(|profile| profile.profile.display_name == global.display_name)
+            .count();
+        let about_lines = resolved
+            .iter()
+            .filter(|profile| profile.profile.about_line == global.about_line)
+            .count();
+        let statuses = resolved
+            .iter()
+            .filter(|profile| profile.profile.status == global.status)
+            .count();
+        let card_backgrounds = resolved
+            .iter()
+            .filter(|profile| profile.profile.card_background == global.card_background)
+            .count();
+        let avatars = resolved
+            .iter()
+            .filter(|profile| profile.profile.avatar == global.avatar)
+            .count();
+        let colours = resolved
+            .iter()
+            .filter(|profile| profile.profile.colour == global.colour)
+            .count();
+        println!(
+            "TASK4654 {label}_display_name_matches={display_names} value={}",
+            global.display_name
+        );
+        println!(
+            "TASK4654 {label}_about_line_matches={about_lines} value={}",
+            global.about_line
+        );
+        println!(
+            "TASK4654 {label}_status_matches={statuses} value={}",
+            global.status
+        );
+        println!(
+            "TASK4654 {label}_card_background_matches={card_backgrounds} value={}",
+            global.card_background
+        );
+        println!(
+            "TASK4654 {label}_avatar_matches={avatars} value={}",
+            global.avatar.as_deref().unwrap_or("none")
+        );
+        println!(
+            "TASK4654 {label}_colour_matches={colours} value={}",
+            global.colour
+        );
+        assert_eq!(display_names, 4);
+        assert_eq!(about_lines, 4);
+        assert_eq!(statuses, 4);
+        assert_eq!(card_backgrounds, 4);
+        assert_eq!(avatars, 4);
+        assert_eq!(colours, 4);
+    }
+
+    #[test]
+    fn task_4654_per_scope_profile_records_resolve_global_until_overrides_are_enabled() {
+        let records = seeded_scoped_records();
+        let zero_overrides = resolve_scoped_profile_records(&records).unwrap();
+        let scope_list = zero_overrides
+            .iter()
+            .map(|profile| profile.scope.storage_key())
+            .collect::<Vec<_>>()
+            .join(",");
+        println!("TASK4654 scopes_count={}", zero_overrides.len());
+        println!("TASK4654 scopes={scope_list}");
+        assert_eq!(zero_overrides.len(), 4);
+        assert_eq!(scope_list, "global,osl-chats,enclave:cedar,enclave:maple");
+        print_scoped_field_counts("zero_overrides", &zero_overrides);
+        let zero_changed = changed_scope_keys(&zero_overrides);
+        println!(
+            "TASK4654 zero_overrides_changed_scopes={}",
+            zero_changed.len()
+        );
+        assert!(zero_changed.is_empty());
+
+        let mut chats_override = records.clone();
+        chats_override[1].use_separate_profile_here = true;
+        let chats_resolved = resolve_scoped_profile_records(&chats_override).unwrap();
+        let chats_changed = changed_scope_keys(&chats_resolved);
+        println!(
+            "TASK4654 chats_override_changed_scopes={}",
+            chats_changed.len()
+        );
+        println!(
+            "TASK4654 chats_override_changed_scope={}",
+            chats_changed.iter().next().unwrap()
+        );
+        assert_eq!(chats_changed.len(), 1);
+        assert!(chats_changed.contains("osl-chats"));
+
+        let mut enclave_override = chats_override.clone();
+        enclave_override[2].use_separate_profile_here = true;
+        let enclave_resolved = resolve_scoped_profile_records(&enclave_override).unwrap();
+        let enclave_changed = changed_scope_keys(&enclave_resolved);
+        let newly_changed = enclave_changed
+            .difference(&chats_changed)
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        println!(
+            "TASK4654 enclave_override_changed_scopes={}",
+            enclave_changed.len()
+        );
+        println!(
+            "TASK4654 enclave_override_newly_changed_scopes={}",
+            newly_changed.len()
+        );
+        println!(
+            "TASK4654 enclave_override_newly_changed_scope={}",
+            newly_changed.iter().next().unwrap()
+        );
+        assert_eq!(enclave_changed.len(), 2);
+        assert_eq!(newly_changed.len(), 1);
+        assert!(newly_changed.contains("enclave:maple"));
+
+        let mut missing_global_name = records;
+        missing_global_name[0].display_name = " ".to_owned();
+        let refusal = resolve_scoped_profile_records(&missing_global_name).unwrap_err();
+        println!("TASK4654 missing_global_display_name_refusal={refusal}");
+        assert!(refusal.contains("global display name"));
+    }
+
     #[test]
     fn profile_round_trip_is_encrypted_and_identity_scoped() {
         let path = temporary_file("roundtrip");
@@ -609,17 +1009,10 @@ mod tests {
     #[test]
     fn normalization_and_strict_field_validation_fail_closed() {
         assert_eq!(
-            normalize_username_candidate("Mixed_Name_7").unwrap(),
-            "Mixed_Name_7"
+            normalize_username_candidate(" @Mixed_Name_7 ").unwrap(),
+            "mixed_name_7"
         );
-        for invalid in [
-            "",
-            &"a".repeat(17),
-            "two.dots",
-            "space name",
-            "two-name",
-            "námé",
-        ] {
+        for invalid in ["ab", "_starts", "ends_", "two.dots", "space name", "námé"] {
             assert!(normalize_username_candidate(invalid).is_err(), "{invalid}");
         }
         let mut input = valid_input();

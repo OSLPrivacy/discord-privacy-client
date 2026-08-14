@@ -19,7 +19,6 @@
 
 pub mod account_ownership_error;
 pub mod account_ownership_proof;
-pub mod account_recovery;
 pub mod blocking_http;
 pub mod burn;
 pub mod burn_alert;
@@ -32,7 +31,6 @@ pub mod identity_bundle;
 pub mod keystore_anchor;
 pub mod license_cache;
 pub mod license_expiry;
-pub mod lost_device_recovery;
 pub mod password;
 pub mod pending_rotation;
 pub mod prekeys;
@@ -40,11 +38,6 @@ pub mod proof_challenge;
 pub mod recipients;
 mod recoverable_file;
 pub mod sealer;
-/// TASK 5402 — the passphrase-derived and device-sealed envelopes every
-/// recoverable secret is written through.
-pub mod secret_at_rest;
-/// TASK 5402 — the runtime writer/read trace for secret material.
-pub mod secret_trace;
 mod sender_filter_rollout;
 pub mod sensitive_memory;
 /// Validates response bytes before service operations consume reply fields.
@@ -67,10 +60,6 @@ pub use account_ownership_proof::{
     AccountOwnershipEvidence, AccountOwnershipProof, PublicNameProof,
     ACCOUNT_OWNERSHIP_PROOF_DOMAIN, ACCOUNT_OWNERSHIP_PROOF_TYPE_ED25519_CHALLENGE_V1,
     PUBLIC_NAME_PROOF_DOMAIN,
-};
-pub use account_recovery::{
-    LocalOslInstance, RecoveryDeclaration, RecoveryError, RecoveryKit, RecoveryServiceState,
-    SignedRoster, RECOVERY_PRIVATE_KEY_BYTES,
 };
 pub use burn::{canonical_burn_bytes, sign_burn, BurnScope, BURN_DOMAIN};
 pub use burn_alert::{sign_burn_alert, verify_burn_alert, BurnAlertPayload, BURN_ALERT_DOMAIN};
@@ -101,17 +90,6 @@ pub use license_cache::{
     LicenseState, LicenseStateDto,
 };
 pub use license_expiry::is_license_expired;
-pub use lost_device_recovery::{
-    canonical_lost_device_recovery_declaration_bytes, replacement_key,
-    verify_lost_device_recovery_declaration, LostDeviceRecoveryDeclaration,
-    LostDeviceRecoveryError, LostDeviceRecoveryKit, LostDeviceRecoveryService,
-    PackagedReplacementProfile, PreparedLostDeviceRecovery, ProductionRecoveryClient,
-    RecoveryAuthorization, RecoveryMessage, LOST_DEVICE_RECOVERY_DECLARATION_DOMAIN,
-    LOST_DEVICE_RECOVERY_DECLARATION_SCHEMA, LOST_DEVICE_RECOVERY_KEY_BYTES,
-    LOST_DEVICE_RECOVERY_KIT_BYTES, LOST_DEVICE_RECOVERY_KIT_DOMAIN,
-    LOST_DEVICE_RECOVERY_KIT_SCHEMA, LOST_DEVICE_RECOVERY_SIGNATURE_BYTES,
-    LOST_DEVICE_RECOVERY_STATE_DOMAIN, ORDINARY_PAIRING_EXISTING_DEVICE_REQUIRED,
-};
 pub use password::{
     load_password_record, save_password_record, validate_password, validate_setup_pair,
     verify_against_record, Argon2Params, InactivityTimer, PasswordError, PasswordHash,

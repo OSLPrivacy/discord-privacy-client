@@ -10,20 +10,9 @@ message contents use a hybrid X25519 plus ML-KEM-768 encryption path in source
 and QA builds, but no named release build in this checkout proves the full
 Discord send/receive path end to end.
 
-Treat this as beta software and do not rely on it where failure would be
-serious. OSL's hosted recovery is Cloudflare D1 Time Travel only. Live D1 and
-recovery share provider Cloudflare, WNAM location with no separately observed
-recovery region, one account, the same control plane, one administrator, shared
-credentials and Cloudflare-managed key authority: isolation is 0 on all seven
-axes and guaranteed recovery claims are 0. Their co-failure can lose D1 relay,
-attachment, deletion/expiry, identity, prekey, wrapped-key, mailbox, licence,
-payment and commerce records plus service secrets. R2 message, attachment and
-archive ciphertext has no second copy and can be unrecoverable even if D1
-returns. Task 6582 is held under owner ruling T7 because genuine disaster
-isolation is wanted but not funded or operated for this release. See the
-[measured backup and disaster-recovery boundary](docs/backup-and-disaster-recovery.md).
-Features that are source-present but not proven on a named release build are
-described as planned, not available.
+Treat this as beta software. Keep a backup plan and do not rely on it for
+anything where a failure would be serious. Features that are source-present but
+not proven on a named release build are described as planned, not available.
 
 ## What it protects and what it does not
 

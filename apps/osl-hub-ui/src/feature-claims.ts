@@ -21,9 +21,6 @@ export interface BurnGuaranteeCopyContract {
   limit: string;
 }
 
-/** Required disclosure whenever a deletion reference or refusal is rendered. */
-export const DELETION_REFERENCE_DISCLOSURE = "Deletion errors may reveal whether a deletion grant or message reference exists; do not share deletion references.";
-
 /** User-visible Burn wording approved by the public-claim allowlist. */
 export const BurnGuaranteeCopy: BurnGuaranteeCopyContract = Object.freeze({
   summary: "Burn cleans up. It does not un-send.",
@@ -77,5 +74,5 @@ export function burnFeatureClaimsMarkup(): string {
   const items = BurnGuaranteeCopy.items.map((item) => (
     `<li data-burn-guarantee="${item.id}" data-burn-reach="${item.state}"><strong>${item.title}</strong><span>${stateLabel(item.state)}</span><p>${item.body}</p></li>`
   )).join("");
-  return `<p><strong>${BurnGuaranteeCopy.summary}</strong> ${BurnGuaranteeCopy.intro}</p><p class="deletion-reference-disclosure" role="note">${DELETION_REFERENCE_DISCLOSURE}</p><ul>${items}</ul><p>${BurnGuaranteeCopy.limit}</p>`;
+  return `<p><strong>${BurnGuaranteeCopy.summary}</strong> ${BurnGuaranteeCopy.intro}</p><ul>${items}</ul><p>${BurnGuaranteeCopy.limit}</p>`;
 }

@@ -12,23 +12,17 @@
 //! the picker's extension filter and every human-readable format list are
 //! computed from it. A candidate extension the recipient cannot open is dropped
 //! before the dialog ever sees it, so the two halves cannot drift apart again.
-//!
-//! TASK 6832 added the second receive-side surface this derivation asks about.
-//! `gif` used to be filtered out here for a real reason — the only image viewer
-//! was the Windows WIC single-frame decoder, which refuses an animated GIF — and
-//! the result was a format every surface named and no surface could send. There
-//! is now a GIF player ([`crate::gif_message`]), so `gif` is offered because a
-//! recipient can actually open it, on exactly the same derived rule as before.
-//! `webp` is still dropped, and still for its own reason: static WebP is a
-//! Store-delivered codec on Windows 10 and so not guaranteed present.
 
 /// Every extension OSL knows how to name a MIME type for.
 ///
 /// This is deliberately *not* the offered list. It is the candidate set, and it
-/// still contains `webp` on purpose: it is what
-/// `ipc::attachment_wire::mime_for_filename` maps, and leaving it here keeps the
-/// filtering in [`offered_attachment_extensions`] load-bearing rather than
-/// decorative.
+/// still contains `gif` and `webp` on purpose: they are what
+/// `ipc::attachment_wire::mime_for_filename` maps, and leaving them here keeps
+/// the filtering in [`offered_attachment_extensions`] load-bearing rather than
+/// decorative. They are dropped because the protected viewer decodes only
+/// single-frame PNG and JPEG — static WebP is a Store-delivered codec on
+/// Windows 10 and so not guaranteed present, and most real GIFs are animated
+/// and fail the single-frame gate regardless.
 const CANDIDATE_EXTENSIONS: &[&str] = &[
     "jpg", "jpeg", "png", "gif", "webp", "mp4", "webm", "mov", "mp3", "m4a", "wav", "flac", "pdf",
     "txt", "md", "csv", "json", "docx", "xlsx", "pptx", "odt", "ods", "odp", "zip", "7z", "rar",
@@ -39,27 +33,16 @@ const CANDIDATE_EXTENSIONS: &[&str] = &[
 /// `None` when the recipient could not open the result.
 ///
 /// Two gates, in the order the receiver applies them: the wire MIME table (which
-/// also refuses executable and script extensions), then the receive-side image
-/// surfaces for anything that would be handed to a viewer.
+/// also refuses executable and script extensions), then the protected image
+/// allowlist for anything that would be handed to the in-memory viewer.
 pub fn accepted_attachment_mime(filename: &str) -> Option<&'static str> {
     let mime = ipc::attachment_wire::mime_for_filename(filename)?;
-    if mime.starts_with("image/") && !protected_image_is_openable(mime) {
+    let viewer_can_decode = !mime.starts_with("image/")
+        || crate::peer_attachment_io::supported_protected_image_mime(mime);
+    if !viewer_can_decode {
         return None;
     }
     Some(mime)
-}
-
-/// Whether *some* OSL-owned surface can open this image MIME type.
-///
-/// There are two, and they are not interchangeable: the Windows WIC viewer
-/// (`peer_attachment_io::supported_protected_image_mime`) decodes exactly one
-/// frame, and the GIF player ([`crate::gif_message::playable_gif_mime`]) is the
-/// one that can hold an animation. Both the picker filter and the receive-side
-/// refusal in `native_attachment_transport` ask this question, so neither can
-/// offer a format the other would reject.
-pub fn protected_image_is_openable(mime: &str) -> bool {
-    crate::peer_attachment_io::supported_protected_image_mime(mime)
-        || crate::gif_message::playable_gif_mime(mime)
 }
 
 /// The same check for a bare extension, used to build the picker's filter.
@@ -143,25 +126,16 @@ mod tests {
         }
     }
 
-    /// A format is offered exactly when a receive-side surface can open it.
-    ///
-    /// TASK 6832 built the GIF player, so `gif` moved across this line for the
-    /// only reason that may move anything across it. `webp` did not, and the
-    /// filter is still load-bearing because of that.
+    /// The bug being fixed: the picker offered these, the recipient refused them.
     #[test]
-    fn gif_is_offered_because_it_has_a_player_and_webp_still_is_not() {
+    fn animated_and_store_codec_images_are_not_offered() {
         assert!(CANDIDATE_EXTENSIONS.contains(&"gif"));
         assert!(CANDIDATE_EXTENSIONS.contains(&"webp"));
-        assert_eq!(accepted_attachment_mime("clip.gif"), Some("image/gif"));
+        assert_eq!(accepted_attachment_mime("clip.gif"), None);
         assert_eq!(accepted_attachment_mime("photo.webp"), None);
         let offered = offered_attachment_extensions();
-        assert!(offered.contains(&"gif"));
+        assert!(!offered.contains(&"gif"));
         assert!(!offered.contains(&"webp"));
-        // The GIF player, not the single-frame WIC viewer, is what admits it.
-        assert!(!crate::peer_attachment_io::supported_protected_image_mime("image/gif"));
-        assert!(crate::gif_message::playable_gif_mime("image/gif"));
-        assert!(protected_image_is_openable("image/gif"));
-        assert!(!protected_image_is_openable("image/webp"));
     }
 
     /// Every extension the picker offers must be one the receive side accepts.
@@ -175,16 +149,16 @@ mod tests {
                 .unwrap_or_else(|| panic!("offered extension is not accepted: {extension}"));
             if mime.starts_with("image/") {
                 assert!(
-                    protected_image_is_openable(mime),
-                    "offered image extension no surface can open: {extension}"
+                    crate::peer_attachment_io::supported_protected_image_mime(mime),
+                    "offered image extension the viewer rejects: {extension}"
                 );
             }
         }
     }
 
     #[test]
-    fn offered_images_are_exactly_png_jpeg_and_gif_extensions() {
-        assert_eq!(offered_image_extensions(), vec!["jpg", "jpeg", "png", "gif"]);
+    fn offered_images_are_exactly_png_and_jpeg_extensions() {
+        assert_eq!(offered_image_extensions(), vec!["jpg", "jpeg", "png"]);
     }
 
     #[test]

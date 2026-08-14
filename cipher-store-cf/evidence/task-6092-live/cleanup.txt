@@ -1,6 +1,0 @@
-cleanup_worker_deleted_objects=39
-mutant_worker=absent code=10007
-restored_worker=absent code=10007
-cleanup_worker=absent code=10007
-d1_task6092_matches=0
-r2_task6092_matches=0
