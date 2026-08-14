@@ -183,6 +183,8 @@ pub mod pro_marked_deletion;
 // Also a pure decision boundary: given attempt results, it never opens a
 // locator or a store handle itself.
 pub mod pro_marked_deletion_outcomes;
+/// Durable exact-target retry for a due Discord deletion when the app is closed.
+pub mod task_3319_discord_delete_retry;
 pub mod proprietary_module_boundary;
 pub mod proprietary_module_lifecycle;
 // TASK 5166: the quarantine-and-AMSI boundary every protected download crosses
