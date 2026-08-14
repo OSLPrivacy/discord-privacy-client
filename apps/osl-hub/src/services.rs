@@ -15,6 +15,15 @@ use crate::models::{
 };
 use crate::shared_conversation_scroll::{SharedConversationScrollablePlace, SharedPlaceMessage};
 
+// Kept in a leaf so an independently landed X receive lane does not make this
+// already-crowded service registry another declaration conflict hotspot.
+#[path = "services_x_compat.rs"]
+mod x_compat;
+pub use x_compat::{
+    read_x_shared_messages, read_x_shared_places, XBrowserMachine, XBrowserMessage,
+    XBrowserPlace, XBrowserPlaceKind,
+};
+
 const REGISTRY_VERSION: u8 = 3;
 const MAX_REGISTRY_BYTES: u64 = 64 * 1024;
 const MAX_ACCOUNTS_PER_SERVICE: usize = 10;

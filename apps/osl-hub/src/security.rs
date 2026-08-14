@@ -4996,7 +4996,17 @@ fn safety_number_matches(expected: &str, supplied: &str) -> bool {
         value[62..].copy_from_slice(&length.to_be_bytes());
         value
     };
-    let equal = ipc::revocation::ct_eq(&comparison_value(&expected), &comparison_value(&supplied));
+    // `ipc::revocation::ct_eq` is intentionally sized for 32-byte revocation
+    // digests. Safety-number values include 60 fixed-width digit slots plus a
+    // length suffix, so compare their 64-byte representations here without an
+    // early-exit equality operation.
+    let expected_value = comparison_value(&expected);
+    let supplied_value = comparison_value(&supplied);
+    let equal = expected_value
+        .iter()
+        .zip(supplied_value.iter())
+        .fold(0u8, |difference, (left, right)| difference | (left ^ right))
+        == 0;
     equal && expected.len() == 60 && supplied.len() == 60
 }
 
