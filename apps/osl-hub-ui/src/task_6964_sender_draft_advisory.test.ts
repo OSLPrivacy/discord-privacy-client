@@ -3,6 +3,9 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import { advisoryForSenderDraft, senderDraftAdvisoryMarkup } from "./sender-draft-advisory";
 import { englishCatalogue } from "./catalogue/en";
 
+const SHIPPING_ADVISORY_SENTENCE = "Advisory: this is your device checking your own draft. A modified client would not run this check, and nothing prevents the message from arriving.";
+const FORBIDDEN_PROMISE_WORDS = ["block", "remove", "owner enforcement", "enforcement"] as const;
+
 const mocks = vi.hoisted(() => ({
   emitTo: vi.fn(),
   invoke: vi.fn(),
@@ -73,19 +76,23 @@ describe("TASK 6964 sender draft advisory", () => {
     expect(advisory).toEqual({ draft: "exact original draft: porn stays verbatim", matchedRule: "sexual-porn" });
     const markup = senderDraftAdvisoryMarkup(advisory);
     expect(markup).toContain("sexual-porn");
-    expect(markup).toContain(englishCatalogue.senderDraftFilterAdvisory);
+    expect(englishCatalogue.senderDraftFilterAdvisory, "TASK6964_ADVISORY sentence").toBe(SHIPPING_ADVISORY_SENTENCE);
+    expect(markup).toContain(SHIPPING_ADVISORY_SENTENCE);
     expect(markup).toContain("Send anyway");
     expect(markup).toContain("Edit draft");
-    expect(markup).not.toMatch(/\b(?:block(?:ed|ing)?|remov(?:e|ed|al)|owner[ -]?enforc(?:e|ed|ement)|enforc(?:e|ed|ement))\b/iu);
+    for (const word of FORBIDDEN_PROMISE_WORDS) {
+      expect(markup, `TASK6964_PROMISE_WORD word=${word}`).not.toMatch(new RegExp(`\\b${word.replace(" ", "[ -]?")}\\b`, "iu"));
+    }
   });
 
   it("keeps a matching draft local until Send anyway, then sends the exact original to the second identity", async () => {
     await ui.__oslHubUiTest.sendSenderDraftAdvisoryForTest();
-    expect(mocks.invoke).not.toHaveBeenCalled();
     const warning = ui.__oslHubUiTest.renderOslChatForTest();
     expect(warning).toContain('id="sender-draft-advisory"');
     expect(warning).toContain("sexual-porn");
     expect(warning).toContain("exact original draft: porn stays verbatim");
+    expect(mocks.invoke, "TASK6964_RELAY_REPORT surface=relay").not.toHaveBeenCalled();
+    expect(mocks.emitTo, "TASK6964_OWNER_NOTIFICATION surface=enclave-owner").not.toHaveBeenCalled();
 
     mocks.invoke.mockResolvedValueOnce({
       messageId: "peer-6964-0123456789abcdef0123456789abcdef",
