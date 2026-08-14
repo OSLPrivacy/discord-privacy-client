@@ -97,14 +97,13 @@ mod windows_place_text {
     };
     use windows_sys::Win32::System::Ole::CF_UNICODETEXT;
     use windows_sys::Win32::System::Threading::{
-        AttachThreadInput, GetCurrentProcessId, GetCurrentThreadId, OpenProcess,
-        GetExitCodeProcess, QueryFullProcessImageNameW,
-        PROCESS_QUERY_LIMITED_INFORMATION,
+        AttachThreadInput, GetCurrentProcessId, GetCurrentThreadId, GetExitCodeProcess,
+        OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
     };
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
         SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYEVENTF_KEYUP,
         MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MOVE,
-        MOUSEEVENTF_VIRTUALDESK, MOUSEINPUT, VK_CONTROL, VK_DELETE,
+        MOUSEEVENTF_VIRTUALDESK, MOUSEINPUT, VK_CONTROL, VK_DELETE, VK_RETURN,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         EnumWindows, GetAncestor, GetCursorPos, GetForegroundWindow, GetSystemMetrics,
@@ -122,6 +121,9 @@ mod windows_place_text {
     const OBJID_CLIENT: i32 = -4;
     const MIN_TREE_ELEMENTS: i32 = 10;
     const TREE_WAIT_MS: u64 = 1_000;
+    // Electron exposes new message nodes asynchronously.  This is deliberately
+    // a bounded poll of Discord's tree, never a claim that no tree exists.
+    const SENT_MESSAGE_WAIT_MS: u64 = 5_000;
     const SETTLE_MS: u64 = 160;
     const STILL_ACTIVE: u32 = 259;
     const COMPOSER_STEMS: &[&str] = &["message", "nachricht", "mensaje"];
@@ -216,6 +218,7 @@ mod windows_place_text {
             text,
             private_canary,
             pause_after_step,
+            send_message,
         } = args.place;
         let initial = foreground_window()
             .ok_or_else(|| CommandError::exit1("Windows reported no foreground window"))?;
@@ -273,7 +276,15 @@ mod windows_place_text {
         println!("root_route={root_route}");
         wait_for_tree(&root, &automation, &app)?;
         let composer = find_composer(&root, &automation, composer_name.as_deref())?;
-        println!("composer_name={:?}", element_name(&composer));
+        let composer_name_reported = element_name(&composer);
+        println!("composer_name={composer_name_reported:?}");
+        let conversation = conversation_from_composer_name(&composer_name_reported).ok_or_else(|| {
+            CommandError::exit1(format!(
+                "{app} accessibility tree did not report a direct-message conversation in composer {composer_name_reported:?}"
+            ))
+        })?;
+        println!("discord_process_id={}", discord.process_id);
+        println!("conversation_tree_reported={conversation}");
         let bounds = element_bounds(&composer)
             .ok_or_else(|| CommandError::exit1(format!("{} composer bounds not found", app)))?;
         println!(
@@ -304,7 +315,21 @@ mod windows_place_text {
         // The private draft never enters this command.  Its caller supplies a
         // canary solely so a live close-provider run can prove the opaque
         // private-draft fingerprint did not change across a refused attempt.
-        println!("private_draft_fingerprint={:016x}", digest_text(&private_canary));
+        println!(
+            "private_draft_fingerprint={:016x}",
+            digest_text(&private_canary)
+        );
+        if send_message {
+            return place_send_and_read_back_from_discord_tree(
+                &mut actions,
+                &root,
+                &automation,
+                &app,
+                &conversation,
+                &text,
+            );
+        }
+
         let receipt = match super::place_read_back_and_clear(&mut actions, &text) {
             Ok(receipt) => receipt,
             Err(error) => {
@@ -331,6 +356,7 @@ mod windows_place_text {
         text: String,
         private_canary: String,
         pause_after_step: Option<String>,
+        send_message: bool,
     }
 
     struct ObserverArgs {
@@ -346,6 +372,7 @@ mod windows_place_text {
             let mut text = DEFAULT_TEXT.to_owned();
             let mut private_canary = DEFAULT_PRIVATE_CANARY.to_owned();
             let mut pause_after_step = None;
+            let mut send_message = false;
             let mut observer = false;
             let mut observer_needle = String::new();
             let mut observer_timeout = Duration::from_millis(3_000);
@@ -399,16 +426,22 @@ mod windows_place_text {
                         let step = args.next().ok_or_else(|| {
                             CommandError::usage("--pause-after-step needs a value")
                         })?;
-                        if !matches!(step.as_str(), "empty-readback" | "marked-paste" | "exact-readback" | "clear") {
+                        if !matches!(
+                            step.as_str(),
+                            "empty-readback" | "marked-paste" | "exact-readback" | "clear"
+                        ) {
                             return Err(CommandError::usage(
                                 "--pause-after-step must be empty-readback, marked-paste, exact-readback, or clear",
                             ));
                         }
                         pause_after_step = Some(step);
                     }
+                    "--send-message" => {
+                        send_message = true;
+                    }
                     "--help" | "-h" => {
                         return Err(CommandError::usage(
-                            "usage: task_3406_place_text [--initial-front Photos] [--app Discord] [--composer-name Message] [--text MAPLE-3406] [--private-canary QQQQQQQQQQ]",
+                            "usage: task_3406_place_text [--initial-front Photos] [--app Discord] [--composer-name Message] [--text MAPLE-3406] [--private-canary QQQQQQQQQQ] [--send-message]",
                         ));
                     }
                     other => {
@@ -439,6 +472,7 @@ mod windows_place_text {
                         text,
                         private_canary,
                         pause_after_step: None,
+                        send_message: false,
                     },
                     observer: Some(ObserverArgs {
                         needle: observer_needle,
@@ -459,6 +493,7 @@ mod windows_place_text {
                     text,
                     private_canary,
                     pause_after_step,
+                    send_message,
                 },
                 observer: None,
             })
@@ -733,6 +768,113 @@ mod windows_place_text {
         Ok(last)
     }
 
+    /// Send through the 3406 composer job and take the proof only from a
+    /// *non-composer* node in Discord's own accessibility tree.  In
+    /// particular, a value lingering in the draft field can never satisfy this
+    /// read-back.
+    fn place_send_and_read_back_from_discord_tree(
+        actions: &mut WindowsComposerTextActions<'_>,
+        root: &IUIAutomationElement,
+        automation: &IUIAutomation,
+        app: &str,
+        conversation: &str,
+        text: &str,
+    ) -> Result<(), CommandError> {
+        let before = actions
+            .read_back_text()
+            .map_err(|error| CommandError::exit1(format!("{app} {error}")))?;
+        println!("before_readback={before:?}");
+        if !before.is_empty() {
+            println!("covers_sent=0");
+            return Err(CommandError::exit1(format!(
+                "{app} composer was not empty before placement: {before:?}"
+            )));
+        }
+
+        actions
+            .place_text(text)
+            .map_err(|error| CommandError::exit1(format!("{app} {error}")))?;
+        let placed = actions
+            .read_back_text()
+            .map_err(|error| CommandError::exit1(format!("{app} {error}")))?;
+        println!("placed_text={placed}");
+        if placed != text {
+            println!("covers_sent=0");
+            return Err(CommandError::exit1(format!(
+                "{app} composer readback did not equal placed text {text:?}: {placed:?}"
+            )));
+        }
+
+        send_enter().map_err(CommandError::exit1)?;
+        let wait_started = Instant::now();
+        let read_back = wait_for_sent_message(root, automation, text, SENT_MESSAGE_WAIT_MS);
+        let wait_ms = wait_started.elapsed().as_millis();
+        println!("accessibility_wait_ms={wait_ms}");
+        let read_back = read_back.ok_or_else(|| {
+            CommandError::exit1(format!(
+                "{app} accessibility tree did not report placed text {text:?} in conversation {conversation} within {wait_ms} ms"
+            ))
+        })?;
+        println!("sent_message_readback={read_back}");
+        println!("placed_bytes={}", placed.len());
+        println!("readback_bytes={}", read_back.len());
+        println!("covers_sent=0");
+        Ok(())
+    }
+
+    fn wait_for_sent_message(
+        root: &IUIAutomationElement,
+        automation: &IUIAutomation,
+        expected: &str,
+        timeout_ms: u64,
+    ) -> Option<String> {
+        let started = Instant::now();
+        loop {
+            if let Some(message) = sent_message_in_tree(root, automation, expected) {
+                return Some(message);
+            }
+            if started.elapsed() >= Duration::from_millis(timeout_ms) {
+                return None;
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    fn sent_message_in_tree(
+        root: &IUIAutomationElement,
+        automation: &IUIAutomation,
+        expected: &str,
+    ) -> Option<String> {
+        let condition = unsafe { automation.CreateTrueCondition() }.ok()?;
+        let found = unsafe { root.FindAll(TreeScope_Subtree, &condition) }.ok()?;
+        let length = unsafe { found.Length() }.ok()?;
+        for index in 0..length {
+            let Ok(element) = (unsafe { found.GetElement(index) }) else {
+                continue;
+            };
+            // A composer is writable and is therefore never a received/sent
+            // message node.  This separation is the reason the caller cannot
+            // turn the supplied input into a successful proof by echoing it.
+            if element_is_composer(&element, None) {
+                continue;
+            }
+            let name = element_name(&element);
+            if name == expected {
+                return Some(name);
+            }
+        }
+        None
+    }
+
+    fn conversation_from_composer_name(name: &str) -> Option<String> {
+        let trimmed = name.trim();
+        let rest = trimmed
+            .strip_prefix("Message @")
+            .or_else(|| trimmed.strip_prefix("Compose @"))?;
+        let conversation = rest.trim();
+        (!conversation.is_empty()).then(|| conversation.to_owned())
+    }
+
     struct WindowsComposerTextActions<'a> {
         composer: &'a IUIAutomationElement,
         private_canary: &'a str,
@@ -784,7 +926,11 @@ mod windows_place_text {
             // `place_read_back_and_clear` calls this before placement, after
             // the paste, and after clear.  Only those concrete runtime steps
             // are eligible for the close-provider pause.
-            let step = if value.is_empty() { "empty-readback" } else { "exact-readback" };
+            let step = if value.is_empty() {
+                "empty-readback"
+            } else {
+                "exact-readback"
+            };
             self.pause_and_require_live_provider(step)?;
             Ok(value)
         }
@@ -955,15 +1101,19 @@ mod windows_place_text {
             return false;
         }
         let mut exit_code = 0;
-        let live = unsafe { GetExitCodeProcess(handle, &mut exit_code) } != 0 && exit_code == STILL_ACTIVE;
+        let live =
+            unsafe { GetExitCodeProcess(handle, &mut exit_code) } != 0 && exit_code == STILL_ACTIVE;
         unsafe { CloseHandle(handle) };
         live
     }
 
     fn digest_text(value: &str) -> u64 {
-        value.as_bytes().iter().fold(0xcbf29ce484222325u64, |hash, byte| {
-            (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
-        })
+        value
+            .as_bytes()
+            .iter()
+            .fold(0xcbf29ce484222325u64, |hash, byte| {
+                (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
+            })
     }
 
     fn window_matches(window: &WindowInfo, wanted: &str) -> bool {
@@ -1146,6 +1296,33 @@ mod windows_place_text {
         };
         if accepted != inputs.len() as u32 {
             return Err("Windows rejected Ctrl+A/Delete".to_owned());
+        }
+        Ok(())
+    }
+
+    fn send_enter() -> Result<(), String> {
+        let key = |flags: u32| INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 {
+                ki: KEYBDINPUT {
+                    wVk: VK_RETURN,
+                    wScan: 0,
+                    dwFlags: flags,
+                    time: 0,
+                    dwExtraInfo: 0,
+                },
+            },
+        };
+        let inputs = [key(0), key(KEYEVENTF_KEYUP)];
+        let accepted = unsafe {
+            SendInput(
+                inputs.len() as u32,
+                inputs.as_ptr(),
+                size_of::<INPUT>() as i32,
+            )
+        };
+        if accepted != inputs.len() as u32 {
+            return Err("Windows rejected Enter for Discord send".to_owned());
         }
         Ok(())
     }
