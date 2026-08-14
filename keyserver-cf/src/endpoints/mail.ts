@@ -2,7 +2,7 @@ import type { Env } from "../env.js";
 import { callerIp, checkRateLimit } from "../lib/rate-limit.js";
 import { badRequest, conflict, forbidden, json, notFound, serviceUnavailable, tooMany, unauthorized } from "../lib/http.js";
 import { isHighEntropyRequestId, isNonEmptyBase64, isProtocolId } from "../lib/validation.js";
-import { validNormalizedUsername } from "../lib/username.js";
+import { USERNAME_RULES_MESSAGE, validNormalizedUsername } from "../lib/username.js";
 import { MAIL_MAX_CIPHERTEXT_BYTES, OSL_MAIL_TTL_MS } from "../mail/mailbox.js";
 import { authorizeMailRequest, base64Decode, base64Encode, requestDigest } from "../mail/protocol.js";
 
@@ -42,7 +42,7 @@ export async function handleMailProvision(request: Request, env: Env): Promise<R
   if (!body) return badRequest("malformed JSON body");
   const auth = await authorizeMailRequest(env, "PROVISION", body);
   if (!auth) return unauthorized("registered signed identity required");
-  if (!validNormalizedUsername(body.username)) return badRequest("username must already be normalized");
+  if (!validNormalizedUsername(body.username)) return badRequest(USERNAME_RULES_MESSAGE);
   if (typeof body.rotate !== "boolean") return badRequest("rotate must be boolean");
   const username = body.username;
   const address = `${username}@${DOMAIN}`;
@@ -185,7 +185,10 @@ export async function handleMailRead(request: Request, env: Env, operation: "LIS
   if (operation === "LIST") {
     const limit = body.limit === undefined ? 50 : body.limit;
     if (typeof limit !== "number" || !Number.isSafeInteger(limit)) return badRequest("limit invalid");
-    return json({ messages: await box.list(auth.userId, limit) });
+    return json({
+      messages: await box.list(auth.userId, limit),
+      unread_count: await box.unreadCount(auth.userId),
+    });
   }
   if (operation === "FETCH") {
     if (!isProtocolId(body.message_id)) return badRequest("message_id invalid");
@@ -194,7 +197,11 @@ export async function handleMailRead(request: Request, env: Env, operation: "LIS
   }
   if (operation === "ACK" || operation === "DELETE") {
     if (!isProtocolId(body.message_id)) return badRequest("message_id invalid");
-    return json(await box.ack(auth.userId, auth.requestId, body.message_id, Date.now()));
+    const result = await box.ack(auth.userId, auth.requestId, body.message_id, Date.now());
+    if ("refused" in result && result.refused === "never_opened") {
+      return conflict(`message was never opened: ${result.message_id}`);
+    }
+    return json(result);
   }
   const result = await box.deleteAll(auth.userId, auth.requestId, Date.now());
   await env.DB.prepare(

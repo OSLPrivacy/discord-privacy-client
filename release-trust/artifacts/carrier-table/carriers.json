@@ -1,0 +1,10 @@
+{
+  "_type": "osl-carrier-table",
+  "carriers": [
+    "discord",
+    "signal",
+    "telegram",
+    "whatsapp"
+  ],
+  "schema": 1
+}

@@ -11,6 +11,12 @@ pub enum AttachmentAccountTier {
     Pro,
 }
 
+/// Every account tier that the shipping desktop can independently discover.
+/// Keep this closed inventory next to the admission limits so a new tier
+/// cannot silently inherit another tier's attachment path.
+pub const SHIPPING_ATTACHMENT_TIERS: [AttachmentAccountTier; 2] =
+    [AttachmentAccountTier::Free, AttachmentAccountTier::Pro];
+
 impl AttachmentAccountTier {
     pub const fn max_attachment_bytes(self) -> u64 {
         match self {
@@ -24,6 +30,24 @@ impl AttachmentAccountTier {
             Self::Free => "Free",
             Self::Pro => "Pro",
         }
+    }
+
+    pub const fn wire_label(self) -> &'static str {
+        match self {
+            Self::Free => "free",
+            Self::Pro => "pro",
+        }
+    }
+}
+
+/// Resolve the account tier from the same native license state used by the
+/// rest of the shipping application. `PaidOfflineGrace` remains Pro because
+/// the entitlement layer already treats it as paid-equivalent.
+pub fn shipping_account_tier(state: &ipc::AppState) -> AttachmentAccountTier {
+    if ipc::tier_gate::is_paid_equivalent(state) {
+        AttachmentAccountTier::Pro
+    } else {
+        AttachmentAccountTier::Free
     }
 }
 

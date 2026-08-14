@@ -7,7 +7,7 @@ on:
     # integrate/first-usable (measured 2026-08-04) and the self-test job proves
     # the claim gate rejects its sabotage fixtures, so it is a gate that can
     # fail. Switched on.
-    branches: [main, 'integrate/**']
+    branches: [main, 'integration/**']
   pull_request:
   # D-195: the only trigger a commit message cannot suppress. `[skip ci]` in a
   # commit subject cancels `push` and `pull_request` outright; see the ruling in

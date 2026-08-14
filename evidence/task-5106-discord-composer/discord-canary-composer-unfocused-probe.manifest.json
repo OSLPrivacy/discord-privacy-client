@@ -1,0 +1,70 @@
+{
+    "schema":  "osl-discord-composer-reference-v1",
+    "key":  "canary/composer-unfocused-probe",
+    "carrier":  "Discord",
+    "channel":  "canary",
+    "state":  "composer-unfocused-probe",
+    "surface_kind":  "composer",
+    "source":  "real_windows_carrier",
+    "synthetic_test_account":  true,
+    "exact_probe_sha256":  "bb85e7b47a232c501ebbf16dfe3578f9d60dfd93f0b772c0b2abcb5a24630b95",
+    "captured_at_utc":  "2026-08-11T11:33:43Z",
+    "identity":  {
+                     "executable_name":  "DiscordCanary.exe",
+                     "executable_sha256":  "c44fa2acbadb709c0a103ae0181bc4906da90d599b0dd14d21dedc1c66fb8eab",
+                     "signer":  "CN=Discord Inc., O=Discord Inc., L=San Francisco, S=California, C=US, SERIALNUMBER=5128862, OID.2.5.4.15=Private Organization, OID.1.3.6.1.4.1.311.60.2.1.2=Delaware, OID.1.3.6.1.4.1.311.60.2.1.3=US",
+                     "signature_status":  "valid",
+                     "version":  "1.0.1102"
+                 },
+    "hwnd":  1510246,
+    "window_title_sha256":  "b5bdf0f04181be63ef9bdf2279990c1ffc2d93e6eca4b5a052b791c11e2a549e",
+    "windows_build":  "10.0.19045.0",
+    "uia":  {
+                "name":  "Message OSL TEST 2, OSL Privacy test account",
+                "automation_id":  "",
+                "class_name":  "markup__75297 editor__1b31f slateTextArea_ec4baf",
+                "has_keyboard_focus":  false,
+                "runtime_id_sha256":  "50e3ce007fc03ce94413e7f075e166abdd8af7818636d78abfc81b8fb9cabe27",
+                "bounds":  {
+                               "left":  1735,
+                               "top":  935,
+                               "right":  1955,
+                               "bottom":  1013
+                           }
+            },
+    "observations_agreeing":  2,
+    "frames_agreeing":  2,
+    "capture":  {
+                    "seam_ring_physical_px":  4,
+                    "png_mode":  "RGBA",
+                    "width":  228,
+                    "height":  86,
+                    "png_sha256":  "0e88fb39ca92a19101342e85d635465e752d2ff4baa3514f91dba98fe2c29dfa",
+                    "seam_ring_rgb_sha256":  "41d632ccf45ec4da8ac0777cc5000626e3353235b8ee558376bd7c9cb862be6b",
+                    "persisted_distinct_rgb":  146,
+                    "whole_window_distinct_rgb":  4030,
+                    "known_good_capture_count":  5,
+                    "known_good_distinct_rgb":  [
+                                                    146,
+                                                    146,
+                                                    146,
+                                                    146,
+                                                    146
+                                                ],
+                    "known_good_pixel_sha256":  [
+                                                    "98d279919c6062fe2a81eac699e4a070e69ca17ac377388e161d7c850b1a6212",
+                                                    "98d279919c6062fe2a81eac699e4a070e69ca17ac377388e161d7c850b1a6212",
+                                                    "98d279919c6062fe2a81eac699e4a070e69ca17ac377388e161d7c850b1a6212",
+                                                    "98d279919c6062fe2a81eac699e4a070e69ca17ac377388e161d7c850b1a6212",
+                                                    "98d279919c6062fe2a81eac699e4a070e69ca17ac377388e161d7c850b1a6212"
+                                                ],
+                    "fixture_specific_distinct_rgb_floor":  146
+                },
+    "baseline_review":  {
+                            "status":  "pending_distinct_authorized_reviewer",
+                            "capture_author":  "task-5106-windows-live-capture",
+                            "candidate_baseline_record":  "discord-canary-composer-unfocused-probe.candidate-baseline.json",
+                            "reviewer":  null,
+                            "reviewed_baseline_record":  null
+                        }
+}

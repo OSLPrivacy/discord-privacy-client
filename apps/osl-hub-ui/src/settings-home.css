@@ -1,0 +1,46 @@
+/* TASK 0716 — Settings home: eight stacked choices, each a full-width button
+   carrying its title and a one-line explanation. The explanation must actually
+   fit one line at the fixed capture width, so it gets an explicit pixel
+   line-height the screenshot gate can divide against. */
+.settings-home {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 20px 24px 28px;
+  color: var(--text, #e8ecf1);
+}
+
+.settings-home h1 { margin: 0 0 14px; font-size: 22px; }
+
+.settings-home-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.settings-home-choice {
+  display: grid;
+  gap: 4px;
+  width: 100%;
+  padding: 10px 14px;
+  text-align: left;
+  border: 1px solid var(--line, #2a2f36);
+  background: var(--panel, #14181d);
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.settings-home-choice:hover { border-color: var(--brand, #7aa2ff); }
+
+.settings-home-title { font-size: 15px; font-weight: 600; }
+
+.settings-home-explains {
+  color: var(--muted, #9aa4af);
+  font-size: 13px;
+  line-height: 18px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

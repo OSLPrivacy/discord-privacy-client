@@ -1,0 +1,10 @@
+[package]
+name = "osl-hub-task-1275"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dev-dependencies]
+url = "=2.5.8"

@@ -23,7 +23,13 @@
 //! report, because a report is written to disk.
 
 use crate::broker::{
-    NativeOverlayAcknowledgmentStatus, OpenedNativeOverlayText, OpenedNativeOverlayTextBatch,
+    NativeOverlayAcknowledgmentStatus,
+    OpenedNativeOverlayText,
+    OpenedNativeOverlayTextBatch,
+};
+use sha2::{
+    Digest,
+    Sha256,
 };
 use crate::native_apps::NativeAppId;
 use crate::native_window_host::DiscordSessionMode;

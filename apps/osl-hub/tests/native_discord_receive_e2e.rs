@@ -19,9 +19,10 @@ use osl_privacy_hub::broker::{
     activate_owned_native_manual_peer_context, activate_owned_osl_chat_context,
     begin_native_overlay_attachment, deliver_native_overlay_attachment,
     drain_native_discord_overlay_text, drain_osl_chat_text, list_native_overlay_attachments,
-    load_osl_chat_history, prepare_native_discord_overlay_text,
-    prepare_osl_chat_text_with_route_clients, reveal_native_discord_overlay_view_once,
-    take_native_overlay_attachment, HubBrokerState, OpenedNativeOverlayTextBatch,
+    load_osl_chat_history, open_peer_prose_text, prepare_native_discord_overlay_text,
+    prepare_osl_chat_text_with_route_clients, rehydrate_native_discord_overlay_history,
+    reveal_native_discord_overlay_view_once, take_native_overlay_attachment, HubBrokerState,
+    OpenedNativeOverlayTextBatch,
 };
 use osl_privacy_hub::core_bridge::HubCoreState;
 use osl_privacy_hub::hub_command_surface::with_allowed_place_before_protected_message_path;
@@ -30,27 +31,16 @@ use osl_privacy_hub::hub_command_surface::{
     NATIVE_DISCORD_OVERLAY_TEXT_COMMAND_CALLER_LABEL, OPEN_NATIVE_DISCORD_OVERLAY_TEXT_COMMAND,
 };
 use osl_privacy_hub::security::{
-    add_friend_code,
-    export_friend_code,
-    list_friend_account_reach_choices,
-    list_people,
-    manual_peer_binding,
-    set_friend_alias,
-    set_friend_relationship,
-    set_hub_friend_account_reach_everywhere,
-    set_hub_friend_account_reach_nowhere,
-    set_manual_peer_scope_permission,
-    set_scope_security,
-    verify_friend_safety_number,
-    FriendAccountReachAccount,
-    FriendRelationship,
-    HubSecurityState,
+    add_friend_code, export_friend_code, list_friend_account_reach_choices, list_people,
+    manual_peer_binding, set_friend_account_reach_choice, set_friend_alias,
+    set_friend_relationship, set_hub_friend_account_reach_everywhere,
+    set_hub_friend_account_reach_nowhere, set_manual_peer_scope_permission, set_scope_security,
+    verify_friend_safety_number, FriendAccountReachAccount, FriendRelationship, HubSecurityState,
     FRIEND_BLOCKED_ERROR,
-    set_friend_account_reach_choice,
 };
 use osl_privacy_hub::service_host::ServiceHostState;
-use serde::Serialize;
 use osl_privacy_hub::services::save_messaging_risk_agreement;
+use serde::Serialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::cell::RefCell;
@@ -993,14 +983,23 @@ impl Peer {
     /// Re-activate an already verified friend. Every activation takes a fresh
     /// native host generation, exactly like a real Discord window re-attach.
     fn reopen_native_context(&self, person_id: &str) -> String {
-        self.reopen_native_context_on_account(person_id, &self.account_id)
+        self.reopen_native_context_on_account_with_risk(person_id, &self.account_id, true)
     }
 
     fn reopen_native_context_on_account(&self, person_id: &str, account_id: &str) -> String {
-        self.reopen_native_context_with_risk(person_id, true)
+        self.reopen_native_context_on_account_with_risk(person_id, account_id, true)
     }
 
     fn reopen_native_context_with_risk(&self, person_id: &str, agree_risk: bool) -> String {
+        self.reopen_native_context_on_account_with_risk(person_id, &self.account_id, agree_risk)
+    }
+
+    fn reopen_native_context_on_account_with_risk(
+        &self,
+        person_id: &str,
+        account_id: &str,
+        agree_risk: bool,
+    ) -> String {
         self.activate();
         let active = self
             .host
@@ -1029,14 +1028,14 @@ impl Peer {
             &self.security,
             activated.person_id.clone(),
             "discord".to_owned(),
-            self.account_id.clone(),
+            account_id.to_owned(),
             true,
         )
         .expect("tick native Discord account reach");
         set_scope_security(&self.security, activated.scope.clone(), 3600, true)
             .expect("enable decrypted display for this scope");
         if agree_risk {
-            save_messaging_risk_agreement(&self.identity_id, "discord", &self.account_id)
+            save_messaging_risk_agreement(&self.identity_id, "discord", account_id)
                 .expect("save Discord risk agreement for fixture prerequisite");
         }
         *self.scope.lock().unwrap_or_else(|error| error.into_inner()) =
@@ -1169,6 +1168,62 @@ struct Task3902RunRecord {
     after_command_flow: Vec<&'static str>,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Task3953RunRecord {
+    opened_before_edit: usize,
+    edited_word_count_delta: usize,
+    rows_after_edit: usize,
+    row_after_edit_flagtext: String,
+    row_after_edit_plaintext_present: bool,
+    row_after_edit_private_word_count: usize,
+    refused_rows_after_edit: usize,
+    fixed_refusal_sentence: String,
+}
+
+fn edit_cover_text_by_one_word(cover: &str) -> String {
+    let mut words = cover.split_whitespace().collect::<Vec<_>>();
+    assert!(
+        !words.is_empty(),
+        "fixture cover text must have at least one editable word"
+    );
+    let replacement = if words[0] == "garden" {
+        "lantern"
+    } else {
+        "garden"
+    };
+    words[0] = replacement;
+    words.join(" ")
+}
+
+fn changed_word_count(left: &str, right: &str) -> usize {
+    let left_words = left.split_whitespace().collect::<Vec<_>>();
+    let right_words = right.split_whitespace().collect::<Vec<_>>();
+    assert_eq!(
+        left_words.len(),
+        right_words.len(),
+        "one-word cover edit must preserve the word count"
+    );
+    left_words
+        .iter()
+        .zip(right_words.iter())
+        .filter(|(left, right)| left != right)
+        .count()
+}
+
+fn private_word_count(haystack: &str, private_words: &[&str]) -> usize {
+    private_words
+        .iter()
+        .filter(|word| haystack.contains(**word))
+        .count()
+}
+
+fn sha256_hex(value: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(value.as_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
 fn drive_open_native_discord_overlay_text_app_command(
     peer: &Peer,
 ) -> Result<(String, Vec<&'static str>, OpenedNativeOverlayTextBatch), String> {
@@ -1227,7 +1282,6 @@ fn drive_open_native_discord_overlay_text_app_command(
 
 #[test]
 fn task_3902_real_app_open_command_reads_marked_private_message_from_fixture_conversation() {
-pub fn task_3110_discord_send_is_risk_gated() {
     let _serial = fixture_lock()
         .lock()
         .unwrap_or_else(|error| error.into_inner());
@@ -1252,30 +1306,6 @@ pub fn task_3110_discord_send_is_risk_gated() {
 
     const FIXTURE: &str = "task 3902 private fixture body";
     alice.activate();
-    let storage = TestStorage::new("task-3110-discord-send-risk");
-    let relay_url = relay.base_url();
-
-    let alice = Peer::new(&storage, "alice-3110", &relay_url, "a3110");
-    let bob = Peer::new(&storage, "bob-3110", &relay_url, "b3110");
-    alice.open_native_context_to_with_risk(&bob.friend_code, false);
-
-    const FIXTURE: &str = "task 3110 same Discord protected send";
-    alice.activate();
-    let first_refusal = match prepare_native_discord_overlay_text(
-        &alice.core,
-        &alice.security,
-        &alice.broker,
-        &ai_carrier_fixture(),
-        FIXTURE.to_owned(),
-        false,
-    ) {
-        Ok(_) => panic!("first Discord send must be refused before risk agreement"),
-        Err(refusal) => refusal,
-    };
-    let pending_after_refusal = relay.pending_for(&bob.identity_id);
-
-    save_messaging_risk_agreement(&alice.identity_id, "discord", &alice.account_id)
-        .expect("save Discord risk agreement");
     let prepared = prepare_native_discord_overlay_text(
         &alice.core,
         &alice.security,
@@ -1283,6 +1313,7 @@ pub fn task_3110_discord_send_is_risk_gated() {
         &ai_carrier_fixture(),
         FIXTURE.to_owned(),
         false,
+        None,
     )
     .expect("place one protected Discord private message in the fixture conversation");
     let marked_private_messages_placed = usize::from(
@@ -1326,6 +1357,346 @@ pub fn task_3110_discord_send_is_risk_gated() {
         "task_3902_run_record={}",
         serde_json::to_string(&run_record).expect("encode task 3902 run record")
     );
+}
+
+#[test]
+fn task_3953_edited_cover_row_stays_public_and_reports_fixed_refusal() {
+    let _serial = fixture_lock()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let relay = RelayServer::start();
+    let storage = TestStorage::new("task-3953-edited-cover");
+    let relay_url = relay.base_url();
+
+    let alice = Peer::new(&storage, "alice", &relay_url, "a3953001");
+    let bob = Peer::new(&storage, "bob", &relay_url, "b3953001");
+    alice.open_native_context_to(&bob.friend_code);
+    let alice_person_on_bob = bob.open_native_context_to(&alice.friend_code);
+
+    const PRIVATE_WORDS: [&str; 2] = ["task3953secretalpha", "task3953secretbeta"];
+    let private_message = format!("{} {}", PRIVATE_WORDS[0], PRIVATE_WORDS[1]);
+    alice.activate();
+    let prepared = prepare_native_discord_overlay_text(
+        &alice.core,
+        &alice.security,
+        &alice.broker,
+        &ai_carrier_fixture(),
+        private_message,
+        false,
+        None,
+    )
+    .expect("send the private message before editing its public cover row");
+    let original_cover = prepared
+        .flagtext
+        .as_deref()
+        .expect("single private message has one public cover row");
+
+    let (_command, _flow, opened_before) = drive_open_native_discord_overlay_text_app_command(&bob)
+        .expect("app command opens the private message before the edit");
+    let opened_before_edit = opened_before
+        .messages
+        .iter()
+        .filter(|message| message.message_id == prepared.prepared.message_id)
+        .count();
+    assert_eq!(
+        opened_before_edit, 1,
+        "the private message is opened exactly once before the cover edit"
+    );
+
+    let edited_cover = edit_cover_text_by_one_word(original_cover);
+    let edited_word_count_delta = changed_word_count(original_cover, &edited_cover);
+    assert_eq!(
+        edited_word_count_delta, 1,
+        "the fixture edits the public cover by exactly one word"
+    );
+
+    bob.activate();
+    let context_token = bob.broker.active_native_manual_context_token().unwrap();
+    let fixed_refusal_sentence = open_peer_prose_text(
+        &bob.core,
+        &bob.security,
+        &bob.broker,
+        &context_token,
+        alice_person_on_bob,
+        edited_cover.clone(),
+    )
+    .err()
+    .expect("the edited cover no longer opens as a protected message");
+    assert_eq!(
+        fixed_refusal_sentence, "This encrypted message could not be opened",
+        "edited cover refusal must be the fixed user sentence"
+    );
+
+    let after_edit = rehydrate_native_discord_overlay_history(
+        &bob.core,
+        &bob.broker,
+        "task-3953-edited-cover-scope",
+        1,
+        vec![osl_privacy_hub::native_discord_adapter::VisibleMessageRow {
+            locator_sha256: sha256_hex("task-3953-row"),
+            line: edited_cover.clone(),
+            decode_candidates: vec![edited_cover.clone()],
+            bounds: Some([10, 20, 500, 44]),
+            attribution: None,
+        }],
+    )
+    .expect("app rehydrates the edited visible row");
+    assert_eq!(after_edit.rows.len(), 1);
+    assert_eq!(
+        after_edit.rows[0].flagtext, edited_cover,
+        "after edit the row shows the edited public cover text"
+    );
+    assert!(
+        after_edit.rows[0].plaintext.is_none(),
+        "after edit the row carries no private plaintext"
+    );
+    let rows_wire = serde_json::to_string(&after_edit.rows).expect("rows serialize");
+    let row_after_edit_private_word_count = private_word_count(&rows_wire, &PRIVATE_WORDS);
+    assert_eq!(
+        row_after_edit_private_word_count, 0,
+        "after edit the row carries zero private words"
+    );
+    assert_eq!(
+        after_edit.counts.refused, 1,
+        "the unproven edited row is counted as refused instead of disappearing"
+    );
+
+    let run_record = Task3953RunRecord {
+        opened_before_edit,
+        edited_word_count_delta,
+        rows_after_edit: after_edit.rows.len(),
+        row_after_edit_flagtext: after_edit.rows[0].flagtext.clone(),
+        row_after_edit_plaintext_present: after_edit.rows[0].plaintext.is_some(),
+        row_after_edit_private_word_count,
+        refused_rows_after_edit: after_edit.counts.refused,
+        fixed_refusal_sentence,
+    };
+    println!(
+        "task_3953_run_record={}",
+        serde_json::to_string(&run_record).expect("encode task 3953 run record")
+    );
+}
+
+const TASK_3904_WAIT_SECONDS: u64 = 10 * 60;
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Task3904RunRecord {
+    control_run: Task3904MeasurementRun,
+    untouched_runs: Vec<Task3904MeasurementRun>,
+    stubbed_noop_receiving_job_failure: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Task3904MeasurementRun {
+    run_label: String,
+    clicked_conversation: bool,
+    touch_count: usize,
+    receive_job_calls: usize,
+    wait_seconds: u64,
+    appeared: bool,
+    saved_number: String,
+}
+
+fn task_3904_send_marked_private_message(
+    relay: &RelayServer,
+    sender: &Peer,
+    receiver: &Peer,
+    plaintext: &str,
+) {
+    sender.activate();
+    let prepared = prepare_native_discord_overlay_text(
+        &sender.core,
+        &sender.security,
+        &sender.broker,
+        &ai_carrier_fixture(),
+        plaintext.to_owned(),
+        false,
+        None,
+    )
+    .expect("send the marked private message to the open fixture conversation");
+    assert!(
+        prepared.prepared.person_to_person_e2ee
+            && prepared.prepared.delivered_to_osl_inbox
+            && prepared.flagtext.is_some(),
+        "marked private message is delivered into the receiver inbox"
+    );
+    assert_eq!(
+        relay.pending_for(&receiver.identity_id),
+        1,
+        "the receiver has one unseen marked private message waiting"
+    );
+}
+
+fn task_3904_measure_fixture_run<Receive>(
+    run_label: &str,
+    clicked_conversation: bool,
+    mut receive: Receive,
+) -> Result<Task3904MeasurementRun, String>
+where
+    Receive: FnMut(&Peer, &str) -> Result<usize, String>,
+{
+    let relay = RelayServer::start();
+    let storage = TestStorage::new(run_label);
+    let relay_url = relay.base_url();
+    let sender = Peer::new(
+        &storage,
+        &format!("{run_label}-sender"),
+        &relay_url,
+        "3904aaaa",
+    );
+    let receiver = Peer::new(
+        &storage,
+        &format!("{run_label}-receiver"),
+        &relay_url,
+        "3904bbbb",
+    );
+    sender.open_native_context_to(&receiver.friend_code);
+    receiver.open_native_context_to(&sender.friend_code);
+
+    let marked_private_message = format!("TASK3904_MARKED_PRIVATE_MESSAGE_{run_label}");
+    task_3904_send_marked_private_message(&relay, &sender, &receiver, &marked_private_message);
+
+    let mut receive_job_calls = 0;
+    let mut touch_count = 0;
+    let mut appeared_at = None;
+    if clicked_conversation {
+        touch_count += 1;
+        receive_job_calls += 1;
+        let opened = receive(&receiver, &marked_private_message)?;
+        if opened > 0 {
+            appeared_at = Some(0);
+        }
+    }
+
+    let saved_number = appeared_at
+        .map(|seconds| seconds.to_string())
+        .unwrap_or_else(|| "never".to_owned());
+    let run = Task3904MeasurementRun {
+        run_label: run_label.to_owned(),
+        clicked_conversation,
+        touch_count,
+        receive_job_calls,
+        wait_seconds: TASK_3904_WAIT_SECONDS,
+        appeared: appeared_at.is_some(),
+        saved_number,
+    };
+
+    drop(sender);
+    drop(receiver);
+    drop(storage);
+
+    if clicked_conversation && !run.appeared {
+        return Err(format!(
+            "{run_label}: clicked control did not see the marked private message"
+        ));
+    }
+    Ok(run)
+}
+
+fn task_3904_real_receiving_job(peer: &Peer, plaintext: &str) -> Result<usize, String> {
+    peer.activate();
+    let opened = drain_native_discord_overlay_text(&peer.core, &peer.security, &peer.broker)?;
+    Ok(opened
+        .messages
+        .iter()
+        .filter(|message| message.plaintext == plaintext)
+        .count())
+}
+
+#[test]
+fn task_3904_measure_unseen_private_message_appearance_without_touching() {
+    let _serial = fixture_lock()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+
+    let control_run =
+        task_3904_measure_fixture_run("task-3904-control-clicked", true, |peer, text| {
+            task_3904_real_receiving_job(peer, text)
+        })
+        .expect("clicked control must prove the measurement can see an appearance");
+    assert_eq!(
+        control_run.saved_number, "0",
+        "clicked control appears immediately when the conversation is clicked"
+    );
+
+    let untouched_runs = [
+        "task-3904-untouched-1",
+        "task-3904-untouched-2",
+        "task-3904-untouched-3",
+    ]
+    .into_iter()
+    .map(|label| {
+        task_3904_measure_fixture_run(label, false, |peer, text| {
+            task_3904_real_receiving_job(peer, text)
+        })
+        .expect("untouched measurement run completes")
+    })
+    .collect::<Vec<_>>();
+    assert_eq!(untouched_runs.len(), 3);
+    for run in &untouched_runs {
+        assert!(!run.appeared, "untouched run must not report an appearance");
+        assert_eq!(run.saved_number, "never");
+        assert_eq!(run.wait_seconds, TASK_3904_WAIT_SECONDS);
+        assert_eq!(run.touch_count, 0);
+        assert_eq!(run.receive_job_calls, 0);
+    }
+
+    let stubbed_noop_receiving_job_failure =
+        task_3904_measure_fixture_run("task-3904-stubbed-noop", true, |_peer, _text| Ok(0))
+            .expect_err("stubbed no-op receiving job must make the control check fail");
+
+    let record = Task3904RunRecord {
+        control_run,
+        untouched_runs,
+        stubbed_noop_receiving_job_failure,
+    };
+    println!(
+        "task_3904_run_record={}",
+        serde_json::to_string(&record).expect("encode task 3904 run record")
+    );
+}
+
+pub fn task_3110_discord_send_is_risk_gated() {
+    let _serial = fixture_lock()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let relay = RelayServer::start();
+    let storage = TestStorage::new("task-3110-discord-send-risk");
+    let relay_url = relay.base_url();
+
+    let alice = Peer::new(&storage, "alice-3110", &relay_url, "a3110");
+    let bob = Peer::new(&storage, "bob-3110", &relay_url, "b3110");
+    alice.open_native_context_to_with_risk(&bob.friend_code, false);
+
+    const FIXTURE: &str = "task 3110 same Discord protected send";
+    alice.activate();
+    let first_refusal = match prepare_native_discord_overlay_text(
+        &alice.core,
+        &alice.security,
+        &alice.broker,
+        &ai_carrier_fixture(),
+        FIXTURE.to_owned(),
+        false,
+        None,
+    ) {
+        Ok(_) => panic!("first Discord send must be refused before risk agreement"),
+        Err(refusal) => refusal,
+    };
+    let pending_after_refusal = relay.pending_for(&bob.identity_id);
+
+    save_messaging_risk_agreement(&alice.identity_id, "discord", &alice.account_id)
+        .expect("save Discord risk agreement");
+    let prepared = prepare_native_discord_overlay_text(
+        &alice.core,
+        &alice.security,
+        &alice.broker,
+        &ai_carrier_fixture(),
+        FIXTURE.to_owned(),
+        false,
+        None,
+    )
     .expect("same Discord send must work after risk agreement");
     let discord_send_worked_after_agreement =
         prepared.prepared.person_to_person_e2ee && prepared.prepared.delivered_to_osl_inbox;
@@ -1576,7 +1947,6 @@ fn first_party_osl_chat_reopen_backfills_waiting_rows_in_order_without_push() {
             &ai_carrier_fixture(),
             fixture.to_owned(),
             false,
-            None,
             &store_client,
             alice.core.osl.keyserver.lock().unwrap().as_ref(),
         )
@@ -1689,7 +2059,6 @@ fn first_party_osl_chat_reopen_backfills_waiting_rows_in_order_without_push() {
             &ai_carrier_fixture(),
             fixture.to_owned(),
             false,
-            None,
             &store_client,
             alice.core.osl.keyserver.lock().unwrap().as_ref(),
         )
@@ -1757,7 +2126,6 @@ fn first_party_osl_chat_reopen_sorts_shuffled_waiting_rows_by_sender_order() {
             &ai_carrier_fixture(),
             fixture.to_owned(),
             false,
-            None,
             &store_client,
             alice.core.osl.keyserver.lock().unwrap().as_ref(),
         )
@@ -2295,7 +2663,6 @@ fn reveal_once_consumes_on_b() {
     alice.open_native_context_to(&bob.friend_code);
     bob.open_native_context_to(&alice.friend_code);
 
-    const FIXTURE: &str = "TASK-1348 marked content";
     const FIXTURE: &str = "B74 native Discord reveal-once fixture";
     const SELECTED_DISPLAY_DURATION_SECONDS: u64 = 15;
     alice.activate();
@@ -2328,7 +2695,8 @@ fn reveal_once_consumes_on_b() {
         "B's pending entry names A's prepared message"
     );
     assert_eq!(
-        listed.pending_view_once[0].display_duration_seconds, SELECTED_DISPLAY_DURATION_SECONDS,
+        listed.pending_view_once[0].display_duration_seconds,
+        Some(SELECTED_DISPLAY_DURATION_SECONDS),
         "B's direct pending session query reports the selected display duration"
     );
     assert!(
@@ -2410,8 +2778,6 @@ fn reveal_once_consumes_on_b() {
 
 #[test]
 fn race_two_view_once_reveals_opens_exactly_once() {
-fn task_1348_second_view_is_refused_on_both_copies() {
-fn task_1373_two_machine_view_once_check_refuses_second_open() {
     let _serial = fixture_lock()
         .lock()
         .unwrap_or_else(|error| error.into_inner());
@@ -2428,60 +2794,13 @@ fn task_1373_two_machine_view_once_check_refuses_second_open() {
     const ALREADY_OPENED: &str = "This view-once message was already opened";
     alice.activate();
     let prepared = prepare_native_discord_overlay_text(
-    let storage = TestStorage::new("task-1348-second-view");
-    let relay_url = relay.base_url();
-
-    let alice = Peer::new(&storage, "alice", &relay_url, "t1348a0");
-    let bob_first = Peer::new(&storage, "bob-first", &relay_url, "t1348b1");
-    let bob_second = Peer::new(&storage, "bob-second", &relay_url, "t1348b2");
-    *alice.core.osl.license_state.lock().unwrap() = keystore::LicenseStateDto {
-        state: keystore::LicenseState::Paid,
-        raw_status: "ACTIVE".to_owned(),
-        current_period_end: Some(9_999_999_999),
-        last_validated_at: Some(1_700_000_000),
-    };
-
-    alice.open_native_context_to(&bob_first.friend_code);
-    bob_first.open_native_context_to(&alice.friend_code);
-    let mark = format!("TASK1348_MARK_{}", uuid::Uuid::new_v4().simple());
-
-    alice.activate();
-    let first_prepared = prepare_native_discord_overlay_text(
-fn task_0591_free_receiver_reveals_pro_view_once_case(
-    label: &str,
-    install_free_record: bool,
-    fixture: &str,
-) {
-    let relay = RelayServer::start();
-    let storage = TestStorage::new(label);
-    let relay_url = relay.base_url();
-
-    let alice = Peer::new(&storage, "alice", &relay_url, "b591a");
-    let bob = Peer::new(&storage, "bob", &relay_url, "b591b");
-    alice.install_pro_license();
-    if install_free_record {
-        bob.install_free_license();
-    }
-    alice.open_native_context_to(&bob.friend_code);
-    bob.open_native_context_to(&alice.friend_code);
-
-    let storage = TestStorage::new("task-1373-view-once");
-    let relay_url = relay.base_url();
-
-    let alice = Peer::new(&storage, "alice", &relay_url, "b1373a");
-    let bob = Peer::new(&storage, "bob", &relay_url, "b1373b");
-    alice.open_native_context_to(&bob.friend_code);
-    bob.open_native_context_to(&alice.friend_code);
-
-    const MARKED_CONTENT: &str = "TASK1373 marked content";
-    alice.activate();
-    let prepared = prepare_native_discord_overlay_text(
         &alice.core,
         &alice.security,
         &alice.broker,
         &ai_carrier_fixture(),
         PRIVATE_TEXT.to_owned(),
         true,
+        None,
     )
     .expect("prepare the RACE-3610 view-once protected message");
     assert!(
@@ -2595,8 +2914,41 @@ fn task_0591_free_receiver_reveals_pro_view_once_case(
 
     drop(alice);
     drop(bob);
+    drop(storage);
+}
+
+#[test]
+fn task_1348_second_view_is_refused_on_both_copies() {
+    let _serial = fixture_lock()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let relay = RelayServer::start();
+    let storage = TestStorage::new("task-1348-second-view");
+    let relay_url = relay.base_url();
+
+    let alice = Peer::new(&storage, "alice", &relay_url, "t1348a0");
+    let bob_first = Peer::new(&storage, "bob-first", &relay_url, "t1348b1");
+    let bob_second = Peer::new(&storage, "bob-second", &relay_url, "t1348b2");
+    *alice.core.osl.license_state.lock().unwrap() = keystore::LicenseStateDto {
+        state: keystore::LicenseState::Paid,
+        raw_status: "ACTIVE".to_owned(),
+        current_period_end: Some(9_999_999_999),
+        last_validated_at: Some(1_700_000_000),
+    };
+
+    alice.open_native_context_to(&bob_first.friend_code);
+    bob_first.open_native_context_to(&alice.friend_code);
+    let mark = format!("TASK1348_MARK_{}", uuid::Uuid::new_v4().simple());
+
+    alice.activate();
+    let first_prepared = prepare_native_discord_overlay_text(
+        &alice.core,
+        &alice.security,
+        &alice.broker,
+        &ai_carrier_fixture(),
         mark.clone(),
         true,
+        None,
     )
     .expect("put random marked view-once item on first copy");
     assert!(first_prepared.prepared.view_once);
@@ -2611,6 +2963,7 @@ fn task_0591_free_receiver_reveals_pro_view_once_case(
         &ai_carrier_fixture(),
         mark.clone(),
         true,
+        None,
     )
     .expect("put same random marked view-once item on second copy");
     assert!(second_prepared.prepared.view_once);
@@ -2757,8 +3110,129 @@ fn task_0591_free_receiver_reveals_pro_view_once_case(
     drop(bob_first);
     drop(bob_second);
     drop(storage);
+}
+
+#[test]
+fn task_1373_two_machine_view_once_check_refuses_second_open() {
+    let _serial = fixture_lock()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let relay = RelayServer::start();
+    let storage = TestStorage::new("task-1373-view-once");
+    let relay_url = relay.base_url();
+
+    let alice = Peer::new(&storage, "alice", &relay_url, "b1373a");
+    let bob = Peer::new(&storage, "bob", &relay_url, "b1373b");
+    alice.open_native_context_to(&bob.friend_code);
+    bob.open_native_context_to(&alice.friend_code);
+
+    const MARKED_CONTENT: &str = "TASK1373 marked content";
+    alice.activate();
+    let prepared = prepare_native_discord_overlay_text(
+        &alice.core,
+        &alice.security,
+        &alice.broker,
+        &ai_carrier_fixture(),
+        MARKED_CONTENT.to_owned(),
+        true,
+        None,
+    )
+    .expect("TASK1373 prepare view-once message");
+    let honest = relay.posted_row(&alice.identity_id, &bob.identity_id);
+
+    bob.activate();
+    let listed = drain_native_discord_overlay_text(&bob.core, &bob.security, &bob.broker)
+        .expect("TASK1373 B lists the view-once row");
+    assert_eq!(
+        listed.pending_view_once.len(),
+        1,
+        "TASK1373 pending view-once count"
+    );
+
+    let opened = reveal_native_discord_overlay_view_once(
+        &bob.core,
+        &bob.security,
+        &bob.broker,
+        &prepared.prepared.message_id,
+    )
+    .expect("TASK1373 B opens the view-once row once");
+    assert!(
+        opened.plaintext == MARKED_CONTENT,
+        "TASK1373 first open returned the marked content"
+    );
+    assert!(
+        opened.view_once_consumed,
+        "TASK1373 first open reports view-once consumption"
+    );
+    assert!(
+        !relay.still_pending(&honest.id),
+        "TASK1373 first open removes the relay row"
+    );
+
+    relay.inject(
+        &alice.identity_id,
+        &bob.identity_id,
+        &honest.scope_id,
+        &honest.bundle_b64,
+    );
+
+    if std::env::var_os("OSL_TASK1373_DISABLE_VIEW_ONCE_REMOVAL_ON_B").is_some() {
+        let replay_ledger_removed = bob.remove_peer_replay_ledger_for_task1373();
+        let wrapped_key_resets = relay.reset_wrapped_key_consumption_for(&bob.identity_id);
+        println!(
+            "TASK1373 disabled_view_once_removal_on_b replay_ledger_removed={replay_ledger_removed} wrapped_key_resets={wrapped_key_resets}"
+        );
+    }
+
+    let second_open = reveal_native_discord_overlay_view_once(
+        &bob.core,
+        &bob.security,
+        &bob.broker,
+        &prepared.prepared.message_id,
+    );
+    match second_open {
+        Ok(opened) if opened.plaintext == MARKED_CONTENT => {
+            println!("TASK1373 second_open_returned_marked_content=true");
+            panic!("TASK1373 second open returned marked content");
+        }
+        Ok(_) => panic!("TASK1373 second open returned different plaintext"),
+        Err(error) => {
+            println!("TASK1373 second_open_refused={error}");
+        }
+    }
+
+    drop(alice);
+    drop(bob);
+    drop(storage);
+}
+
+fn task_0591_free_receiver_reveals_pro_view_once_case(
+    label: &str,
+    install_free_record: bool,
+    fixture: &str,
+) {
+    let relay = RelayServer::start();
+    let storage = TestStorage::new(label);
+    let relay_url = relay.base_url();
+
+    let alice = Peer::new(&storage, "alice", &relay_url, "b591a");
+    let bob = Peer::new(&storage, "bob", &relay_url, "b591b");
+    alice.install_pro_license();
+    if install_free_record {
+        bob.install_free_license();
+    }
+    alice.open_native_context_to(&bob.friend_code);
+    bob.open_native_context_to(&alice.friend_code);
+
+    alice.activate();
+    let prepared = prepare_native_discord_overlay_text(
+        &alice.core,
+        &alice.security,
+        &alice.broker,
+        &ai_carrier_fixture(),
         fixture.to_owned(),
         true,
+        None,
     )
     .expect("task_0591_pro_sender_must_create_view_once");
 
@@ -2773,19 +3247,6 @@ fn task_0591_free_receiver_reveals_pro_view_once_case(
     assert!(
         listed.pending_view_once[0].message_id == prepared.prepared.message_id,
         "task_0591_free_receiver_pending_id"
-        MARKED_CONTENT.to_owned(),
-        true,
-    )
-    .expect("TASK1373 prepare view-once message");
-    let honest = relay.posted_row(&alice.identity_id, &bob.identity_id);
-
-    bob.activate();
-    let listed = drain_native_discord_overlay_text(&bob.core, &bob.security, &bob.broker)
-        .expect("TASK1373 B lists the view-once row");
-    assert_eq!(
-        listed.pending_view_once.len(),
-        1,
-        "TASK1373 pending view-once count"
     );
 
     let opened = reveal_native_discord_overlay_view_once(
@@ -2868,55 +3329,6 @@ fn task_0591_reading_path_has_zero_tier_checks() {
     .sum::<usize>();
     println!("task_0591_reading_path_tier_checks={tier_checks}");
     assert_eq!(tier_checks, 0, "task_0591_reading_path_tier_checks");
-    .expect("TASK1373 B opens the view-once row once");
-    assert!(
-        opened.plaintext == MARKED_CONTENT,
-        "TASK1373 first open returned the marked content"
-    );
-    assert!(
-        opened.view_once_consumed,
-        "TASK1373 first open reports view-once consumption"
-    );
-    assert!(
-        !relay.still_pending(&honest.id),
-        "TASK1373 first open removes the relay row"
-    );
-
-    relay.inject(
-        &alice.identity_id,
-        &bob.identity_id,
-        &honest.scope_id,
-        &honest.bundle_b64,
-    );
-
-    if std::env::var_os("OSL_TASK1373_DISABLE_VIEW_ONCE_REMOVAL_ON_B").is_some() {
-        let replay_ledger_removed = bob.remove_peer_replay_ledger_for_task1373();
-        let wrapped_key_resets = relay.reset_wrapped_key_consumption_for(&bob.identity_id);
-        println!(
-            "TASK1373 disabled_view_once_removal_on_b replay_ledger_removed={replay_ledger_removed} wrapped_key_resets={wrapped_key_resets}"
-        );
-    }
-
-    let second_open = reveal_native_discord_overlay_view_once(
-        &bob.core,
-        &bob.security,
-        &bob.broker,
-        &prepared.prepared.message_id,
-    );
-    match second_open {
-        Ok(opened) if opened.plaintext == MARKED_CONTENT => {
-            println!("TASK1373 second_open_returned_marked_content=true");
-            panic!("TASK1373 second open returned marked content");
-        }
-        Ok(_) => panic!("TASK1373 second open returned different plaintext"),
-        Err(error) => {
-            println!("TASK1373 second_open_refused={error}");
-        }
-    }
-
-    drop(alice);
-    drop(bob);
-    drop(storage);
 }
 
 /// A message larger than one carrier chunk is split by the sender into several
@@ -3552,6 +3964,7 @@ fn task_0173_one_way_allowance_still_permits_protected_send() {
         &ai_carrier_fixture(),
         "TASK0173 protected send fixture".to_owned(),
         false,
+        None,
     )
     .expect("one-way allowance permits protected-message preparation");
     let protected_text = prepared
@@ -3631,6 +4044,7 @@ fn task_0258_everywhere_then_nowhere_protected_message_actions() {
             &ai_carrier_fixture(),
             "TASK0258 protected send fixture".to_owned(),
             false,
+            None,
         )
         .expect("everywhere account reach permits protected-message action");
         assert!(prepared.prepared.person_to_person_e2ee);
@@ -3670,6 +4084,7 @@ fn task_0258_everywhere_then_nowhere_protected_message_actions() {
             &ai_carrier_fixture(),
             "TASK0258 protected skip fixture".to_owned(),
             false,
+            None,
         ) {
             Ok(_) => panic!("nowhere account reach must skip protected-message action"),
             Err(error) => error,
@@ -3783,6 +4198,7 @@ fn task_0274_blocked_friend_stops_every_message_path() {
         &ai_carrier_fixture(),
         "TASK0274 protected read fixture".to_owned(),
         false,
+        None,
     )
     .expect("accepted friend can prepare the protected message");
     let prepare_result = prepared.prepared.message_id.clone();
@@ -3865,6 +4281,7 @@ fn task_0274_blocked_friend_stops_every_message_path() {
         &ai_carrier_fixture(),
         "TASK0274 blocked prepare fixture".to_owned(),
         false,
+        None,
     ) {
         Ok(_) => panic!("blocked friend must refuse prepare path"),
         Err(error) => error,
@@ -3939,6 +4356,77 @@ fn task_0274_blocked_friend_stops_every_message_path() {
         good_fingerprints.join("|"),
         after_block_fingerprints.join("|")
     );
+
+    alice.activate();
+    set_friend_relationship(
+        &alice.core,
+        &alice.security,
+        alice_bob_friend.clone(),
+        FriendRelationship::Accepted,
+    )
+    .expect("unblocking friend persists");
+    set_hub_friend_account_reach_everywhere(
+        &alice.security,
+        alice_bob_friend.clone(),
+        vec![FriendAccountReachAccount {
+            service_id: "discord".to_owned(),
+            account_id: alice.account_id.clone(),
+            account_label: "TASK0274 Alice Discord".to_owned(),
+        }],
+    )
+    .expect("unblocked friend can restore account reach");
+
+    let mut unblocked_successes = Vec::new();
+    let prepared_again = prepare_native_discord_overlay_text(
+        &alice.core,
+        &alice.security,
+        &alice.broker,
+        &ai_carrier_fixture(),
+        "TASK0274 unblocked prepare fixture".to_owned(),
+        false,
+        None,
+    )
+    .expect("unblocked friend can prepare again");
+    unblocked_successes.push(format!("prepare={}", prepared_again.prepared.message_id));
+    let read_again = drain_native_discord_overlay_text(&alice.core, &alice.security, &alice.broker)
+        .expect("unblocked friend can read again");
+    assert_eq!(read_again.messages.len(), 1);
+    unblocked_successes.push(format!("read={}", read_again.messages[0].message_id));
+    let mut unblocked_place_trace = Vec::new();
+    let placed_again = with_allowed_place_before_protected_message_path(
+        &mut unblocked_place_trace,
+        || {
+            let binding = manual_peer_binding(&alice.core, alice_bob_friend.clone())?;
+            let scope = alice
+                .scope
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .clone()
+                .expect("Alice context scope is active after unblock");
+            osl_privacy_hub::security::require_manual_peer_scope_approved(
+                &alice.core,
+                "discord",
+                &alice.account_id,
+                binding.person_id,
+                scope,
+            )
+        },
+        |binding| Ok(format!("place-{}", binding.peer_osl_user_id)),
+    )
+    .expect("unblocked friend reaches placement again");
+    unblocked_successes.push(format!("place={placed_again}"));
+    let reach_again = list_friend_account_reach_choices(&alice.security, alice_bob_friend)
+        .expect("unblocked friend can read account reach again");
+    assert_eq!(reach_again.len(), 1);
+    unblocked_successes.push(format!("account_reach={}", reach_again[0].account_id));
+    println!(
+        "TASK0274_UNBLOCKED_SUCCESSES count={} successes={}",
+        unblocked_successes.len(),
+        unblocked_successes.join("|")
+    );
+}
+
+#[test]
 fn discord_receiving_command_refuses_empty_store() {
     let _serial = fixture_lock()
         .lock()

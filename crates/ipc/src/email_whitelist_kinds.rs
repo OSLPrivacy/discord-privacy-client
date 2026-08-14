@@ -20,6 +20,20 @@ impl EmailWhitelistKind {
             Self::EmailDomain => "email domain",
         }
     }
+
+    pub const fn rule_key(self) -> &'static str {
+        match self {
+            Self::EmailAddress => "email_address",
+            Self::EmailDomain => "email_domain",
+        }
+    }
+
+    pub const fn allowed_place_kind(self) -> &'static str {
+        match self {
+            Self::EmailAddress => "sender_address",
+            Self::EmailDomain => "sender_domain",
+        }
+    }
 }
 
 pub fn parse_email_whitelist_kind(input: &str) -> Result<EmailWhitelistKind, String> {

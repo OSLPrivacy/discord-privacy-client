@@ -52,26 +52,27 @@ describe("cipher-store rate limiter failure policy", () => {
     });
   });
 
-  it("fails closed for anonymous blob lookups but keeps other reads available when KV is unavailable", async () => {
+  it("fails closed for every ciphertext lookup when the exact store gate is unavailable", async () => {
     const env = envWith({ get: vi.fn().mockRejectedValue(new Error("down")) });
     await expect(rateLimit(env, "203.0.113.1", "fetch")).resolves.toEqual({
       allowed: false,
       remaining: 0,
     });
     await expect(rateLimit(env, "203.0.113.1", "attachment-fetch")).resolves.toEqual({
-      allowed: true,
+      allowed: false,
       remaining: 0,
     });
   });
 
-  it("never writes a raw or plain-hashed IP into the KV key", async () => {
-    const put = vi.fn().mockResolvedValue(undefined);
-    const env = envWith({ get: vi.fn().mockResolvedValue(null), put });
-    // `attachment-fetch` is a KV-backed read bucket.
-    await rateLimit(env, "203.0.113.77", "attachment-fetch");
-    const storedKey = String(put.mock.calls[0]?.[0]);
-    expect(storedKey).not.toContain("203.0.113.77");
-    expect(storedKey).toMatch(/^rl:attachment-fetch:\d+:[0-9a-f]{32}$/);
+  it("never writes a raw address into the address-wide fetch ledger", async () => {
+    const env = workerEnv({ RATE_LIMIT_HASH_KEY: secret });
+    await rateLimit(env, "203.0.113.77", "attachment-fetch", { requestId: "rate-test-attachment" });
+    const stored = JSON.stringify(await d1All<Record<string, unknown>>(
+      "SELECT address_key, request_id, caller, observed_at_ms FROM fetch_budget_events",
+    ));
+    expect(stored).not.toContain("203.0.113.77");
+    expect(stored).toContain("rate-test-attachment");
+    expect(stored).toContain("attachment-fetch");
   });
 
   it("never writes a raw or plain-hashed IP into the atomic counter key", async () => {

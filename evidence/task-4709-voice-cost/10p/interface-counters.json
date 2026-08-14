@@ -1,0 +1,190 @@
+{
+  "counter_source": "/proc/<pid>/io (kernel per-process read/write syscall byte accounting)",
+  "io_after": {
+    "speaker-00": {
+      "cancelled_write_bytes": 0,
+      "rchar": 243361,
+      "read_bytes": 0,
+      "syscr": 21646,
+      "syscw": 21362,
+      "wchar": 184426,
+      "write_bytes": 4096
+    },
+    "speaker-01": {
+      "cancelled_write_bytes": 0,
+      "rchar": 247506,
+      "read_bytes": 0,
+      "syscr": 21646,
+      "syscw": 21346,
+      "wchar": 185510,
+      "write_bytes": 4096
+    },
+    "speaker-02": {
+      "cancelled_write_bytes": 0,
+      "rchar": 246304,
+      "read_bytes": 0,
+      "syscr": 21619,
+      "syscw": 21329,
+      "wchar": 184839,
+      "write_bytes": 4096
+    },
+    "speaker-03": {
+      "cancelled_write_bytes": 0,
+      "rchar": 247974,
+      "read_bytes": 0,
+      "syscr": 21674,
+      "syscw": 21392,
+      "wchar": 185274,
+      "write_bytes": 4096
+    },
+    "speaker-04": {
+      "cancelled_write_bytes": 0,
+      "rchar": 244806,
+      "read_bytes": 0,
+      "syscr": 21569,
+      "syscw": 21283,
+      "wchar": 185079,
+      "write_bytes": 4096
+    },
+    "speaker-05": {
+      "cancelled_write_bytes": 0,
+      "rchar": 253933,
+      "read_bytes": 0,
+      "syscr": 21880,
+      "syscw": 21592,
+      "wchar": 186943,
+      "write_bytes": 4096
+    },
+    "speaker-06": {
+      "cancelled_write_bytes": 0,
+      "rchar": 247336,
+      "read_bytes": 0,
+      "syscr": 21633,
+      "syscw": 21340,
+      "wchar": 185531,
+      "write_bytes": 4096
+    },
+    "speaker-07": {
+      "cancelled_write_bytes": 0,
+      "rchar": 251746,
+      "read_bytes": 0,
+      "syscr": 21971,
+      "syscw": 21673,
+      "wchar": 188199,
+      "write_bytes": 4096
+    },
+    "speaker-08": {
+      "cancelled_write_bytes": 0,
+      "rchar": 242490,
+      "read_bytes": 0,
+      "syscr": 21310,
+      "syscw": 21027,
+      "wchar": 183027,
+      "write_bytes": 4096
+    },
+    "speaker-09": {
+      "cancelled_write_bytes": 0,
+      "rchar": 244109,
+      "read_bytes": 0,
+      "syscr": 21496,
+      "syscw": 21213,
+      "wchar": 184519,
+      "write_bytes": 4096
+    }
+  },
+  "io_after_wall_unix_ns": 1786632071405151209,
+  "io_before": {
+    "speaker-00": {
+      "cancelled_write_bytes": 0,
+      "rchar": 73689,
+      "read_bytes": 0,
+      "syscr": 473,
+      "syscw": 387,
+      "wchar": 16662,
+      "write_bytes": 4096
+    },
+    "speaker-01": {
+      "cancelled_write_bytes": 0,
+      "rchar": 78154,
+      "read_bytes": 0,
+      "syscr": 513,
+      "syscw": 411,
+      "wchar": 18066,
+      "write_bytes": 4096
+    },
+    "speaker-02": {
+      "cancelled_write_bytes": 0,
+      "rchar": 76720,
+      "read_bytes": 0,
+      "syscr": 457,
+      "syscw": 365,
+      "wchar": 17163,
+      "write_bytes": 4096
+    },
+    "speaker-03": {
+      "cancelled_write_bytes": 0,
+      "rchar": 77750,
+      "read_bytes": 0,
+      "syscr": 432,
+      "syscw": 348,
+      "wchar": 16958,
+      "write_bytes": 4096
+    },
+    "speaker-04": {
+      "cancelled_write_bytes": 0,
+      "rchar": 75526,
+      "read_bytes": 0,
+      "syscr": 445,
+      "syscw": 357,
+      "wchar": 17707,
+      "write_bytes": 4096
+    },
+    "speaker-05": {
+      "cancelled_write_bytes": 0,
+      "rchar": 82141,
+      "read_bytes": 0,
+      "syscr": 442,
+      "syscw": 352,
+      "wchar": 17059,
+      "write_bytes": 4096
+    },
+    "speaker-06": {
+      "cancelled_write_bytes": 0,
+      "rchar": 77952,
+      "read_bytes": 0,
+      "syscr": 496,
+      "syscw": 401,
+      "wchar": 18055,
+      "write_bytes": 4096
+    },
+    "speaker-07": {
+      "cancelled_write_bytes": 0,
+      "rchar": 79642,
+      "read_bytes": 0,
+      "syscr": 494,
+      "syscw": 394,
+      "wchar": 18003,
+      "write_bytes": 4096
+    },
+    "speaker-08": {
+      "cancelled_write_bytes": 0,
+      "rchar": 75602,
+      "read_bytes": 0,
+      "syscr": 485,
+      "syscw": 400,
+      "wchar": 18047,
+      "write_bytes": 4096
+    },
+    "speaker-09": {
+      "cancelled_write_bytes": 0,
+      "rchar": 75693,
+      "read_bytes": 0,
+      "syscr": 480,
+      "syscw": 395,
+      "wchar": 18011,
+      "write_bytes": 4096
+    }
+  },
+  "io_before_wall_unix_ns": 1786631890410201965,
+  "sampled_by": "orchestrator (measure.py), never self-reported by the speaker process"
+}

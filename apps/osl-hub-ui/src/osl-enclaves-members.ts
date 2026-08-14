@@ -18,6 +18,22 @@ export interface SpaceMemberList {
   readonly rows: readonly SpaceMemberListRow[];
 }
 
+export const ENCLAVE_REMOVAL_DELAY_WARNING = "Removal takes time and is not immediate.";
+
+export interface EnclaveRemovalProgress {
+  readonly jobId: string;
+  readonly completed: number;
+  readonly remaining: number;
+  readonly status: "waiting-confirmation" | "running" | "complete";
+}
+
+export interface EnclaveRemovalView {
+  readonly targetMemberId: string;
+  readonly enclaveMemberCount: number;
+  readonly measuredWarningThreshold: number;
+  readonly progress: EnclaveRemovalProgress | null;
+}
+
 const MAX_MEMBER_NAME_LENGTH = 256;
 
 function assertKnownMember(member: KnownSpaceMember): void {
@@ -48,6 +64,7 @@ export function projectKnownSpaceMembers(members: readonly KnownSpaceMember[]): 
 export function renderSpaceMemberList(
   document: Document,
   members: readonly KnownSpaceMember[],
+  removal: EnclaveRemovalView | null = null,
 ): HTMLElement {
   const listModel = projectKnownSpaceMembers(members);
   const root = document.createElement("section");
@@ -66,5 +83,48 @@ export function renderSpaceMemberList(
     list.append(item);
   }
   root.append(list);
+
+  if (removal) {
+    if (!Number.isSafeInteger(removal.enclaveMemberCount) || removal.enclaveMemberCount < 1
+      || !Number.isSafeInteger(removal.measuredWarningThreshold) || removal.measuredWarningThreshold < 1
+      || !members.some((member) => member.memberId === removal.targetMemberId)) {
+      throw new Error("Invalid Enclave removal state");
+    }
+    const panel = document.createElement("section");
+    panel.className = "osl-enclave-removal";
+    panel.setAttribute("aria-label", "Remove member");
+
+    if (removal.enclaveMemberCount >= removal.measuredWarningThreshold) {
+      const warning = document.createElement("p");
+      warning.className = "osl-enclave-removal-delay";
+      warning.textContent = ENCLAVE_REMOVAL_DELAY_WARNING;
+      panel.append(warning);
+    }
+
+    if (removal.progress) {
+      const { completed, remaining } = removal.progress;
+      if (!Number.isSafeInteger(completed) || completed < 0
+        || !Number.isSafeInteger(remaining) || remaining < 0
+        || removal.progress.status === "complete" && remaining !== 0) {
+        throw new Error("Invalid Enclave removal progress");
+      }
+      const progress = document.createElement("progress");
+      progress.setAttribute("value", String(completed));
+      progress.setAttribute("max", String(completed + remaining));
+      progress.setAttribute("aria-label", `${completed} successor authorities complete, ${remaining} remaining`);
+      panel.append(progress);
+
+      const progressText = document.createElement("p");
+      progressText.textContent = `${completed} complete, ${remaining} remaining`;
+      panel.append(progressText);
+    }
+
+    const confirm = document.createElement("button");
+    confirm.setAttribute("type", "button");
+    confirm.setAttribute("data-confirm-enclave-removal", removal.targetMemberId);
+    confirm.textContent = "Confirm removal";
+    panel.append(confirm);
+    root.append(panel);
+  }
   return root;
 }

@@ -1,0 +1,285 @@
+{
+  "schema": "osl.service-person-results.inventory.v1",
+  "routes": [
+    {
+      "method": "POST",
+      "route": "/v1/control-inbox",
+      "classification": "person",
+      "kind": "relay",
+      "constructor": "keyserver-cf/src/lib/person-facing-result.ts"
+    },
+    {
+      "method": "GET",
+      "route": "/v1/control-inbox/:id",
+      "classification": "protocol",
+      "kind": "relay",
+      "constructor": "keyserver-cf/src/endpoints/control-inbox.ts"
+    },
+    {
+      "method": "DELETE",
+      "route": "/v1/control-inbox/:id",
+      "classification": "protocol",
+      "kind": "relay",
+      "constructor": "keyserver-cf/src/endpoints/control-inbox.ts"
+    },
+    {
+      "method": "GET",
+      "route": "/v1/sender-filter-capability-floor/:id",
+      "classification": "protocol",
+      "kind": "relay",
+      "constructor": "keyserver-cf/src/endpoints/sender-filter-capability-floor.ts"
+    },
+    {
+      "method": "GET",
+      "route": "/redeem",
+      "classification": "presentation",
+      "kind": "payment_voucher",
+      "constructor": "keyserver-cf/src/endpoints/redeem-page.ts"
+    },
+    {
+      "method": "GET",
+      "route": "/redeem/:code",
+      "classification": "presentation",
+      "kind": "payment_voucher",
+      "constructor": "keyserver-cf/src/endpoints/redeem-page.ts"
+    },
+    {
+      "method": "POST",
+      "route": "/v1/register",
+      "classification": "person",
+      "kind": "key_server",
+      "constructor": "keyserver-cf/src/lib/person-facing-result.ts"
+    },
+    {
+      "method": "POST",
+      "route": "/v1/usernames/claim",
+      "classification": "person",
+      "kind": "key_server",
+      "constructor": "keyserver-cf/src/lib/person-facing-result.ts"
+    },
+    {
+      "method": "POST",
+      "route": "/v1/usernames/lookup",
+      "classification": "person",
+      "kind": "key_server",
+      "constructor": "keyserver-cf/src/lib/person-facing-result.ts"
+    },
+    {
+      "method": "GET",
+      "route": "/v1/healthz",
+      "classification": "protocol",
+      "kind": "key_server",
+      "constructor": "keyserver-cf/src/endpoints/healthz.ts"
+    },
+    {
+      "method": "GET",
+      "route": "/v1/pubkeys/:id",
+      "classification": "protocol",
+      "kind": "key_server",
+      "constructor": "keyserver-cf/src/endpoints/pubkeys.ts"
+    },
+    {
+      "method": "DELETE",
+      "route": "/v1/pubkeys/:id",
+      "classification": "protocol",
+      "kind": "key_server",
+      "constructor": "keyserver-cf/src/endpoints/unregister.ts"
+    },
+    {
+      "method": "POST",
+      "route": "/v1/account-ownership/challenge",
+      "classification": "protocol",
+      "kind": "key_server",
+      "constructor": "keyserver-cf/src/endpoints/account-ownership-challenge.ts"
+    },
+    {
+      "method": "POST",
+      "route": "/v1/account-ownership/proof",
+      "classification": "protocol",
+      "kind": "key_server",
+      "constructor": "keyserver-cf/src/endpoints/account-ownership-proof.ts"
+    },
+    {
+      "method": "GET",
+      "route": "/v1/prekey-bundle/:id",
+      "classification": "protocol",
+      "kind": "key_server",
+      "constructor": "keyserver-cf/src/endpoints/prekey-bundle.ts"
+    },
+    {
+      "method": "POST",
+      "route": "/v1/prekey-bundle/replenish",
+      "classification": "protocol",
+      "kind": "key_server",
+      "constructor": "keyserver-cf/src/endpoints/prekey-bundle.ts"
+    },
+    {
+      "method": "GET",
+      "route": "/v1/wrapped-keys/:id",
+      "classification": "protocol",
+      "kind": "key_server",
+      "constructor": "keyserver-cf/src/endpoints/wrapped-keys.ts"
+    },
+    {
+      "method": "POST",
+      "route": "/v1/wrapped-keys",
+      "classification": "protocol",
+      "kind": "key_server",
+      "constructor": "keyserver-cf/src/endpoints/wrapped-keys.ts"
+    },
+    {
+      "method": "POST",
+      "route": "/v1/wrapped-keys/:id/opened",
+      "classification": "protocol",
+      "kind": "key_server",
+      "constructor": "keyserver-cf/src/endpoints/wrapped-keys.ts"
+    },
+    {
+      "method": "DELETE",
+      "route": "/v1/wrapped-keys",
+      "classification": "protocol",
+      "kind": "key_server",
+      "constructor": "keyserver-cf/src/endpoints/wrapped-keys.ts"
+    },
+    {
+      "method": "POST",
+      "route": "/v1/link-grant",
+      "classification": "protocol",
+      "kind": "key_server",
+      "constructor": "keyserver-cf/src/endpoints/link-grant.ts"
+    },
+    {
+      "method": "POST",
+      "route": "/v1/license/redeem",
+      "classification": "person",
+      "kind": "payment_voucher",
+      "constructor": "keyserver-cf/src/lib/person-facing-result.ts"
+    },
+    {
+      "method": "POST",
+      "route": "/v1/license/validate",
+      "classification": "person",
+      "kind": "payment_voucher",
+      "constructor": "keyserver-cf/src/lib/person-facing-result.ts"
+    },
+    {
+      "method": "GET",
+      "route": "/v/:id",
+      "classification": "presentation",
+      "kind": "storage",
+      "constructor": "cipher-store-cf/src/lib/landing.ts"
+    },
+    {
+      "method": "HEAD",
+      "route": "/v/:id",
+      "classification": "presentation",
+      "kind": "storage",
+      "constructor": "cipher-store-cf/src/lib/landing.ts"
+    },
+    {
+      "method": "POST",
+      "route": "/v/:id/fetch",
+      "classification": "person",
+      "kind": "storage",
+      "constructor": "cipher-store-cf/src/lib/person-facing-result.ts"
+    },
+    {
+      "method": "POST",
+      "route": "/v/:id/burn",
+      "classification": "protocol",
+      "kind": "storage",
+      "constructor": "cipher-store-cf/src/endpoints/link.ts"
+    },
+    {
+      "method": "POST",
+      "route": "/v1/link",
+      "classification": "person",
+      "kind": "storage",
+      "constructor": "cipher-store-cf/src/lib/person-facing-result.ts"
+    },
+    {
+      "method": "POST",
+      "route": "/v1/link/:id/status",
+      "classification": "person",
+      "kind": "storage",
+      "constructor": "cipher-store-cf/src/lib/person-facing-result.ts"
+    },
+    {
+      "method": "DELETE",
+      "route": "/v1/link/:id",
+      "classification": "person",
+      "kind": "storage",
+      "constructor": "cipher-store-cf/src/lib/person-facing-result.ts"
+    },
+    {
+      "method": "PUT",
+      "route": "/v1/blob",
+      "classification": "person",
+      "kind": "storage",
+      "constructor": "cipher-store-cf/src/lib/person-facing-result.ts"
+    },
+    {
+      "method": "GET",
+      "route": "/v1/blob/:id",
+      "classification": "person",
+      "kind": "storage",
+      "constructor": "cipher-store-cf/src/lib/person-facing-result.ts"
+    },
+    {
+      "method": "POST",
+      "route": "/v1/blob/:id/ack",
+      "classification": "person",
+      "kind": "storage",
+      "constructor": "cipher-store-cf/src/lib/person-facing-result.ts"
+    },
+    {
+      "method": "DELETE",
+      "route": "/v1/blob/:id",
+      "classification": "person",
+      "kind": "storage",
+      "constructor": "cipher-store-cf/src/lib/person-facing-result.ts"
+    },
+    {
+      "method": "POST",
+      "route": "/v1/attachment",
+      "classification": "person",
+      "kind": "storage",
+      "constructor": "cipher-store-cf/src/lib/person-facing-result.ts"
+    },
+    {
+      "method": "POST",
+      "route": "/v1/attachment/session",
+      "classification": "person",
+      "kind": "storage",
+      "constructor": "cipher-store-cf/src/lib/person-facing-result.ts"
+    },
+    {
+      "method": "PUT",
+      "route": "/v1/attachment/:id/part/:part",
+      "classification": "person",
+      "kind": "storage",
+      "constructor": "cipher-store-cf/src/lib/person-facing-result.ts"
+    },
+    {
+      "method": "POST",
+      "route": "/v1/attachment/:id/complete",
+      "classification": "person",
+      "kind": "storage",
+      "constructor": "cipher-store-cf/src/lib/person-facing-result.ts"
+    },
+    {
+      "method": "GET",
+      "route": "/v1/attachment/:id",
+      "classification": "person",
+      "kind": "storage",
+      "constructor": "cipher-store-cf/src/lib/person-facing-result.ts"
+    },
+    {
+      "method": "DELETE",
+      "route": "/v1/attachment/:id",
+      "classification": "person",
+      "kind": "storage",
+      "constructor": "cipher-store-cf/src/lib/person-facing-result.ts"
+    }
+  ]
+}

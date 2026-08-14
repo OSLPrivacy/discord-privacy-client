@@ -1,0 +1,80 @@
+/* TASK 5049 — source-faithful square, dark Settings rows using existing tokens. */
+.friends-settings-surface { display: grid; gap: 28px; }
+.friends-settings-surface .button.compact { min-height: 44px; }
+.friends-settings-heading { position: relative; padding-right: 120px; }
+.friends-settings-heading h2,
+.friends-settings-group h3,
+.friends-settings-list h3 { margin: 0; }
+.friends-settings-heading p,
+.friends-settings-group header p,
+.friends-settings-list header p { margin: 4px 0 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.friends-settings-heading > .status-tag { position: absolute; top: 0; right: 0; }
+.friends-settings-lists,
+.friends-settings-policies { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.friends-settings-list,
+.friends-settings-group { min-width: 0; }
+.friends-settings-list { border: 1px solid var(--line); background: var(--panel); }
+.friends-settings-list > header,
+.friends-settings-group > header { min-height: 58px; padding: 12px 14px; border-bottom: 1px solid var(--line-soft); display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.friends-settings-group > header { padding-inline: 0; }
+.friends-settings-person,
+.friends-settings-request,
+.friends-settings-account { min-height: 62px; padding: 9px 12px; border-bottom: 1px solid var(--line-soft); display: grid; grid-template-columns: 34px minmax(0, 1fr) auto; align-items: center; gap: 10px; }
+.friends-settings-person:last-child,
+.friends-settings-request:last-child,
+.friends-settings-account:last-child { border-bottom: 0; }
+.friends-settings-person > span:nth-child(2),
+.friends-settings-person strong,
+.friends-settings-person small,
+.friends-settings-request strong,
+.friends-settings-request small,
+.friends-settings-account strong,
+.friends-settings-account small { min-width: 0; display: block; }
+.friends-settings-person strong,
+.friends-settings-request strong,
+.friends-settings-account strong { overflow: hidden; color: var(--text); text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+.friends-settings-person small,
+.friends-settings-request small,
+.friends-settings-account small { margin-top: 3px; overflow: hidden; color: var(--muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.friends-settings-avatar,
+.friends-settings-account-mark { width: 34px; height: 34px; border: 1px solid var(--line); display: grid !important; place-items: center; background: var(--panel-2); color: var(--brand); font-size: 11px; font-weight: 700; }
+.friends-settings-row-actions,
+.friends-settings-request > span:last-child { display: flex; justify-content: flex-end; gap: 6px; }
+.friends-settings-person { grid-template-columns: 34px minmax(0, 1fr); }
+.friends-settings-row-actions { grid-column: 1 / -1; justify-content: flex-start; }
+.friends-settings-request { grid-template-columns: minmax(0, 1fr) auto; }
+.friends-settings-empty { min-height: 76px; padding: 14px; display: grid; place-content: center start; gap: 4px; color: var(--muted); }
+.friends-settings-empty strong,
+.friends-settings-empty small { display: block; }
+.friends-settings-empty strong { color: var(--text); font-size: 12px; }
+.friends-settings-empty small { font-size: 11px; line-height: 1.45; }
+.friends-settings-policy { min-width: 0; margin: 0; padding: 0; border: 1px solid var(--line); background: var(--panel); }
+.friends-settings-policy legend { width: 100%; padding: 12px 14px; border-bottom: 1px solid var(--line-soft); color: var(--subtle); font-size: 11px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
+.friends-settings-choice { min-height: 58px; padding: 9px 12px; border-bottom: 1px solid var(--line-soft); display: flex; align-items: center; justify-content: space-between; gap: 12px; cursor: pointer; }
+.friends-settings-choice:last-child { border-bottom: 0; }
+.friends-settings-choice strong,
+.friends-settings-choice small { display: block; }
+.friends-settings-choice strong,
+.friends-settings-surface .setting-line strong { color: var(--text); }
+.friends-settings-choice small { margin-top: 3px; color: var(--muted); font-size: 11px; }
+.friends-settings-choice input,
+.friends-settings-account input { width: 20px; height: 20px; flex: 0 0 auto; accent-color: var(--brand); }
+.friends-settings-toggles,
+.friends-settings-requests,
+.friends-settings-accounts { border: 1px solid var(--line); border-top: 0; background: var(--panel); }
+.friends-settings-requests { margin-top: 12px; border-top: 1px solid var(--line); }
+.friends-settings-account { grid-template-columns: 34px minmax(0, 1fr) 24px; cursor: pointer; }
+.friends-settings-account:focus-within,
+.friends-settings-choice:focus-within,
+.friends-settings-person:focus-within,
+.friends-settings-request:focus-within { outline: 2px solid var(--brand); outline-offset: -2px; }
+
+@media (max-width: 900px) {
+  .friends-settings-lists,
+  .friends-settings-policies { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 620px) {
+  .friends-settings-heading { padding-right: 0; }
+  .friends-settings-heading > .status-tag { position: static; margin-top: 10px; }
+}

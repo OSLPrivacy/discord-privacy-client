@@ -11,10 +11,10 @@ use sha2::{Digest, Sha256};
 // at any point, and a scan test below pins that it never starts again.
 pub use crate::native_a11y::{
     acquire_uia2_editables, acquire_uia2_window, clear_uia2_composer, place_uia2_carrier,
-    resolve_uia2_composer, uia2_carrier_carries_submit, Uia2AcquireError, Uia2Acquired,
-    Uia2CallTimeout, Uia2ComposerError, Uia2ComposerMatcher, Uia2Editable, Uia2OwnedWindow,
-    Uia2PlacementRefusal, Uia2ResolvedWindow, Uia2Syscalls, Uia2TreeRoute, Uia2WakePolicy,
-    Uia2WindowPlan, Uia2WindowResolveError, Uia2WindowShape, WEBVIEW2_PROCESS_NAME,
+    read_uia2_composer_value, resolve_uia2_composer, uia2_carrier_carries_submit, Uia2AcquireError,
+    Uia2Acquired, Uia2CallTimeout, Uia2ComposerError, Uia2ComposerMatcher, Uia2Editable,
+    Uia2OwnedWindow, Uia2PlacementRefusal, Uia2ResolvedWindow, Uia2Syscalls, Uia2TreeRoute,
+    Uia2WakePolicy, Uia2WindowPlan, Uia2WindowResolveError, Uia2WindowShape, WEBVIEW2_PROCESS_NAME,
 };
 
 pub const WHATSAPP_ROOT_WINDOW_CLASS: &str = "WinUIDesktopWin32WindowClass";
@@ -837,6 +837,15 @@ pub struct WhatsAppLivePlacementReceipt {
     pub woke: bool,
     pub elements: usize,
     pub readback_contains_carrier: bool,
+    /// Exact byte equality from the shared place-text job's read-back.  Keep
+    /// this separate from containment: the general placement seam permits a
+    /// provider-decorated value, while a carry proof can require exact bytes.
+    pub readback_exact: bool,
+    /// UTF-8 byte count returned by the shared place-text read action.
+    pub readback_bytes: usize,
+    /// UTF-8 byte count returned by the shared read action after a probe clear.
+    /// A successful write-then-clear probe leaves this at zero.
+    pub bytes_after_clear: usize,
     pub cleared: bool,
 }
 
@@ -852,6 +861,9 @@ impl WhatsAppLivePlacementReceipt {
             woke: false,
             elements: 0,
             readback_contains_carrier: false,
+            readback_exact: false,
+            readback_bytes: 0,
+            bytes_after_clear: 0,
             cleared: false,
         }
     }
@@ -959,6 +971,9 @@ fn whatsapp_placement(
         woke: acquired.woke,
         elements: acquired.elements,
         readback_contains_carrier: false,
+        readback_exact: false,
+        readback_bytes: 0,
+        bytes_after_clear: 0,
         cleared: false,
     };
 
@@ -1004,12 +1019,22 @@ fn whatsapp_placement(
     let mut placed = bound(WhatsAppPlacementStatus::Placed);
     placed.placed = receipt.placed;
     placed.readback_contains_carrier = receipt.readback_holds_carrier;
+    placed.readback_exact = receipt.readback_exact;
+    placed.readback_bytes = receipt.readback_bytes;
     placed.enter_sent = receipt.submit_shaped_observed;
 
     if clear_after {
-        match clear_uia2_composer(host, acquired, &composer) {
-            Ok(()) => placed.cleared = true,
-            Err(_) => placed.status = WhatsAppPlacementStatus::ProbeClearFailed,
+        let clear_result = clear_uia2_composer(host, acquired, &composer);
+        let after_clear = read_uia2_composer_value(host, acquired, &composer);
+        placed.bytes_after_clear = after_clear
+            .as_ref()
+            .ok()
+            .and_then(|value| value.as_deref())
+            .map_or(0, str::len);
+        if clear_result.is_ok() && after_clear.is_ok() && placed.bytes_after_clear == 0 {
+            placed.cleared = true;
+        } else {
+            placed.status = WhatsAppPlacementStatus::ProbeClearFailed;
         }
     }
     placed
@@ -1862,6 +1887,50 @@ mod tests {
             [CARRIER, ""],
             "a probe must never leave a carrier in a real person's chat"
         );
+    }
+
+    #[test]
+    fn task_1062_records_every_placement_receipt_field_for_a_marked_byte_string() {
+        // This is intentionally the same prepared, non-sending WhatsApp
+        // companion fixture as the 1060 discovery command.  The marker is
+        // ASCII so its byte sequence is unambiguous in both the carrier and
+        // the recorded composer value.
+        const MARKER: &[u8] = b"TASK1062-WA-BYTES-7F3A";
+        let marker = std::str::from_utf8(MARKER).expect("ASCII marker");
+        let host = whatsapp_host(vec![composer("Type a message")]);
+
+        let receipt = drive_whatsapp_composer_placement(&host, marker, false);
+        let composer_value = host.value.borrow().clone().unwrap_or_default();
+        let marker_in_composer = composer_value.contains(marker);
+
+        println!(
+            "TASK1062 marker_utf8={marker} marker_hex={} marker_bytes_len={}",
+            MARKER.iter().map(|byte| format!("{byte:02X}")).collect::<String>(),
+            MARKER.len(),
+        );
+        println!(
+            "TASK1062 receipt placed={} enter_sent={} status={:?} bound_process_id={} bound_is_app_shell={} tree_route={:?} woke={} elements={} readback_contains_carrier={} cleared={}",
+            receipt.placed,
+            receipt.enter_sent,
+            receipt.status,
+            receipt.bound_process_id,
+            receipt.bound_is_app_shell,
+            receipt.tree_route,
+            receipt.woke,
+            receipt.elements,
+            receipt.readback_contains_carrier,
+            receipt.cleared,
+        );
+        println!(
+            "TASK1062 compose_box name=Type a message exact_marker_present={} value={composer_value}",
+            marker_in_composer,
+        );
+
+        assert_eq!(receipt.status, WhatsAppPlacementStatus::Placed);
+        assert!(receipt.placed);
+        assert!(!receipt.enter_sent);
+        assert!(receipt.readback_contains_carrier);
+        assert!(marker_in_composer, "compose box must contain the exact marker");
     }
 
     #[test]

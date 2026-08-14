@@ -1,0 +1,2 @@
+2026/08/13 07:31:10 "level"=0 "msg"="published track" "name"="osl-real-speech-speaker-00" "source"="MICROPHONE" "trackID"="TR_AMQUTutpTokjZ4"
+2026/08/13 07:31:10 "level"=0 "msg"="track subscribed" "participant"="speaker-01" "track"="TR_AMaktBh4sX63fA" "kind"="audio"

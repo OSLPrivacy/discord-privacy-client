@@ -16,6 +16,7 @@
     "db:migrate:local": "wrangler d1 migrations apply osl-keyserver-prod --local",
     "db:migrate:prod": "node scripts/refuse-unadmitted-production-action.mjs migrate",
     "gen:link-grant-key": "node scripts/gen-link-grant-key.mjs",
+    "stripe:top-up-products": "node scripts/stripe-top-up-products.mjs",
     "readiness:build": "node scripts/build-readiness-artifacts.mjs",
     "readiness:probe-bridge": "node scripts/probe-readiness-bridge.mjs",
     "readiness:admit": "node scripts/admit-readiness-archive.mjs",

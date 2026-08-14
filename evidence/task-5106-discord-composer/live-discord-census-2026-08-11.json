@@ -1,0 +1,188 @@
+{
+    "schema":  "osl-live-carrier-census-v1",
+    "task":  5106,
+    "observed_at_utc":  "2026-08-11T11:16:57Z",
+    "observation_tools":  [
+                              "tasklist.exe",
+                              "Windows PowerShell",
+                              "UIAutomationClient",
+                              "System.Drawing.CopyFromScreen"
+                          ],
+    "forbidden_linux_ui_tools_used":  false,
+    "independent_of_contract_and_manifest":  true,
+    "carrier":  "Discord",
+    "marker":  "OSL5106-PROBE-20260811-3f7c9a",
+    "marker_sha256":  "bb85e7b47a232c501ebbf16dfe3578f9d60dfd93f0b772c0b2abcb5a24630b95",
+    "carrier_visible_before_after":  "UIA ValuePattern read-back proved marker placement and byte-exact restoration; CopyFromScreen proved nonblank foreground pixels",
+    "shipping_integration":  {
+                                 "observed":  false,
+                                 "reason":  "No shipping OSL Windows process was running; this real-carrier collector is development evidence only until a packaged production integration run is reviewed."
+                             },
+    "channels":  [
+                     {
+                         "channel":  "stable",
+                         "process_name":  "Discord",
+                         "executable_name":  "Discord.exe",
+                         "executable_path_sha256":  "51e49e34217f9e2c8c34de6d47b2d72d4a2a56f083a8003e0b2dc2ac7653980e",
+                         "executable_sha256":  "5aaca4d147daacd76024a032c15973499394a1a718769856c8b6042022d31019",
+                         "signer":  "CN=Discord Inc., O=Discord Inc., L=San Francisco, S=California, C=US, SERIALNUMBER=5128862, OID.2.5.4.15=Private Organization, OID.1.3.6.1.4.1.311.60.2.1.2=Delaware, OID.1.3.6.1.4.1.311.60.2.1.3=US",
+                         "signature_status":  "valid",
+                         "version":  "1.0.9251",
+                         "hwnd":  67654,
+                         "original_value_sha256":  "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                         "restored_value_sha256":  "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                         "states":  [
+                                        {
+                                            "key":  "stable/composer-focused-probe",
+                                            "channel":  "stable",
+                                            "state":  "composer-focused-probe",
+                                            "whole_window_distinct_rgb":  8615,
+                                            "composer":  {
+                                                             "name":  "Message #general",
+                                                             "automation_id":  "",
+                                                             "class_name":  "markup__75297 editor__1b31f slateTextArea_ec4baf",
+                                                             "has_keyboard_focus":  true,
+                                                             "runtime_id_sha256":  "94d8a327d3d4e7fb64b7e7f2ee3ce59ffc72b431fd6f5f5ec71afb6d74e9d40d",
+                                                             "bounds":  {
+                                                                            "left":  451,
+                                                                            "top":  935,
+                                                                            "right":  675,
+                                                                            "bottom":  1013
+                                                                        }
+                                                         },
+                                            "marker_readback_sha256":  "bb85e7b47a232c501ebbf16dfe3578f9d60dfd93f0b772c0b2abcb5a24630b95"
+                                        },
+                                        {
+                                            "key":  "stable/composer-unfocused-probe",
+                                            "channel":  "stable",
+                                            "state":  "composer-unfocused-probe",
+                                            "whole_window_distinct_rgb":  8723,
+                                            "composer":  {
+                                                             "name":  "Message #general",
+                                                             "automation_id":  "",
+                                                             "class_name":  "markup__75297 editor__1b31f slateTextArea_ec4baf",
+                                                             "has_keyboard_focus":  false,
+                                                             "runtime_id_sha256":  "94d8a327d3d4e7fb64b7e7f2ee3ce59ffc72b431fd6f5f5ec71afb6d74e9d40d",
+                                                             "bounds":  {
+                                                                            "left":  451,
+                                                                            "top":  935,
+                                                                            "right":  675,
+                                                                            "bottom":  1013
+                                                                        }
+                                                         },
+                                            "marker_readback_sha256":  "bb85e7b47a232c501ebbf16dfe3578f9d60dfd93f0b772c0b2abcb5a24630b95"
+                                        }
+                                    ]
+                     },
+                     {
+                         "channel":  "ptb",
+                         "process_name":  "DiscordPTB",
+                         "executable_name":  "DiscordPTB.exe",
+                         "executable_path_sha256":  "31d38f654dbd9f62f0f9b8f593b7e903f7366bbae671261f01a1f9420f6e07ee",
+                         "executable_sha256":  "32ca5068974b880c43b1edb4dee1172b882c4ea5c8fcc8ece0c077b65db236f0",
+                         "signer":  "CN=Discord Inc., O=Discord Inc., L=San Francisco, S=California, C=US, SERIALNUMBER=5128862, OID.2.5.4.15=Private Organization, OID.1.3.6.1.4.1.311.60.2.1.2=Delaware, OID.1.3.6.1.4.1.311.60.2.1.3=US",
+                         "signature_status":  "valid",
+                         "version":  "1.0.1212",
+                         "hwnd":  329214,
+                         "original_value_sha256":  "b42f2099187886def637d6aa840022266e05cb6c987a9394e708e23cd505eb46",
+                         "restored_value_sha256":  "b42f2099187886def637d6aa840022266e05cb6c987a9394e708e23cd505eb46",
+                         "states":  [
+                                        {
+                                            "key":  "ptb/composer-focused-probe",
+                                            "channel":  "ptb",
+                                            "state":  "composer-focused-probe",
+                                            "whole_window_distinct_rgb":  6138,
+                                            "composer":  {
+                                                             "name":  "Message OSL, OSL Privacy test account",
+                                                             "automation_id":  "",
+                                                             "class_name":  "markup__75297 editor__1b31f slateTextArea_ec4baf",
+                                                             "has_keyboard_focus":  true,
+                                                             "runtime_id_sha256":  "151ee8f4919358207124ee33ef9fe6ba2ef7e9648f97fb7bb60c26269a89cfab",
+                                                             "bounds":  {
+                                                                            "left":  2607,
+                                                                            "top":  905,
+                                                                            "right":  3387,
+                                                                            "bottom":  961
+                                                                        }
+                                                         },
+                                            "marker_readback_sha256":  "bb85e7b47a232c501ebbf16dfe3578f9d60dfd93f0b772c0b2abcb5a24630b95"
+                                        },
+                                        {
+                                            "key":  "ptb/composer-unfocused-probe",
+                                            "channel":  "ptb",
+                                            "state":  "composer-unfocused-probe",
+                                            "whole_window_distinct_rgb":  6137,
+                                            "composer":  {
+                                                             "name":  "Message OSL, OSL Privacy test account",
+                                                             "automation_id":  "",
+                                                             "class_name":  "markup__75297 editor__1b31f slateTextArea_ec4baf",
+                                                             "has_keyboard_focus":  false,
+                                                             "runtime_id_sha256":  "151ee8f4919358207124ee33ef9fe6ba2ef7e9648f97fb7bb60c26269a89cfab",
+                                                             "bounds":  {
+                                                                            "left":  2607,
+                                                                            "top":  905,
+                                                                            "right":  3387,
+                                                                            "bottom":  961
+                                                                        }
+                                                         },
+                                            "marker_readback_sha256":  "bb85e7b47a232c501ebbf16dfe3578f9d60dfd93f0b772c0b2abcb5a24630b95"
+                                        }
+                                    ]
+                     },
+                     {
+                         "channel":  "canary",
+                         "process_name":  "DiscordCanary",
+                         "executable_name":  "DiscordCanary.exe",
+                         "executable_path_sha256":  "af98b99fa6987add5606623e291cc21c4e6bd32ba2a118dd713699a1978d7750",
+                         "executable_sha256":  "c44fa2acbadb709c0a103ae0181bc4906da90d599b0dd14d21dedc1c66fb8eab",
+                         "signer":  "CN=Discord Inc., O=Discord Inc., L=San Francisco, S=California, C=US, SERIALNUMBER=5128862, OID.2.5.4.15=Private Organization, OID.1.3.6.1.4.1.311.60.2.1.2=Delaware, OID.1.3.6.1.4.1.311.60.2.1.3=US",
+                         "signature_status":  "valid",
+                         "version":  "1.0.1102",
+                         "hwnd":  1510246,
+                         "original_value_sha256":  "c9a090d4f40613c073e43dcde78efff4c61bafe8d2994f8a00886293b5b95010",
+                         "restored_value_sha256":  "c9a090d4f40613c073e43dcde78efff4c61bafe8d2994f8a00886293b5b95010",
+                         "states":  [
+                                        {
+                                            "key":  "canary/composer-focused-probe",
+                                            "channel":  "canary",
+                                            "state":  "composer-focused-probe",
+                                            "whole_window_distinct_rgb":  4009,
+                                            "composer":  {
+                                                             "name":  "Message OSL TEST 2, OSL Privacy test account",
+                                                             "automation_id":  "",
+                                                             "class_name":  "markup__75297 editor__1b31f slateTextArea_ec4baf",
+                                                             "has_keyboard_focus":  true,
+                                                             "runtime_id_sha256":  "50e3ce007fc03ce94413e7f075e166abdd8af7818636d78abfc81b8fb9cabe27",
+                                                             "bounds":  {
+                                                                            "left":  1735,
+                                                                            "top":  935,
+                                                                            "right":  1955,
+                                                                            "bottom":  1013
+                                                                        }
+                                                         },
+                                            "marker_readback_sha256":  "bb85e7b47a232c501ebbf16dfe3578f9d60dfd93f0b772c0b2abcb5a24630b95"
+                                        },
+                                        {
+                                            "key":  "canary/composer-unfocused-probe",
+                                            "channel":  "canary",
+                                            "state":  "composer-unfocused-probe",
+                                            "whole_window_distinct_rgb":  4011,
+                                            "composer":  {
+                                                             "name":  "Message OSL TEST 2, OSL Privacy test account",
+                                                             "automation_id":  "",
+                                                             "class_name":  "markup__75297 editor__1b31f slateTextArea_ec4baf",
+                                                             "has_keyboard_focus":  false,
+                                                             "runtime_id_sha256":  "50e3ce007fc03ce94413e7f075e166abdd8af7818636d78abfc81b8fb9cabe27",
+                                                             "bounds":  {
+                                                                            "left":  1735,
+                                                                            "top":  935,
+                                                                            "right":  1955,
+                                                                            "bottom":  1013
+                                                                        }
+                                                         },
+                                            "marker_readback_sha256":  "bb85e7b47a232c501ebbf16dfe3578f9d60dfd93f0b772c0b2abcb5a24630b95"
+                                        }
+                                    ]
+                     }
+                 ]
+}

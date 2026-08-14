@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark" />
+    <title>OSL Chat timed message</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+    <style>
+      body { background: #101723; color: #eef5ff; margin: 0; font-family: Inter, system-ui, sans-serif; }
+      main { box-sizing: border-box; min-height: 100vh; padding: 72px max(64px, calc((100vw - 980px) / 2)); }
+      .task0556-screen { background: #1a2638; border: 1px solid #39506d; border-radius: 20px; box-shadow: 0 24px 70px #050a12; overflow: hidden; }
+      .task0556-topbar { align-items: center; background: #22334b; display: flex; gap: 14px; padding: 23px 28px; }
+      .task0556-avatar { align-items: center; background: #51bfd0; border-radius: 50%; color: #09232b; display: flex; font-weight: 800; height: 42px; justify-content: center; width: 42px; }
+      .task0556-title { margin: 0; font-size: 23px; }
+      .task0556-subtitle { color: #b2c4d9; font-size: 14px; margin: 3px 0 0; }
+      .task0556-conversation { min-height: 368px; padding: 38px 30px; }
+      .task0556-message { background: #2b7a8b; border-radius: 18px 18px 4px 18px; margin-left: auto; max-width: 84%; padding: 18px 20px; width: fit-content; }
+      .task0556-message-label { color: #d6fbff; display: block; font-size: 12px; font-weight: 700; letter-spacing: .08em; margin-bottom: 8px; text-transform: uppercase; }
+      .task0556-message-text { color: white; font-size: 18px; line-height: 1.45; overflow-wrap: anywhere; }
+      .task0556-expiry { color: #a7dce7; display: block; font-size: 13px; margin-top: 9px; }
+      .task0556-empty { align-items: center; border: 1px dashed #5d7492; border-radius: 15px; color: #c1d1e4; display: flex; font-size: 18px; min-height: 136px; padding: 25px; text-align: center; }
+      .task0556-composer { border-top: 1px solid #39506d; color: #91a8c2; padding: 20px 28px; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <section class="task0556-screen" aria-labelledby="task0556-heading">
+        <header class="task0556-topbar">
+          <div class="task0556-avatar" aria-hidden="true">O</div>
+          <div>
+            <h1 id="task0556-heading" class="task0556-title"></h1>
+            <p class="task0556-subtitle">Protected OSL conversation</p>
+          </div>
+        </header>
+        <div class="task0556-conversation" aria-live="polite" aria-label="Conversation messages"></div>
+        <footer class="task0556-composer">Message securely with OSL</footer>
+      </section>
+    </main>
+    <script type="module">
+      const parameters = new URLSearchParams(location.search);
+      const screen = parameters.get("screen") || "OSL Screen A";
+      const mark = parameters.get("mark");
+      const expiresAt = Number(parameters.get("expiresAt"));
+      const disableRemoval = parameters.get("disableRemoval") === "1";
+      if (!mark || !Number.isFinite(expiresAt)) throw new Error("TASK0556 requires mark and expiresAt");
+
+      const heading = document.querySelector("#task0556-heading");
+      const conversation = document.querySelector(".task0556-conversation");
+      heading.textContent = screen;
+      document.documentElement.dataset.task0556Screen = screen;
+      document.documentElement.dataset.task0556Mark = mark;
+      document.documentElement.dataset.task0556ExpiresAt = String(expiresAt);
+
+      const render = () => {
+        const remaining = expiresAt - Date.now();
+        if (remaining > 0 || disableRemoval) {
+          conversation.innerHTML = `
+            <article class="task0556-message" data-task0556-marked-message="true">
+              <span class="task0556-message-label">Timed message</span>
+              <div class="task0556-message-text">${mark}</div>
+              <time class="task0556-expiry" datetime="PT1M">${remaining > 0 ? "Disappears in one minute" : "Timer expired; removal disabled for this test."}</time>
+            </article>`;
+        } else {
+          conversation.innerHTML = `<p class="task0556-empty" data-task0556-empty="true">This timed message disappeared. The protected conversation remains available.</p>`;
+        }
+        document.documentElement.dataset.task0556State = remaining > 0 || disableRemoval ? "visible" : "expired";
+      };
+
+      render();
+      window.setTimeout(render, Math.max(0, expiresAt - Date.now()) + 10);
+      document.documentElement.dataset.task0556 = "ready";
+    </script>
+  </body>
+</html>

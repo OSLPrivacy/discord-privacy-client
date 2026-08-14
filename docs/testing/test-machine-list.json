@@ -1,0 +1,24 @@
+{
+  "machines": [
+    {"name":"osl-build-pc","system":"Linux host (WSL2)","location":"local workstation","intended_use":"local builds and non-windowed checks"},
+    {"name":"OSL-Azure-Client-1","system":"Windows 11","location":"Azure northcentralus","intended_use":"two-identity P2P QA client A"},
+    {"name":"OSL-Azure-Client-2","system":"Windows 11","location":"Azure northcentralus","intended_use":"two-identity P2P QA client B"},
+    {"name":"OSL-Independent-Client-1","system":"Windows 11","location":"Azure northcentralus","intended_use":"independent scrub QA client A"},
+    {"name":"OSL-Independent-Client-2","system":"Windows 11","location":"Azure northcentralus","intended_use":"independent scrub QA client B"},
+    {"name":"OSL-WhatsApp-Client-1","system":"Windows 11","location":"Azure northcentralus","intended_use":"WhatsApp adapter QA client A"},
+    {"name":"OSL-WhatsApp-Client-2","system":"Windows 11","location":"Azure northcentralus","intended_use":"WhatsApp adapter QA client B"},
+    {"name":"OSL-Telegram-QA-1","system":"Windows 11","location":"Azure northcentralus","intended_use":"Telegram QA client A"},
+    {"name":"OSL-Telegram-QA-2","system":"Windows 11","location":"Azure northcentralus","intended_use":"Telegram QA client B"},
+    {"name":"OSL-Signal-Client-1","system":"Windows 11","location":"Azure southcentralus","intended_use":"Signal adapter QA client A"},
+    {"name":"OSL-Signal-Client-2","system":"Windows 11","location":"Azure southcentralus","intended_use":"Signal adapter QA client B"},
+    {"name":"azure-empty-eastus","system":"Azure capacity reservation","location":"eastus","intended_use":"empty region reserved for future QA"},
+    {"name":"azure-empty-westus2","system":"Azure capacity reservation","location":"westus2","intended_use":"empty region reserved for future QA"},
+    {"name":"azure-empty-westcentralus","system":"Azure capacity reservation","location":"westcentralus","intended_use":"empty region reserved for future QA"},
+    {"name":"azure-empty-northeurope","system":"Azure capacity reservation","location":"northeurope","intended_use":"empty region reserved for future QA"},
+    {"name":"azure-empty-westeurope","system":"Azure capacity reservation","location":"westeurope","intended_use":"empty region reserved for future QA"},
+    {"name":"osl-france-test-0034","system":"Windows Server 2022","location":"Azure francecentral","processor_count":2,"intended_use":"France QA machine"},
+    {"name":"osl-client-poland","system":"Windows Server 2022","location":"Azure polandcentral","processor_count":2,"intended_use":"Poland QA machine"},
+    {"name":"osl-italy-test-1","system":"Windows Server 2022","location":"Azure italynorth","processor_count":2,"intended_use":"Italy QA machine"},
+    {"name":"osl-norway-test-1","system":"Windows Server 2022","location":"Azure norwayeast","processor_count":2,"intended_use":"Norway QA machine"}
+  ]
+}

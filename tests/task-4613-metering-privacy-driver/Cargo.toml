@@ -1,0 +1,10 @@
+[package]
+name = "task-4613-metering-privacy-driver"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+ipc = { path = "../../crates/ipc" }
+serde_json.workspace = true

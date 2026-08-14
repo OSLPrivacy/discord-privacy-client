@@ -1,0 +1,50 @@
+{
+  "build": "release LiveKit 1.13.5 (TASK 4701 qualified binary) + osl-task-4709-speaker",
+  "coordinated_end_unix_ns": 1786632070404535367,
+  "coordinated_start_unix_ns": 1786631890404535367,
+  "date": "2026-08-13",
+  "duration_seconds_requested": 180,
+  "identities": [
+    "speaker-00",
+    "speaker-01",
+    "speaker-02",
+    "speaker-03",
+    "speaker-04",
+    "speaker-05",
+    "speaker-06",
+    "speaker-07",
+    "speaker-08",
+    "speaker-09"
+  ],
+  "livekit_config_sha256": "a28f589a305391543afde48d1269bddd2c9d49fd0a6600e7acad491b1484a813",
+  "livekit_server_sha256": "51a1bbe04439b33d6d7a6d6d83fdefad9b938162c341f0f07f75af03e456b49a",
+  "livekit_server_version": "livekit-server version 1.13.5",
+  "participant_count": 10,
+  "room": "osl-4709-10p",
+  "speaker_binary_sha256": "975366c0e22aadb1a251e638d1853ddfff28a00359b4ad72004f00fc7fa75c01",
+  "speech_source_files": {
+    "speaker-00": "speech-01.ogg",
+    "speaker-01": "speech-02.ogg",
+    "speaker-02": "speech-03.ogg",
+    "speaker-03": "speech-04.ogg",
+    "speaker-04": "speech-05.ogg",
+    "speaker-05": "speech-06.ogg",
+    "speaker-06": "speech-07.ogg",
+    "speaker-07": "speech-08.ogg",
+    "speaker-08": "speech-09.ogg",
+    "speaker-09": "speech-10.ogg"
+  },
+  "speech_source_sha256": {
+    "speaker-00": "ebea90b02509c1b3e81d8a6b6b6db10e450d4a036cfafd2c80a9cdf8d405cccd",
+    "speaker-01": "ae32d8095495bee86e41135a54d051aea1a5a96111609e1e99358595eb245bfa",
+    "speaker-02": "8a37cfc00698e2a8b9c35fe11bc4e611559e30631a42dfa9bff74a27a99b421d",
+    "speaker-03": "5032d05ed7c5a72478300483e16693d1cef36fd1c451c70677184b5cf5571d92",
+    "speaker-04": "a3308ab18b6a210427f0ffc9d319b8eaa5cacfc7bb1c8081f3ab19bd7a46febf",
+    "speaker-05": "61ed315f4e2de7854d0f14dbd2f69802198060a37ecd811d9d0f54fbbf1db853",
+    "speaker-06": "d2bbc2c461b97bd3f221febfdcee403a3d352ce4f415deae717c31d939299a3c",
+    "speaker-07": "cbc754cd86a696fd4ba2d84f44d7f112729ece005681c7b2e28214547b6c80d4",
+    "speaker-08": "95d362c3f429bdfea6d38fb08fbcc3454d1f847e65977b72eae8a19ce607523d",
+    "speaker-09": "5989a9e066db5ba0dcc8e384b788c7cbcd34923ad25f37f0ad62f30ce48431b7"
+  },
+  "trial_name": "10p"
+}

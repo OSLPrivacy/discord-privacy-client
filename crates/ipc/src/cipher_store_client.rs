@@ -496,10 +496,28 @@ pub enum CipherStoreError {
 const MAX_BLOB_BYTES: usize = 64 * 1024;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 pub const MAX_SEALED_ATTACHMENT_BYTES: u64 = 537_919_488;
-const LEGACY_DIRECT_ATTACHMENT_BYTES: u64 = 26 * 1024 * 1024;
+const LEGACY_DIRECT_ATTACHMENT_BYTES: u64 = 25 * 1024 * 1024;
 pub const ATTACHMENT_MULTIPART_PART_BYTES: u64 = 8 * 1024 * 1024;
-pub const ATTACHMENT_MULTIPART_MAX_PARTS: u32 = 65;
+pub const ATTACHMENT_MULTIPART_MAX_PARTS: u32 = 128;
 const ATTACHMENT_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// Account tier asserted by the native client for attachment admission.
+/// This is intentionally a closed enum: the Worker refuses unknown labels and
+/// a future tier must be reconciled on both sides before it can upload bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AttachmentUploadTier {
+    Free,
+    Pro,
+}
+
+impl AttachmentUploadTier {
+    fn header_value(self) -> &'static str {
+        match self {
+            Self::Free => "free",
+            Self::Pro => "pro",
+        }
+    }
+}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -509,6 +527,8 @@ struct AttachmentSessionResponse {
     size_bytes: u64,
     max_part_bytes: u64,
     max_parts: u32,
+    reason_code: String,
+    parameters: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Deserialize)]
@@ -516,6 +536,8 @@ struct AttachmentSessionResponse {
 struct AttachmentPartResponse {
     part_number: u32,
     size_bytes: u64,
+    reason_code: String,
+    parameters: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Deserialize)]
@@ -524,6 +546,33 @@ struct AttachmentCompleteResponse {
     id: String,
     expires_at: i64,
     size_bytes: u64,
+    reason_code: String,
+    parameters: std::collections::BTreeMap<String, String>,
+}
+
+/// Receipt for one finished piece of a Pro chunked attachment upload.
+/// `upload_id` is the server-assigned multipart session/object identifier.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProChunkedUploadPiece {
+    pub upload_id: String,
+    pub piece_number: u32,
+    pub size_bytes: u64,
+}
+
+/// Receipt for the completed file produced by a Pro chunked attachment upload.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProChunkedUploadFile {
+    pub file_id: String,
+    pub total_size_bytes: u64,
+    pub piece_count: u32,
+    pub expires_at: i64,
+}
+
+/// Ordered receipts from a Pro chunked attachment upload.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProChunkedUploadReport {
+    pub finished_pieces: Vec<ProChunkedUploadPiece>,
+    pub completed_file: ProChunkedUploadFile,
 }
 
 struct ExactPartReader<R> {
@@ -917,9 +966,26 @@ impl CipherStoreClient {
     /// The file never crosses renderer IPC and is never copied into a Vec.
     pub fn upload_attachment_file(
         &self,
+        sealed: File,
+        ttl_seconds: u32,
+        fetch_token: &[u8; FETCH_TOKEN_BYTES],
+    ) -> Result<UploadResult, CipherStoreError> {
+        self.upload_attachment_file_for_tier(
+            sealed,
+            ttl_seconds,
+            fetch_token,
+            AttachmentUploadTier::Free,
+        )
+    }
+
+    /// Stream one already-sealed attachment while carrying the independently
+    /// resolved shipping tier to the Worker on the admission request.
+    pub fn upload_attachment_file_for_tier(
+        &self,
         mut sealed: File,
         ttl_seconds: u32,
         fetch_token: &[u8; FETCH_TOKEN_BYTES],
+        tier: AttachmentUploadTier,
     ) -> Result<UploadResult, CipherStoreError> {
         if !is_valid_ttl(ttl_seconds) {
             return Err(CipherStoreError::BadTtl(ttl_seconds));
@@ -933,7 +999,12 @@ impl CipherStoreClient {
         }
         sealed.seek(SeekFrom::Start(0))?;
         if length > LEGACY_DIRECT_ATTACHMENT_BYTES {
-            return self.upload_attachment_multipart(sealed, length, ttl_seconds, fetch_token);
+            return self
+                .upload_attachment_multipart(sealed, length, ttl_seconds, fetch_token, tier)
+                .map(|report| UploadResult {
+                    id_hex: report.completed_file.file_id,
+                    expires_at: report.completed_file.expires_at,
+                });
         }
         let response = self
             .http
@@ -943,9 +1014,42 @@ impl CipherStoreClient {
             .header("content-length", length)
             .header("x-osl-ttl-seconds", ttl_seconds.to_string())
             .header("x-osl-fetch-token", hex_lower(fetch_token))
+            .header("x-osl-account-tier", tier.header_value())
             .body(reqwest::blocking::Body::sized(sealed, length))
             .send()?;
         parse_upload_response(response, 32)
+    }
+
+    /// Upload an already-sealed Pro attachment as numbered 8 MiB pieces.
+    ///
+    /// Unlike [`Self::upload_attachment_file`], this always uses the multipart
+    /// protocol, including for a file that fits in one piece. The returned
+    /// report preserves the server-confirmed order and size of every finished
+    /// piece as well as the final completed-file receipt.
+    pub fn upload_attachment_file_pro_chunked(
+        &self,
+        mut sealed: File,
+        ttl_seconds: u32,
+        fetch_token: &[u8; FETCH_TOKEN_BYTES],
+    ) -> Result<ProChunkedUploadReport, CipherStoreError> {
+        if !is_valid_ttl(ttl_seconds) {
+            return Err(CipherStoreError::BadTtl(ttl_seconds));
+        }
+        let length = sealed.metadata()?.len();
+        if length == 0 || length > MAX_SEALED_ATTACHMENT_BYTES {
+            return Err(CipherStoreError::BlobTooLarge {
+                got: usize::try_from(length).unwrap_or(usize::MAX),
+                max: MAX_SEALED_ATTACHMENT_BYTES as usize,
+            });
+        }
+        sealed.seek(SeekFrom::Start(0))?;
+        self.upload_attachment_multipart(
+            sealed,
+            length,
+            ttl_seconds,
+            fetch_token,
+            AttachmentUploadTier::Pro,
+        )
     }
 
     fn upload_attachment_multipart(
@@ -954,7 +1058,8 @@ impl CipherStoreClient {
         length: u64,
         ttl_seconds: u32,
         fetch_token: &[u8; FETCH_TOKEN_BYTES],
-    ) -> Result<UploadResult, CipherStoreError> {
+        tier: AttachmentUploadTier,
+    ) -> Result<ProChunkedUploadReport, CipherStoreError> {
         let token = hex_lower(fetch_token);
         let response = self
             .http
@@ -964,8 +1069,10 @@ impl CipherStoreClient {
             .header("x-osl-ttl-seconds", ttl_seconds.to_string())
             .header("x-osl-fetch-token", &token)
             .header("x-osl-size-bytes", length.to_string())
+            .header("x-osl-account-tier", tier.header_value())
             .send()?;
         let session: AttachmentSessionResponse = parse_bounded_json(response)?;
+        validate_storage_success(&session.reason_code, &session.parameters)?;
         validate_attachment_id(&session.id)?;
         if session.expires_at <= 0
             || session.size_bytes != length
@@ -984,7 +1091,11 @@ impl CipherStoreClient {
                 return Err(error);
             }
         };
+        let piece_count = u32::try_from(plan.len()).map_err(|_| {
+            CipherStoreError::ParseError("multipart part count overflow".to_owned())
+        })?;
         let result = (|| {
+            let mut finished_pieces = Vec::with_capacity(plan.len());
             for (part_number, offset, part_length) in plan {
                 let mut part_file = sealed.try_clone()?;
                 part_file.seek(SeekFrom::Start(offset))?;
@@ -1005,11 +1116,17 @@ impl CipherStoreClient {
                     .body(reqwest::blocking::Body::sized(reader, part_length))
                     .send()?;
                 let receipt: AttachmentPartResponse = parse_bounded_json(response)?;
+                validate_storage_success(&receipt.reason_code, &receipt.parameters)?;
                 if receipt.part_number != part_number || receipt.size_bytes != part_length {
                     return Err(CipherStoreError::ParseError(
                         "multipart part receipt mismatch".to_owned(),
                     ));
                 }
+                finished_pieces.push(ProChunkedUploadPiece {
+                    upload_id: session.id.clone(),
+                    piece_number: receipt.part_number,
+                    size_bytes: receipt.size_bytes,
+                });
             }
             if sealed.metadata()?.len() != length {
                 return Err(CipherStoreError::Io(io::Error::new(
@@ -1028,6 +1145,7 @@ impl CipherStoreClient {
                 .header("x-osl-fetch-token", &token)
                 .send()?;
             let complete: AttachmentCompleteResponse = parse_bounded_json(response)?;
+            validate_storage_success(&complete.reason_code, &complete.parameters)?;
             if complete.id != session.id
                 || complete.expires_at != session.expires_at
                 || complete.size_bytes != length
@@ -1036,9 +1154,14 @@ impl CipherStoreClient {
                     "multipart completion receipt mismatch".to_owned(),
                 ));
             }
-            Ok(UploadResult {
-                id_hex: complete.id,
-                expires_at: complete.expires_at,
+            Ok(ProChunkedUploadReport {
+                finished_pieces,
+                completed_file: ProChunkedUploadFile {
+                    file_id: complete.id,
+                    total_size_bytes: complete.size_bytes,
+                    piece_count,
+                    expires_at: complete.expires_at,
+                },
             })
         })();
         if result.is_err() {
@@ -1127,6 +1250,18 @@ fn validate_attachment_id(id_hex: &str) -> Result<(), CipherStoreError> {
         return Err(CipherStoreError::ParseError(
             "attachment id has unexpected shape".to_owned(),
         ));
+    }
+    Ok(())
+}
+
+fn validate_storage_success(
+    reason_code: &str,
+    parameters: &std::collections::BTreeMap<String, String>,
+) -> Result<(), CipherStoreError> {
+    if reason_code != "storage_succeeded" || !parameters.is_empty() {
+        return Err(CipherStoreError::ParseError(format!(
+            "unexpected storage result code {reason_code:?}"
+        )));
     }
     Ok(())
 }

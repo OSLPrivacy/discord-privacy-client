@@ -2,18 +2,13 @@ use keystore::client::{is_normalized_username, username_claim_msg};
 
 #[test]
 fn username_validation_never_silently_normalizes() {
-    assert!(is_normalized_username("alice_01"));
-    for invalid in [
-        "Alice",
-        "ab",
-        "_alice",
-        "alice_",
-        "alice-name",
-        "alice.name",
-    ] {
+    for valid in ["a", "Alice", "alice_01", "_alice", "alice_"] {
+        assert!(is_normalized_username(valid), "rejected {valid:?}");
+    }
+    for invalid in ["alice-name", "alice.name", "alice name"] {
         assert!(!is_normalized_username(invalid), "accepted {invalid:?}");
     }
-    assert!(!is_normalized_username(&"a".repeat(31)));
+    assert!(!is_normalized_username(&"a".repeat(17)));
 }
 #[test]
 fn username_claim_vector_matches_worker() {

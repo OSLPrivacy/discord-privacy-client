@@ -197,3 +197,4 @@ opt-level = 3
 # and silently skips the `[[bin]]` above, and still exits 0 (D-267).
 [workspace]
 resolver = "2"
+members = ["task_5200_account_export", "task_5200_clean_reader"]

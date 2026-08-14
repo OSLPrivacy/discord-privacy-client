@@ -6165,6 +6165,7 @@ pub enum NativeDiscordRowPoster {
 /// returning plaintext.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NativeDiscordRowAttributionEvidence {
+
     pub discord_message_id: String,
     pub poster_identity_sha256: String,
     pub who_wrote_it: SharedRowWhoWroteIt,

@@ -89,7 +89,7 @@ describe("mutation rate limiting is atomic (HIGH-2)", () => {
     // rather than leave it one bad scheduling slice from red.
   }, 30_000);
 
-  it("still fails closed for anonymous writes and open for reads when the limiter is down", async () => {
+  it("fails closed for anonymous writes and every ciphertext read when the limiter is down", async () => {
     const broken = {
       DB: {
         prepare: () => ({

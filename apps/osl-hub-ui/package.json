@@ -24,6 +24,7 @@
     "prove:retained-redesign": "node scripts/prove-retained-redesign-6872.mjs",
     "prove:non-chat-redesign": "node scripts/prove-non-chat-redesign-6873.mjs",
     "screenshot:pro-code": "node screenshots/capture-pro-code.mjs",
+    "prove:5017b": "node scripts/prove-5017b-person-page-cut.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run && node --test screenshots/*.test.mjs",
     "test:node": "node --test screenshots/*.test.mjs"

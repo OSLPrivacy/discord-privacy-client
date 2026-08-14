@@ -940,9 +940,7 @@ export function parseHubPerson(raw: unknown): HubPerson | null {
 
 export function isNormalizedOslUsername(value: unknown): value is string {
   return typeof value === "string"
-    && value.length >= 3
-    && value.length <= 30
-    && /^[a-z0-9](?:[a-z0-9_]{1,28}[a-z0-9])?$/u.test(value);
+    && /^[A-Za-z0-9_]{1,16}$/u.test(value);
 }
 
 export function parseHubUsernameClaim(raw: unknown): HubUsernameClaim | null {

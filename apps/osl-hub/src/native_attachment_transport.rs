@@ -23,6 +23,20 @@ use tauri::Manager;
 use tauri_plugin_dialog::DialogExt;
 use zeroize::Zeroize;
 
+const OSL_CHAT_SPOILER_FILENAME_PREFIX: &str = "OSL-SPOILER-1--";
+
+fn osl_chat_attachment_filename(selected_filename: String, spoiler: bool) -> Result<String, String> {
+    let filename = if spoiler {
+        format!("{OSL_CHAT_SPOILER_FILENAME_PREFIX}{selected_filename}")
+    } else {
+        selected_filename
+    };
+    if filename.len() > ipc::attachment_wire::MAX_FILENAME_LEN {
+        return Err("The spoiler attachment filename is too long".to_owned());
+    }
+    Ok(filename)
+}
+
 /// Build the attachment store client for whatever route this process is on.
 ///
 /// `CipherStoreClient::new` is the unrouted constructor, so while Tor is
@@ -54,11 +68,33 @@ pub(crate) struct OpenedNativeOverlayAttachment {
     opened_in_native_viewer: bool,
 }
 
-fn require_active_pro(core: &HubCoreState) -> Result<(), String> {
-    if ipc::tier_gate::is_paid_equivalent(&core.osl) {
+fn attachment_tier(
+    core: &HubCoreState,
+) -> osl_privacy_hub::attachment_limits::AttachmentAccountTier {
+    osl_privacy_hub::attachment_limits::shipping_account_tier(&core.osl)
+}
+
+fn upload_tier(
+    tier: osl_privacy_hub::attachment_limits::AttachmentAccountTier,
+) -> ipc::cipher_store_client::AttachmentUploadTier {
+    match tier {
+        osl_privacy_hub::attachment_limits::AttachmentAccountTier::Free => {
+            ipc::cipher_store_client::AttachmentUploadTier::Free
+        }
+        osl_privacy_hub::attachment_limits::AttachmentAccountTier::Pro => {
+            ipc::cipher_store_client::AttachmentUploadTier::Pro
+        }
+    }
+}
+
+fn require_same_attachment_tier(
+    core: &HubCoreState,
+    expected: osl_privacy_hub::attachment_limits::AttachmentAccountTier,
+) -> Result<(), String> {
+    if attachment_tier(core) == expected {
         Ok(())
     } else {
-        Err("Encrypted attachments require OSL Pro".to_owned())
+        Err("OSL attachment account tier changed during the operation".to_owned())
     }
 }
 
@@ -78,6 +114,7 @@ pub(crate) fn select_encrypt_upload_deliver(
         broker_state,
         Some((context_epoch, expected_host)),
         view_once,
+        false,
     )
 }
 
@@ -87,8 +124,9 @@ pub(crate) fn select_osl_chat_attachment(
     security: &HubSecurityState,
     broker_state: &HubBrokerState,
     view_once: bool,
+    spoiler: bool,
 ) -> Result<Option<PreparedNativeOverlayAttachment>, String> {
-    select_encrypt_upload_deliver_inner(app, core, security, broker_state, None, view_once)
+    select_encrypt_upload_deliver_inner(app, core, security, broker_state, None, view_once, spoiler)
 }
 
 fn validate_surface(
@@ -110,8 +148,9 @@ fn select_encrypt_upload_deliver_inner(
     broker_state: &HubBrokerState,
     overlay_context: Option<(u64, &ActiveServiceHost)>,
     view_once: bool,
+    spoiler: bool,
 ) -> Result<Option<PreparedNativeOverlayAttachment>, String> {
-    require_active_pro(core)?;
+    let account_tier = attachment_tier(core);
     let parent_label = if overlay_context.is_some() {
         super::native_discord_overlay::OVERLAY_LABEL
     } else {
@@ -136,12 +175,12 @@ fn select_encrypt_upload_deliver_inner(
     let Some(selected) = selected else {
         return Ok(None);
     };
-    require_active_pro(core)?;
+    require_same_attachment_tier(core, account_tier)?;
     validate_surface(app, broker_state, overlay_context)?;
     let selected_path = selected
         .into_path()
         .map_err(|_| "The selected attachment path is unavailable".to_owned())?;
-    let filename = selected_path
+    let selected_filename = selected_path
         .file_name()
         .and_then(|value| value.to_str())
         .ok_or_else(|| "The selected attachment filename is invalid".to_owned())?
@@ -151,6 +190,14 @@ fn select_encrypt_upload_deliver_inner(
     // in, or hit a shell handler that ignores the filter. Refusing later would
     // leave remote ciphertext to roll back, which is exactly the path that
     // needed the deletion outbox in the first place.
+    if attachment_formats::accepted_attachment_mime(&selected_filename).is_none() {
+        return Err(attachment_formats::unsupported_selection_message());
+    }
+    // This prefix is authenticated inside the encrypted attachment envelope;
+    // it is not upload metadata. Keeping the original extension preserves the
+    // existing send/receive MIME authority. Refuse before reading any bytes if
+    // adding the format marker would exceed the wire filename bound.
+    let filename = osl_chat_attachment_filename(selected_filename, spoiler)?;
     if attachment_formats::accepted_attachment_mime(&filename).is_none() {
         return Err(attachment_formats::unsupported_selection_message());
     }
@@ -186,11 +233,12 @@ fn select_encrypt_upload_deliver_inner(
         .path()
         .app_local_data_dir()
         .map_err(|_| "OSL attachment storage is unavailable".to_owned())?;
-    let staged = peer_attachment_io::encrypt_file(
+    let staged = peer_attachment_io::encrypt_file_for_account_tier(
         &local_root,
         &mut source,
         &plan.original_filename,
         &plan.mime_type,
+        account_tier,
         crypto::aead::Key::from_bytes(plan.attachment_key),
         plan.content_id.to_vec(),
         0,
@@ -211,7 +259,12 @@ fn select_encrypt_upload_deliver_inner(
         .map_err(|_| "OSL attachment expiry is invalid".to_owned())?;
     let sealed_file = File::open(staged.path())
         .map_err(|_| "OSL sealed attachment could not be reopened".to_owned())?;
-    let upload = match client.upload_attachment_file(sealed_file, ttl, &fetch_token) {
+    let upload = match client.upload_attachment_file_for_tier(
+        sealed_file,
+        ttl,
+        &fetch_token,
+        upload_tier(account_tier),
+    ) {
         Ok(upload) => upload,
         Err(error) => {
             fetch_token.zeroize();
@@ -249,7 +302,7 @@ fn select_encrypt_upload_deliver_inner(
         fetch_token.zeroize();
         return Err(with_rollback(error, rollback));
     }
-    if let Err(error) = require_active_pro(core) {
+    if let Err(error) = require_same_attachment_tier(core, account_tier) {
         let rollback = delete_remote_ciphertext(
             &client,
             &upload.id_hex,
@@ -612,7 +665,6 @@ pub(crate) fn list_pending(
     security: &HubSecurityState,
     broker: &HubBrokerState,
 ) -> Result<Vec<PendingNativeOverlayAttachment>, String> {
-    require_active_pro(core)?;
     broker::list_native_overlay_attachments(core, security, broker)
 }
 
@@ -621,7 +673,6 @@ pub(crate) fn list_osl_chat_pending(
     security: &HubSecurityState,
     broker: &HubBrokerState,
 ) -> Result<Vec<PendingNativeOverlayAttachment>, String> {
-    require_active_pro(core)?;
     broker::list_osl_chat_attachments(core, security, broker)
 }
 
@@ -662,7 +713,6 @@ fn open_pending_inner(
     overlay_context: Option<(u64, &ActiveServiceHost)>,
     attachment_id: &str,
 ) -> Result<OpenedNativeOverlayAttachment, String> {
-    require_active_pro(core)?;
     let local_root = app
         .path()
         .app_local_data_dir()
@@ -744,14 +794,12 @@ fn open_pending_inner(
         if let Err(error) = validate_surface(app, broker_state, overlay_context) {
             return Err(error);
         }
-        require_active_pro(core)?;
         // Decode and create the window while it is hidden. `prepare` applies
         // and reads back capture exclusion before returning; Drop closes the
         // hidden window and zeroizes its pixels on every later failure.
         let viewer =
             super::native_image_viewer::prepare(app, opened, plan.display_duration_seconds)?;
         validate_surface(app, broker_state, overlay_context)?;
-        require_active_pro(core)?;
         if overlay_context.is_some() {
             broker::commit_native_overlay_attachment_open(core, security, broker_state, &plan)?;
         } else {
@@ -799,9 +847,6 @@ fn open_pending_inner(
         ));
     }
     if let Err(error) = validate_surface(app, broker_state, overlay_context) {
-        return Err(with_plaintext_removal(error, opened.remove_now()));
-    }
-    if let Err(error) = require_active_pro(core) {
         return Err(with_plaintext_removal(error, opened.remove_now()));
     }
     let committed = if overlay_context.is_some() {
@@ -1084,6 +1129,23 @@ mod tests {
         );
         assert!(parse_token("0011").is_err());
         assert!(parse_token("00112233445566778899aabbccddeefg").is_err());
+    }
+
+    #[test]
+    fn osl_chat_spoiler_marker_is_inside_the_filename_and_preserves_mime_extension() {
+        assert_eq!(
+            osl_chat_attachment_filename("private-plan.pdf".to_owned(), true).unwrap(),
+            "OSL-SPOILER-1--private-plan.pdf"
+        );
+        assert_eq!(
+            osl_chat_attachment_filename("private-plan.pdf".to_owned(), false).unwrap(),
+            "private-plan.pdf"
+        );
+        assert!(osl_chat_attachment_filename(
+            "x".repeat(ipc::attachment_wire::MAX_FILENAME_LEN),
+            true,
+        )
+        .is_err());
     }
 
     #[cfg(not(windows))]

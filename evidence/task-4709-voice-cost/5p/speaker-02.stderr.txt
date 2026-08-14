@@ -1,0 +1,5 @@
+2026/08/13 07:34:32 "level"=0 "msg"="published track" "name"="osl-real-speech-speaker-02" "source"="MICROPHONE" "trackID"="TR_AMYM2ui5L8Hvdm"
+2026/08/13 07:34:33 "level"=0 "msg"="track subscribed" "participant"="speaker-01" "track"="TR_AMt3LACYCviaPe" "kind"="audio"
+2026/08/13 07:34:33 "level"=0 "msg"="track subscribed" "participant"="speaker-00" "track"="TR_AMELxM28eU8zUM" "kind"="audio"
+2026/08/13 07:34:33 "level"=0 "msg"="track subscribed" "participant"="speaker-04" "track"="TR_AMwVZs5hbYiL7N" "kind"="audio"
+2026/08/13 07:34:33 "level"=0 "msg"="track subscribed" "participant"="speaker-03" "track"="TR_AMQErcxRaJw9Jp" "kind"="audio"

@@ -30,6 +30,7 @@ pub enum AllowedPlaceStoreError {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AllowedPlaceRecord {
+
     pub app: String,
     pub account: String,
     pub kind: String,
@@ -38,6 +39,7 @@ pub struct AllowedPlaceRecord {
     pub place_name: String,
     #[serde(default)]
     pub person_name: String,
+
 }
 
 impl AllowedPlaceRecord {
@@ -1029,7 +1031,12 @@ fn validate_stable_id_shape(stable_id: &str) -> Result<()> {
     let valid = matches!(
         (parts.next(), parts.next(), parts.next(), parts.next(), parts.next()),
         (Some(app), Some(account), Some(kind), Some(place), None)
-            if app == "discord"
+            if matches!(
+                    (app, kind),
+                    ("discord", _)
+                        | ("email", "sender_address" | "sender_domain")
+                        | ("signal", KIND_DIRECT_MESSAGE | KIND_GROUP_CHAT)
+                )
                 && !account.trim().is_empty()
                 && !kind.trim().is_empty()
                 && !place.trim().is_empty()

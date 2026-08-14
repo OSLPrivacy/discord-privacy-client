@@ -82,6 +82,7 @@ pub enum RealtimePipeError {
     FrameTooLarge,
     Protocol(String),
     Wakeup(FrameError),
+    RouteUnavailable(&'static str),
     Io(std::io::Error),
 }
 
@@ -99,6 +100,27 @@ pub struct RealtimeSocket {
 pub fn open_realtime_connection(
     endpoint: &RealtimeEndpoint,
 ) -> Result<RealtimeSocket, RealtimePipeError> {
+    match keystore::egress::socket_route_decision() {
+        keystore::egress::SocketRouteDecision::Tor(socks_addr) => {
+            let stream = transport::tor::connect_tcp_via_socks(
+                socks_addr,
+                &endpoint.host,
+                endpoint.port,
+                CONNECT_TIMEOUT,
+            )
+            .map_err(|error| RealtimePipeError::Io(std::io::Error::other(error)))?;
+            stream.set_read_timeout(Some(IO_TIMEOUT))?;
+            stream.set_write_timeout(Some(IO_TIMEOUT))?;
+            return finish_websocket_handshake(stream, endpoint);
+        }
+        keystore::egress::SocketRouteDecision::Refuse => {
+            return Err(RealtimePipeError::RouteUnavailable(
+                keystore::egress::TOR_UNAVAILABLE,
+            ));
+        }
+        keystore::egress::SocketRouteDecision::Direct => {}
+    }
+
     let addrs = endpoint.socket_addrs()?;
     let mut last_error = None;
     for addr in addrs {

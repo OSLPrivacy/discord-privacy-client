@@ -4,7 +4,7 @@ Run with: python3 .github/workflows/integration-branch-gating.test.py
 
 WHY
 ---
-`gh run list --branch integrate/first-usable` returned NOTHING until 2026-08-04.
+`gh run list --branch integration/full` returned NOTHING until 2026-08-04.
 Every workflow triggered on `push: branches: [main]` plus `pull_request`, and the
 integration branch is pushed to neither -- so every gate in this directory was a
 statement about `main`, not about the branch we integrate into and cut builds
@@ -49,8 +49,9 @@ import yaml
 
 WORKFLOWS = Path(__file__).parent
 REPO = WORKFLOWS.parent.parent
-INTEGRATION_GLOB = "integrate/**"
-SHIPPING_BRANCH = "integrate/first-usable"
+INTEGRATION_GLOB = "integration/**"
+SHIPPING_BRANCH = "integration/full"
+FUTURE_INTEGRATION_BRANCH = "integration/6981-trigger-proof"
 
 # Workflows that MUST run on every push to an integration branch.
 # The value is why, so a future reader has to argue with a reason, not a list.
@@ -200,6 +201,12 @@ class IntegrationBranchGatingTest(unittest.TestCase):
                     "D-172: a gate that does not run on the branch we ship from "
                     "is decoration.",
                 )
+                self.assertTrue(
+                    branch_list_fires_on(
+                        push_branches(load(name)), FUTURE_INTEGRATION_BRANCH
+                    ),
+                    f"{name} does not select future branch {FUTURE_INTEGRATION_BRANCH}",
+                )
 
     def test_the_glob_actually_matches_the_branch_we_ship_from(self) -> None:
         # D-195. This used to compare two module constants through pathlib's
@@ -208,17 +215,23 @@ class IntegrationBranchGatingTest(unittest.TestCase):
         # the gating workflows, and carries the negative controls that prove the
         # matcher can say no.
         self.assertTrue(actions_pattern_to_regex(INTEGRATION_GLOB).match(SHIPPING_BRANCH))
+        self.assertTrue(
+            actions_pattern_to_regex(INTEGRATION_GLOB).match(FUTURE_INTEGRATION_BRANCH)
+        )
         self.assertFalse(
             actions_pattern_to_regex("integrate/*").match("integrate/a/b"),
             "single-star must not cross a slash, or this matcher would call a "
             "narrowed glob safe",
         )
         self.assertFalse(actions_pattern_to_regex(INTEGRATION_GLOB).match("main"))
-        self.assertFalse(actions_pattern_to_regex("integration/**").match(SHIPPING_BRANCH))
+        self.assertFalse(actions_pattern_to_regex("integrate/**").match(SHIPPING_BRANCH))
         self.assertTrue(branch_list_fires_on(["main", INTEGRATION_GLOB], SHIPPING_BRANCH))
+        self.assertTrue(
+            branch_list_fires_on(["main", INTEGRATION_GLOB], FUTURE_INTEGRATION_BRANCH)
+        )
         self.assertFalse(branch_list_fires_on(["main"], SHIPPING_BRANCH))
         self.assertFalse(
-            branch_list_fires_on([INTEGRATION_GLOB, "!integrate/first-usable"], SHIPPING_BRANCH),
+            branch_list_fires_on([INTEGRATION_GLOB, "!integration/full"], SHIPPING_BRANCH),
             "an exclusion pattern must be honoured; otherwise one `!` line could "
             "un-gate the shipping branch while the glob still reads correct",
         )
@@ -267,7 +280,7 @@ class IntegrationBranchGatingTest(unittest.TestCase):
                          "…and it yields the same empty branch list a tags-only "
                          "workflow does, which is why reading that list proved nothing")
         wired_to_integration = yaml.safe_load(
-            "on:\n  push:\n    branches: ['integrate/**']\njobs: {}\n")
+            "on:\n  push:\n    branches: ['integration/**']\njobs: {}\n")
         self.assertTrue(branch_list_fires_on(push_branches(wired_to_integration), SHIPPING_BRANCH))
         tags_only = yaml.safe_load("on:\n  push:\n    tags: ['hub-v*']\njobs: {}\n")
         self.assertEqual("push-tags-only", why_push_cannot_reach_a_branch(tags_only))

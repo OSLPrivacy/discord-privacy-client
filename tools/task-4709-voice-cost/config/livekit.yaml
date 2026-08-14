@@ -1,0 +1,23 @@
+# TASK 4709 single-node LiveKit release configuration, reusing the exact
+# TASK 4701 qualified release binary and the same forwarding-only defaults.
+# Signaling is plain WebSocket on loopback only (never reachable off-host);
+# media transport is standard mandatory WebRTC DTLS-SRTP regardless of the
+# signaling scheme, and that encrypted media channel is what is measured.
+port: 17890
+bind_addresses:
+  - 127.0.0.1
+rtc:
+  tcp_port: 17891
+  port_range_start: 18000
+  port_range_end: 18199
+  use_external_ip: false
+  enable_loopback_candidate: true
+  node_ip: 127.0.0.1
+keys:
+  OSLTask4709Key: OSLTask4709SecretAtLeast32BytesLong
+room:
+  auto_create: true
+  max_participants: 32
+logging:
+  level: info
+  json: true

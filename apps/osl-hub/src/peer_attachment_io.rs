@@ -208,6 +208,36 @@ pub fn encrypt_file(
     })
 }
 
+/// Tier-aware shipping entry point. Admission is completed before
+/// [`encrypt_file`] creates the first OSL-owned staging path; both tiers then
+/// converge on the exact same streaming AEAD implementation.
+pub fn encrypt_file_for_account_tier(
+    app_local_data_dir: &Path,
+    source: &mut File,
+    original_filename: &str,
+    declared_mime: &str,
+    tier: crate::attachment_limits::AttachmentAccountTier,
+    key: aead::Key,
+    content_id: Vec<u8>,
+    attachment_index: u32,
+) -> Result<StagedAttachment, String> {
+    let plaintext_len = source
+        .metadata()
+        .map_err(|_| "attachment metadata could not be read".to_owned())?
+        .len();
+    crate::attachment_limits::check_attachment_size(plaintext_len, tier)
+        .map_err(|_| format!("attachment is outside the {} account limit", tier.label()))?;
+    encrypt_file(
+        app_local_data_dir,
+        source,
+        original_filename,
+        declared_mime,
+        key,
+        content_id,
+        attachment_index,
+    )
+}
+
 /// Decrypt to an OSL-owned plaintext staging file, for the non-image path where
 /// an external Windows reader needs a real path. The result is an RAII guard:
 /// dropping it removes the decrypted file, so no caller can return early and
@@ -562,45 +592,39 @@ pub fn classify_cipher_store_error(
 /// Render one outcome for the user. Server-supplied response bodies are never
 /// included, so no remote text can reach a toast.
 pub fn describe_transport_outcome(outcome: TransportOutcome, phase: TransportPhase) -> String {
-    let subject = match phase {
-        TransportPhase::Upload => "This private attachment could not be uploaded",
-        TransportPhase::Fetch => "This private attachment could not be retrieved",
-        TransportPhase::Delete => "OSL could not delete this private attachment from its storage",
+    let phase_code = match phase {
+        TransportPhase::Upload => "upload",
+        TransportPhase::Fetch => "fetch",
+        TransportPhase::Delete => "delete",
     };
-    let reason = match outcome {
-        TransportOutcome::Unreachable => "OSL could not reach its encrypted attachment storage",
-        TransportOutcome::TimedOut => "the encrypted attachment storage did not answer in time",
-        TransportOutcome::RateLimited => {
-            "the encrypted attachment storage is rate limiting this device, so wait and retry"
-        }
-        TransportOutcome::CapabilityRejected => {
-            "the encrypted attachment storage rejected this device's capability for it"
-        }
-        TransportOutcome::Gone => "it has already expired or been burned",
-        TransportOutcome::TooLarge => "it exceeds the encrypted attachment size limit",
-        TransportOutcome::UnsupportedLifetime => {
-            "its requested lifetime is not one OSL storage accepts"
-        }
-        TransportOutcome::ServerFault => {
-            "the encrypted attachment storage reported a fault on its side"
-        }
-        TransportOutcome::MalformedResponse => {
-            "the encrypted attachment storage returned an unexpected response"
-        }
-        TransportOutcome::LocalIo => "OSL could not read the sealed copy on this device",
-        TransportOutcome::Refused => "the encrypted attachment storage refused the request",
-        TransportOutcome::RouteUnavailable => {
-            "Tor is selected and its tunnel is unavailable, so OSL refused rather than \
-             using a direct connection"
-        }
+    let outcome_code = match outcome {
+        TransportOutcome::Unreachable => "unreachable",
+        TransportOutcome::TimedOut => "timed_out",
+        TransportOutcome::RateLimited => "rate_limited",
+        TransportOutcome::CapabilityRejected => "capability_rejected",
+        TransportOutcome::Gone => "gone",
+        TransportOutcome::TooLarge => "too_large",
+        TransportOutcome::UnsupportedLifetime => "unsupported_lifetime",
+        TransportOutcome::ServerFault => "server_fault",
+        TransportOutcome::MalformedResponse => "malformed_response",
+        TransportOutcome::LocalIo => "local_io",
+        TransportOutcome::Refused => "refused",
+        TransportOutcome::RouteUnavailable => "route_unavailable",
     };
-    format!("{subject}: {reason}.")
+    crate::service_result_words::render_service_reason_without_parameters(&format!(
+        "storage_{phase_code}_{outcome_code}"
+    ))
 }
 
 pub fn describe_cipher_store_error(
     error: &ipc::cipher_store_client::CipherStoreError,
     phase: TransportPhase,
 ) -> String {
+    if let ipc::cipher_store_client::CipherStoreError::Status { body, .. } = error {
+        if let Some(rendered) = crate::service_result_words::render_service_response_body(body) {
+            return rendered;
+        }
+    }
     describe_transport_outcome(classify_cipher_store_error(error), phase)
 }
 

@@ -9,11 +9,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 const SERVER_RECORDS_VERSION: u8 = 1;
-const MAX_SERVER_RECORDS_BYTES: u64 = 256 * 1024;
 const MAX_SERVERS_PER_OWNER: usize = 128;
 const MAX_SERVER_NAME_BYTES: usize = 80;
 const MAX_SERVER_NAME_CHARS: usize = 48;
-const MAX_MEMBERS_PER_SERVER: usize = 512;
 
 #[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -136,7 +134,7 @@ fn normalize_members(
     owner_osl_user_id: &str,
     member_osl_user_ids: Vec<String>,
 ) -> Result<Vec<String>, String> {
-    if member_osl_user_ids.is_empty() || member_osl_user_ids.len() > MAX_MEMBERS_PER_SERVER {
+    if member_osl_user_ids.is_empty() {
         return Err("server must have at least one member".to_owned());
     }
     let mut seen = BTreeSet::new();
@@ -192,8 +190,8 @@ fn load_server_records(path: &Path) -> Result<Vec<NamedServerRecord>, String> {
     let key = ipc::main_password::get_file_storage_key()
         .ok_or_else(|| "Unlock an OSL identity before accessing server records".to_owned())?;
     let backup = path.with_extension("bak");
-    let primary = read_bounded(path)?;
-    let fallback = read_bounded(&backup)?;
+    let primary = read_regular_file(path)?;
+    let fallback = read_regular_file(&backup)?;
 
     for (bytes, recover) in [(primary.as_deref(), false), (fallback.as_deref(), true)] {
         let Some(bytes) = bytes else { continue };
@@ -267,14 +265,12 @@ fn valid_server_id(value: &str) -> bool {
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'-')
 }
 
-fn read_bounded(path: &Path) -> Result<Option<Vec<u8>>, String> {
+fn read_regular_file(path: &Path) -> Result<Option<Vec<u8>>, String> {
     match fs::metadata(path) {
-        Ok(metadata) if metadata.is_file() && metadata.len() <= MAX_SERVER_RECORDS_BYTES => {
-            fs::read(path)
-                .map(Some)
-                .map_err(|_| "server registry could not be read".to_owned())
-        }
-        Ok(_) => Err("server registry is not a bounded regular file".to_owned()),
+        Ok(metadata) if metadata.is_file() => fs::read(path)
+            .map(Some)
+            .map_err(|_| "server registry could not be read".to_owned()),
+        Ok(_) => Err("server registry is not a regular file".to_owned()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(_) => Err("server registry metadata could not be read".to_owned()),
     }
@@ -294,9 +290,6 @@ fn write_server_records(path: &Path, servers: &[NamedServerRecord]) -> Result<()
         servers: servers.to_vec(),
     })
     .map_err(|_| "server registry could not be encoded".to_owned())?;
-    if bytes.len() as u64 > MAX_SERVER_RECORDS_BYTES {
-        return Err("server registry exceeds limit".to_owned());
-    }
     let sealed = ipc::main_password::encrypt_at_rest(&bytes, &key)
         .map_err(|_| "server registry could not be encrypted".to_owned())?;
     crate::atomic_file::write_recoverable(path, &sealed, "server registry")
@@ -355,6 +348,38 @@ mod tests {
         assert_eq!(usize::from(server.owner_osl_user_id == OWNER), 1);
         assert_eq!(server.member_osl_user_ids, [MEMBER_A, MEMBER_B]);
         assert!(server.chosen_for_launch);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn enclave_registry_admits_and_reloads_more_than_the_retired_member_ceiling() {
+        let _serial = crate::global_keystore_test_lock();
+        let path = temporary_registry();
+        let members: Vec<String> = (0..2_048)
+            .map(|index| format!("member-6576-{index:0116}"))
+            .collect();
+        assert!(members.iter().all(|member| member.len() == 128));
+
+        let state = NamedServerRegistryState::load(path.clone());
+        let created = state
+            .create_launch_server_for_owner(
+                OWNER,
+                "Unbounded Enclave".to_owned(),
+                members.clone(),
+            )
+            .expect("the complete roster is admitted");
+        assert_eq!(created.member_osl_user_ids.len(), members.len());
+        drop(state);
+
+        let restarted = NamedServerRegistryState::load(path.clone());
+        let restored = restarted
+            .list_for_owner(OWNER)
+            .expect("the complete roster reloads after process restart");
+        assert_eq!(restored.len(), 1);
+        assert_eq!(restored[0].member_osl_user_ids, members);
+        assert!(fs::metadata(&path).unwrap().len() > 256 * 1024);
+
+        let _ = fs::remove_file(path.with_extension("bak"));
         let _ = fs::remove_file(path);
     }
 }

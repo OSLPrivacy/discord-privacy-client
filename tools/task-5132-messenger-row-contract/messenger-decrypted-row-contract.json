@@ -1,0 +1,68 @@
+{
+  "schema": "osl-messenger-decrypted-row-contract-v1",
+  "status": "contract-only",
+  "carrier": "Messenger",
+  "source": "reviewed-live-messenger-row-matrix",
+  "geometry": {
+    "content_width_css_px": 120,
+    "one_line_height_css_px": 48,
+    "two_line_height_css_px": 64,
+    "bubble_radius_css_px": 18
+  },
+  "fill": {
+    "incoming": "#e4e6eb",
+    "outgoing": "#0084ff"
+  },
+  "type": {
+    "family": "Segoe UI",
+    "size_css_px": 15,
+    "weight": 400,
+    "incoming_colour": "#050505",
+    "outgoing_colour": "#ffffff"
+  },
+  "line": {
+    "height_css_px": 20,
+    "maximum_lines": 2,
+    "wrapping": "carrier-bound"
+  },
+  "spacing": {
+    "padding_block_css_px": 8,
+    "padding_inline_css_px": 12,
+    "grouped_gap_css_px": 2,
+    "ungrouped_gap_css_px": 8
+  },
+  "direction": {
+    "incoming_alignment": "logical-start",
+    "outgoing_alignment": "logical-end",
+    "rtl_rule": "logical-mirror"
+  },
+  "seam": {
+    "ring_physical_px": 4,
+    "outside_pixels": "untouched",
+    "outside_alpha": 0,
+    "maximum_bleed_physical_px": 0
+  },
+  "required_row_cases": [
+    {"id":"direct-message.incoming.ungrouped.plain.one-line.default","conversation":"direct-message","direction":"incoming","grouping":"ungrouped","kind":"plain","line_count":1,"hover":"default"},
+    {"id":"direct-message.outgoing.ungrouped.plain.one-line.default","conversation":"direct-message","direction":"outgoing","grouping":"ungrouped","kind":"plain","line_count":1,"hover":"default"},
+    {"id":"direct-message.incoming.grouped.plain.one-line.default","conversation":"direct-message","direction":"incoming","grouping":"grouped","kind":"plain","line_count":1,"hover":"default"},
+    {"id":"direct-message.outgoing.grouped.plain.one-line.default","conversation":"direct-message","direction":"outgoing","grouping":"grouped","kind":"plain","line_count":1,"hover":"default"},
+    {"id":"direct-message.incoming.ungrouped.reply.two-line.default","conversation":"direct-message","direction":"incoming","grouping":"ungrouped","kind":"reply","line_count":2,"hover":"default"},
+    {"id":"direct-message.outgoing.ungrouped.media.one-line.default","conversation":"direct-message","direction":"outgoing","grouping":"ungrouped","kind":"media","line_count":1,"hover":"default"},
+    {"id":"direct-message.incoming.ungrouped.plain.one-line.hover","conversation":"direct-message","direction":"incoming","grouping":"ungrouped","kind":"plain","line_count":1,"hover":"row-actions"},
+    {"id":"group.incoming.ungrouped.plain.one-line.default","conversation":"group","direction":"incoming","grouping":"ungrouped","kind":"plain","line_count":1,"hover":"default"},
+    {"id":"group.outgoing.ungrouped.plain.one-line.default","conversation":"group","direction":"outgoing","grouping":"ungrouped","kind":"plain","line_count":1,"hover":"default"},
+    {"id":"group.incoming.grouped.plain.one-line.default","conversation":"group","direction":"incoming","grouping":"grouped","kind":"plain","line_count":1,"hover":"default"},
+    {"id":"group.outgoing.grouped.plain.one-line.default","conversation":"group","direction":"outgoing","grouping":"grouped","kind":"plain","line_count":1,"hover":"default"},
+    {"id":"group.incoming.ungrouped.reply.two-line.default","conversation":"group","direction":"incoming","grouping":"ungrouped","kind":"reply","line_count":2,"hover":"default"},
+    {"id":"group.outgoing.ungrouped.media.one-line.default","conversation":"group","direction":"outgoing","grouping":"ungrouped","kind":"media","line_count":1,"hover":"default"},
+    {"id":"group.incoming.ungrouped.plain.one-line.hover","conversation":"group","direction":"incoming","grouping":"ungrouped","kind":"plain","line_count":1,"hover":"row-actions"},
+    {"id":"community.incoming.ungrouped.plain.one-line.default","conversation":"community","direction":"incoming","grouping":"ungrouped","kind":"plain","line_count":1,"hover":"default"},
+    {"id":"community.outgoing.ungrouped.plain.one-line.default","conversation":"community","direction":"outgoing","grouping":"ungrouped","kind":"plain","line_count":1,"hover":"default"},
+    {"id":"community.incoming.grouped.plain.one-line.default","conversation":"community","direction":"incoming","grouping":"grouped","kind":"plain","line_count":1,"hover":"default"},
+    {"id":"community.outgoing.grouped.plain.one-line.default","conversation":"community","direction":"outgoing","grouping":"grouped","kind":"plain","line_count":1,"hover":"default"},
+    {"id":"community.incoming.ungrouped.reply.two-line.default","conversation":"community","direction":"incoming","grouping":"ungrouped","kind":"reply","line_count":2,"hover":"default"},
+    {"id":"community.outgoing.ungrouped.media.one-line.default","conversation":"community","direction":"outgoing","grouping":"ungrouped","kind":"media","line_count":1,"hover":"default"},
+    {"id":"community.incoming.ungrouped.plain.one-line.hover","conversation":"community","direction":"incoming","grouping":"ungrouped","kind":"plain","line_count":1,"hover":"row-actions"}
+  ]
+}

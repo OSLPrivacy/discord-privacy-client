@@ -51,9 +51,8 @@ database_name = "osl-cipher-store-prod"
 database_id = "be3d31f1-f6b4-4d6e-8ede-74514950b9e2"
 migrations_dir = "migrations"
 
-# Workers KV for IP-based rate limiting. Phase 6 replaces this with
-# Privacy Pass anonymous credentials; for Phase 1 MVP, IP rate
-# limiting is the only anti-abuse defence. Create with:
+# Legacy Workers KV binding retained for rollback compatibility. Production
+# admission is D1-backed; this namespace is not a fetch authority. Create with:
 #   wrangler kv namespace create RATE_LIMIT
 # then paste the id below.
 #
@@ -70,9 +69,9 @@ migrations_dir = "migrations"
 #     statement against the `rate_counters` table (migration 0006). KV's
 #     read/modify/write was not atomic, so the ceiling this file claimed did not
 #     hold even inside one POP.
-#   * Read buckets (fetch, attachment-fetch, link-fetch) stay here. They bound
-#     cost, not integrity, they are the highest-volume routes, and they must
-#     fail OPEN so a limiter outage cannot make stored ciphertext unfetchable.
+#   * TASK 6330 moved fetch, attachment-fetch and link-fetch into one atomic D1
+#     rolling-window allowance. KV is no longer an admission authority for any
+#     ciphertext release path; limiter failure leaves the request retryable.
 #
 # The data-minimisation property is unchanged or better, in both stores:
 #

@@ -9,6 +9,9 @@ declare namespace Cloudflare {
     RATE_LIMIT: KVNamespace;
     RATE_LIMIT_HASH_KEY: string;
     LINK_GRANT_PUBKEY_B64?: string;
+    TELEGRAM_BOT_TOKEN?: string;
+    TELEGRAM_OPERATOR_CHAT_IDS?: string;
+    TELEGRAM_ADMIN_CHAT_ID?: string;
     TEST_MIGRATIONS: import("@cloudflare/vitest-pool-workers").D1Migration[];
   }
 }

@@ -1373,8 +1373,10 @@ mod b0_01_scope_isolation {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BridgePointer {
+
     pub server_blob_id: [u8; BRIDGE_ID_BYTES],
     pub seed: [u8; BRIDGE_SEED_BYTES],
+
 }
 
 impl BridgePointer {

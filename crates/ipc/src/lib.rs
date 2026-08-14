@@ -44,14 +44,39 @@ pub mod bad_message_rules;
 pub mod both_sides_burn_progress;
 pub mod build_switch_metadata;
 pub mod burned_scopes_file;
+/// The machine-readable catalogue of OSL-central moderation systems that must
+/// not exist, read by the TASK 6594 central-absence sweep.
+pub mod central_moderation_needles;
+/// The deployed OSL Chats content-write guards: membership, role, author and
+/// parent binding, one named guard per write endpoint.
+pub mod chats_content_guards;
+/// The installed OSL Chats client's route manifest — every endpoint it can
+/// reach, its parent/author binding and the roles allowed to use it.
+pub mod chats_route_manifest;
+/// The deployed OSL Chats authorization authority: the server-side half of the
+/// enclave permission model that `server_membership` and `spaces` describe.
+pub mod chats_service_authority;
 pub mod cipher_store_client;
 pub mod commands;
 pub mod control_inbox_dead_letter;
 pub mod control_messages;
+pub mod crypto_top_up;
 pub mod decoy_mp4;
 pub mod destruct_ack;
 pub mod email_send_modes;
 pub mod email_whitelist_kinds;
+/// Signed, customisable Enclave categories, channels, modes and per-role
+/// permission overrides, with one deterministic access resolver.
+pub mod enclave_layout;
+/// Least-privilege bot principals, exact per-channel READ/POST/COMMANDS
+/// grants, human-signed command initiation, and bot-signed responses.
+pub mod enclave_bot_permissions;
+pub mod enclave_leave;
+pub mod enclave_removal;
+/// Enclave-scoped custom roles, the KEY/RELAY/TRUST permission catalogue, one
+/// resolver, and the signed instructions an Enclave's own people use to
+/// remove, mute, restrict, revoke and delete inside their own Enclave.
+pub mod enclave_self_moderation;
 pub mod fresh_start;
 pub mod friend_request;
 pub mod friend_service_name;
@@ -61,6 +86,8 @@ pub mod license_lifecycle;
 pub mod log_id;
 pub mod main_password;
 pub mod membership;
+pub mod membership_service;
+pub mod membership_size_rules;
 pub mod message_expiry_dial;
 pub mod metered_bytes;
 pub mod migration;
@@ -81,6 +108,10 @@ pub mod provider_discovery;
 pub mod receipt_wire;
 mod recoverable_file;
 pub mod recovery;
+/// Direct message-service burn/download operations whose observable item
+/// changes are gated by the shared service-reply validator.
+pub mod service_reply_operations;
+pub mod signal_whitelist;
 // OSL-RN ciphertexts are single-use.  This sealed cache lets transcript
 // rendering reuse an already-decrypted payload without advancing the ratchet.
 pub mod rn_plaintext_cache;
@@ -96,6 +127,8 @@ pub mod revocation;
 // 9-C1: `pending_invitations` module removed alongside the
 // invitation handshake. Pre-C1 `pending_invitations.json` files are
 // unconditionally deleted at bootstrap.
+pub mod metered_bytes;
+pub mod production_kind_admission;
 pub mod scope;
 // TASK 4811: the written sync classification. Imported verbatim from the 4811
 // gate commit (74f52ea77) so the allowed/refused registry has one definition.
@@ -104,6 +137,7 @@ pub mod scope_blobs_file;
 pub mod scope_ttl_file;
 pub mod screen_words;
 pub mod server_membership;
+pub mod shipping_email;
 pub mod space_roster;
 // Unit a45: encrypted UI-side storage contract (checklist A6). Defines the
 // `SecureLocalStore` trait + `SealedStore` reference impl; does not migrate
@@ -147,6 +181,13 @@ pub mod wire_rn;
 // OSL-RN per-peer health state. Kept separate from ratchet sessions so a
 // recovery delete cannot erase the durable fact that a peer desynchronised.
 pub mod rn_health;
+
+/// TASK 6856 acceptance check for customisable Enclave categories, channels,
+/// modes and overrides. It lives beside the crate rather than in `tests/`
+/// because `cargo test -p ipc --lib` builds only this crate's library, which
+/// keeps the check independent of the crate's binary targets.
+#[cfg(test)]
+mod task_6856_enclave_layout;
 
 // A handful of things this crate reaches for are genuinely process-global:
 // `keystore::set_base_dir_override` / `set_active_account_dir` (an `RwLock`
