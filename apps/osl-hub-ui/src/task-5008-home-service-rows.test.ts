@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { homeAppsFromServices, type LinkedService } from "./services";
 
 const carrierIds = ["discord", "telegram", "signal", "whatsapp"] as const;
-const mailIds = ["gmail", "outlook", "proton", "yahoo", "aol", "gmx", "maildotcom", "icloud", "tuta"] as const;
+const mailIds = ["gmail", "outlook", "proton", "yahoo", "aol", "icloud"] as const;
 
 function fixtureServices(): LinkedService[] {
   return [

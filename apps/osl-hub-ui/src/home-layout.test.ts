@@ -336,7 +336,7 @@ describe("home workspace hierarchy", () => {
     expect(home).toContain("homeAppsFromServices(services)");
     expect(home).toMatch(/homeApps\.map\(\(app\)[\s\S]*?data-home-app="\$\{app\.id\}"/);
     expect(source).toMatch(/function homeAppLogo[\s\S]*?app\.provider \? providerLogo\(app\.provider\)/);
-    for (const provider of ["gmail", "outlook", "proton", "yahoo", "aol", "gmx", "maildotcom", "icloud"]) {
+    for (const provider of ["gmail", "outlook", "proton", "yahoo", "aol", "icloud"]) {
       expect(styles).toContain(`.app-tile > button[data-home-app="${provider}"], .app-launcher[data-home-app="${provider}"]`);
     }
     expect(styles).toMatch(/\.app-launcher\s*\{[^}]*color:\s*var\(--service, var\(--muted\)\)/s);
@@ -467,7 +467,11 @@ describe("home interaction regressions", () => {
     expect(source).toContain("setupEmbeddedHomeApp(app,");
     expect(source).not.toContain("Firefox workspace");
     expect(importedApps).not.toContain('"tuta"');
+    expect(importedApps).not.toContain('"gmx"');
+    expect(importedApps).not.toContain('"maildotcom"');
     expect(importedApps).toContain('"gmail"');
+    expect(importedApps).toContain('"yahoo"');
+    expect(importedApps).toContain('"aol"');
     expect(importedApps).not.toContain('"discord"');
     expect(opening).toMatch(/selectedNativeAppIntent\(app\.id\)[\s\S]*?if \(nativeIntent\)[\s\S]*?openNativeHostedApp/);
     expect(opening).toContain("defaultBrowserCompanionEligible(app.id)");

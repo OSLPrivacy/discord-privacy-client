@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { parseLocalPrivacyScan, type LocalPrivacyFinding, type LocalPrivacyScanResult, type PrivacyRiskCategory } from "./adapters";
 import { buildScrubReviewList } from "./scrub-review-list";
 
-const serviceLinkPattern = /\b(?:https?:\/\/|[a-z][a-z0-9+.-]*:\/\/)?(?:discord\.com|web\.telegram\.org|web\.whatsapp\.com|mail\.google\.com|mail\.proton\.me|mail\.yahoo\.com|mail\.aol\.com|www\.gmx\.com|www\.mail\.com|www\.icloud\.com|signal\.org)\b/giu;
+const serviceLinkPattern = /\b(?:https?:\/\/|[a-z][a-z0-9+.-]*:\/\/)?(?:discord\.com|web\.telegram\.org|web\.whatsapp\.com|mail\.google\.com|mail\.proton\.me|mail\.yahoo\.com|mail\.aol\.com|www\.icloud\.com|signal\.org)\b/giu;
 const jumpActionFieldPattern = /"(?:url|href|deepLink|messageUrl|originalMessageUrl|serviceUrl|openAction|openServiceAction)"\s*:/giu;
 
 function finding(overrides: Partial<LocalPrivacyFinding> = {}): LocalPrivacyFinding {

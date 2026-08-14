@@ -21,8 +21,6 @@ export type DesktopServiceId =
   | "gmail"
   | "yahoo"
   | "aol"
-  | "gmx"
-  | "maildotcom"
   | "icloud";
 
 export type WindowsDesktopSurface =
@@ -170,8 +168,6 @@ export const desktopServicePolicies: readonly DesktopServicePolicy[] = [
   policy("gmail", "browserOnly"),
   policy("yahoo", "browserOnly"),
   policy("aol", "browserOnly"),
-  policy("gmx", "browserOnly"),
-  policy("maildotcom", "browserOnly"),
   policy("icloud", "browserOnly"),
 ] as const;
 

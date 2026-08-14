@@ -19,8 +19,6 @@ export const browserServiceQaIds = [
   "proton",
   "yahoo",
   "aol",
-  "gmx",
-  "maildotcom",
   "icloud",
 ] as const satisfies readonly HomeAppId[];
 

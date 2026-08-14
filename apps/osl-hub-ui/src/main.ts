@@ -1126,7 +1126,7 @@ const autoScrubServiceLabels: Record<ServiceId, string> = {
 };
 const supportedNativeAppIds = new Set<NativeAppId>(["discord"]);
 const importedFirefoxHomeAppIds = new Set<HomeAppId>([
-  "messenger", "gmail", "outlook", "proton", "yahoo", "aol", "gmx", "maildotcom", "icloud",
+  "messenger", "gmail", "outlook", "proton", "yahoo", "aol", "icloud",
 ]);
 const friendsDialogPageSize = 24;
 const friendScopeRenderLimit = 16;
@@ -2727,7 +2727,7 @@ function discordQaHostStatusMarkup(): string {
 }
 
 function defaultBrowserCompanionEligible(appId: HomeAppId | null): appId is HomeAppId {
-  return appId !== null && ["messenger", "gmail", "outlook", "proton", "yahoo", "aol", "gmx", "maildotcom", "icloud"].includes(appId);
+  return appId !== null && ["messenger", "gmail", "outlook", "proton", "yahoo", "aol", "icloud"].includes(appId);
 }
 
 function browserSessionModeChoices(): string {

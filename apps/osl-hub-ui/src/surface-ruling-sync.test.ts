@@ -21,9 +21,9 @@ const ruling = JSON.parse(readFileSync(new URL("data/surface-ruling-2026-08-05.j
 const sorted = (values: readonly string[]) => [...values].sort();
 const unique = (values: readonly string[]) => sorted([...new Set(values)]);
 const browserOnlyChatCarriers = ["messenger"] as const;
-// The 2026-08-05 data record is intentionally historical; the later owner
-// ruling cuts Tuta from every shipping UI surface without rewriting that record.
-const shippingEmailCarriers = ruling.email_carriers.filter((id) => id !== "tuta");
+// Owner rulings 41cdd8356 (Tuta), D35 (GMX) and D36 (mail.com) cut those three
+// carriers from scope, so the record itself now lists only shipping carriers.
+const shippingEmailCarriers = ruling.email_carriers;
 const serviceIds = unique([...ruling.chat_carriers, "email"]);
 const homeAppIds = unique([...ruling.chat_carriers, ...shippingEmailCarriers]);
 const nativeAppIds = unique([
@@ -79,10 +79,8 @@ function rustEnum(text: string, name: string): string[] {
 function rustVariantId(variant: string): string {
   return variant
     .replace("WhatsApp", "Whatsapp")
-    .replace("Maildotcom", "Maildotcom")
     .replace(/[A-Z]/g, (letter, offset) => `${offset === 0 ? "" : "-"}${letter.toLowerCase()}`)
-    .replace("whats-app", "whatsapp")
-    .replace("maildotcom", "maildotcom");
+    .replace("whats-app", "whatsapp");
 }
 
 function rustFunctionBody(text: string, name: string): string {
@@ -222,7 +220,7 @@ describe("surface ruling synchronization", () => {
     const pricing = JSON.parse(source("data/pricing.json")) as { surface_policy: { surface_ruling: Ruling } };
 
     assertSameSet("ruling chat carriers", ruling.chat_carriers, ["discord", "signal", "whatsapp", "telegram", "messenger"]);
-    assertSameSet("ruling email carriers", ruling.email_carriers, ["gmail", "outlook", "proton", "yahoo", "aol", "gmx", "maildotcom", "icloud", "tuta"]);
+    assertSameSet("ruling email carriers", ruling.email_carriers, ["gmail", "outlook", "proton", "yahoo", "aol", "icloud"]);
     assertSameSet("ruling first-party non-carriers", ruling.first_party_surfaces, ["osl-chats", "osl-mail"]);
     expect(ruling.mailbox_reading_ruling).toEqual({
       ruled_on: "2026-08-07",

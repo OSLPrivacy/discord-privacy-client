@@ -9,7 +9,7 @@ const localProtectedSheetSource = readFileSync(new URL("./local-protected-sheet.
 
 const originalAppRoster = [
   "discord", "telegram", "signal", "whatsapp", "messenger",
-  "gmail", "outlook", "proton", "yahoo", "aol", "gmx", "maildotcom", "icloud",
+  "gmail", "outlook", "proton", "yahoo", "aol", "icloud",
 ] as const;
 const unsupportedOriginalApps = originalAppRoster.filter((id) => id !== "discord");
 

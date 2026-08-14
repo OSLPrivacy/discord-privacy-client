@@ -10,7 +10,7 @@ export interface NarrowImapClient {
 }
 export interface ImapAdapterOptions { accountId: string; authEpoch: string; findings: readonly DeleteFinding[]; client: NarrowImapClient; trashMailbox?: string; fixedDelayMs?: number; wait?: (ms: number) => Promise<void> }
 
-/** Gmail, Yahoo, AOL, GMX, Mail.com, and iCloud use the same sanctioned IMAP semantics here. */
+/** Gmail, Yahoo, AOL, and iCloud use the same sanctioned IMAP semantics here. */
 export class ImapDeleteAdapter implements ScrubDeleteAdapter {
   readonly #options: ImapAdapterOptions;
   readonly #byId: ReadonlyMap<string, DeleteFinding>;

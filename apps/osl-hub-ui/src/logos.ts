@@ -4,10 +4,8 @@ import {
   siDuckduckgo,
   siFirefoxbrowser,
   siGmail,
-  siGmx,
   siGooglechrome,
   siInstagram,
-  siMaildotcom,
   siMessenger,
   siOpera,
   siSignal,
@@ -30,8 +28,6 @@ const serviceIcons: Partial<Record<ServiceId | "signal", SimpleIcon>> = {
 
 const providerIcons: Record<string, SimpleIcon> = {
   gmail: siGmail,
-  gmx: siGmx,
-  maildotcom: siMaildotcom,
 };
 
 const browserIcons: Partial<Record<BrowserImportId, SimpleIcon>> = {

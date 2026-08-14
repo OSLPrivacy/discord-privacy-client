@@ -3,11 +3,11 @@ import { isTauriRuntime } from "./preferences";
 
 export type ServiceId = "discord" | "telegram" | "email" | "signal" | "whatsapp" | "x" | "instagram" | "messenger";
 export type ConnectionState = "demoLinked" | "notLinked";
-export type EmailProvider = "gmail" | "outlook" | "proton" | "yahoo" | "aol" | "gmx" | "maildotcom" | "icloud";
+export type EmailProvider = "gmail" | "outlook" | "proton" | "yahoo" | "aol" | "icloud";
 export type ServiceCategory = "consumer" | "enterprise";
 /** `comingSoon` is reserved for OSL Mail and OSL Notes. */
 export type LaunchState = "available" | "unavailable" | "comingSoon";
-export type OfferedEmailProvider = "gmail" | "outlook" | "proton" | "yahoo" | "aol" | "gmx" | "maildotcom" | "icloud";
+export type OfferedEmailProvider = "gmail" | "outlook" | "proton" | "yahoo" | "aol" | "icloud";
 export type HomeAppId = Exclude<ServiceId, "email"> | OfferedEmailProvider;
 export type HomeAppVisibility = "launch" | "later";
 export type HomeAppSection = "social" | "email" | "later";
@@ -381,12 +381,12 @@ export const AndroidSurface = {
 
 const serviceIds: readonly ServiceId[] = ["discord", "telegram", "email", "signal", "whatsapp", "x", "instagram", "messenger"];
 const connectionStates: readonly ConnectionState[] = ["demoLinked", "notLinked"];
-const emailProviders: readonly EmailProvider[] = ["gmail", "outlook", "proton", "yahoo", "aol", "gmx", "maildotcom", "icloud"];
+const emailProviders: readonly EmailProvider[] = ["gmail", "outlook", "proton", "yahoo", "aol", "icloud"];
 const maxAccountsPerService = 10;
 const nativeAppIds: readonly NativeAppId[] = ["discord", "telegram", "signal", "whatsapp", "outlook"];
 const browserImportIds: readonly BrowserImportId[] = ["chrome", "edge", "firefox", "brave", "opera", "duckduckgo"];
 const firefoxServiceIds: readonly HomeAppId[] = [
-  "messenger", "gmail", "outlook", "proton", "yahoo", "aol", "gmx", "maildotcom", "icloud",
+  "messenger", "gmail", "outlook", "proton", "yahoo", "aol", "icloud",
 ];
 const nativeAppSupportStatuses: readonly NativeAppSupportStatus[] = [
   "available", "beta", "experimental", "comingSoon", "externallyBlocked", "noClaim",
@@ -507,8 +507,6 @@ const shippedHomeServices: readonly HomeAppDefinition[] = [
   homeApp("proton", "Proton Mail", "email", "proton", "launch", "unavailable", "Proton Mail has no mailbox reader, so OSL cannot offer a protected mail path that the recipient can open."),
   homeApp("yahoo", "Yahoo Mail", "email", "yahoo", "launch", "unavailable", "Yahoo Mail has no mailbox reader, so OSL cannot offer a protected mail path that the recipient can open."),
   homeApp("aol", "AOL Mail", "email", "aol", "launch", "unavailable", "AOL Mail has no mailbox reader, so OSL cannot offer a protected mail path that the recipient can open."),
-  homeApp("gmx", "GMX", "email", "gmx", "launch", "unavailable", "GMX has no mailbox reader, so OSL cannot offer a protected mail path that the recipient can open."),
-  homeApp("maildotcom", "Mail.com", "email", "maildotcom", "launch", "unavailable", "Mail.com has no mailbox reader, so OSL cannot offer a protected mail path that the recipient can open."),
   homeApp("icloud", "iCloud Mail", "email", "icloud", "launch", "unavailable", "iCloud Mail has no mailbox reader, so OSL cannot offer a protected mail path that the recipient can open."),
 ];
 

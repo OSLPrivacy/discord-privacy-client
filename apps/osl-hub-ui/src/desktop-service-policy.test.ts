@@ -22,7 +22,7 @@ describe("Windows desktop service policy", () => {
   });
 
   it("keeps services without a current official Windows client on browser policy", () => {
-    for (const id of ["gmail", "yahoo", "aol", "gmx", "maildotcom", "icloud"] as const) {
+    for (const id of ["gmail", "yahoo", "aol", "icloud"] as const) {
       expect(requiresNativeDesktopSurface(id)).toBe(false);
     }
   });

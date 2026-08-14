@@ -4,7 +4,7 @@ import { configuredTopStripApps, embeddedAccountsForHomeApp, escapeHtml, homeApp
 
 const originalAppRoster = [
   "discord", "telegram", "signal", "whatsapp", "messenger",
-  "gmail", "outlook", "proton", "yahoo", "aol", "gmx", "maildotcom", "icloud",
+  "gmail", "outlook", "proton", "yahoo", "aol", "icloud",
 ] as const;
 const unsupportedOriginalApps = originalAppRoster.filter((id) => id !== "discord");
 
@@ -136,7 +136,7 @@ describe("linked-service contract", () => {
   });
 
   it("accepts every in-scope allowlisted email provider", () => {
-    for (const provider of ["aol", "gmx", "maildotcom", "icloud"]) {
+    for (const provider of ["aol", "icloud"]) {
       expect(parseLinkedAccount({ id: `email-${provider}`, label: "Personal", displayHandle: "Sign in", state: "notLinked", provider }).provider).toBe(provider);
     }
   });
@@ -161,7 +161,7 @@ describe("linked-service contract", () => {
       "discord", "telegram", "signal", "whatsapp", "messenger",
     ]);
     expect(launch.filter((app) => app.section === "email").map((app) => app.id)).toEqual([
-      "gmail", "outlook", "proton", "yahoo", "aol", "gmx", "maildotcom", "icloud",
+      "gmail", "outlook", "proton", "yahoo", "aol", "icloud",
     ]);
 
     const fallbackLaunch = homeAppsFromServices([]).filter((app) => app.visibility === "launch");
@@ -259,8 +259,6 @@ describe("linked-service contract", () => {
       expect.objectContaining({ id: "proton", setupEligible: false }),
       expect.objectContaining({ id: "yahoo", setupEligible: false }),
       expect.objectContaining({ id: "aol", setupEligible: false }),
-      expect.objectContaining({ id: "gmx", setupEligible: false }),
-      expect.objectContaining({ id: "maildotcom", setupEligible: false }),
       expect.objectContaining({ id: "icloud", setupEligible: false }),
     ]);
     // Superseded by owner ruling 2026-08-05: the stale later-only Slack and
