@@ -593,8 +593,7 @@ pub fn password_lockout_secs_pub(attempts: u32) -> i64 {
 }
 
 pub fn wrong_password_attempt_triggers_duress(attempts: u32) -> bool {
-    let _ = attempts;
-    false
+    attempts >= DURESS_FAILED_PASSWORD_ATTEMPT_THRESHOLD
 }
 
 fn read_lockout(dir: &Path) -> LockoutState {
